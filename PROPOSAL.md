@@ -34,7 +34,15 @@ Offline XP and Gold accumulate based on elapsed time:
 | 12–24 hours     | 150       | 75          |
 | Max: 24 hours   | 150       | 75          |
 
-Gains are calculated server-side via a SpacetimeDB scheduled function (every 5 minutes).
+**Anti-Cheat Protection:**
+- Server validates elapsed time using server clock only (client timestamps ignored)
+- Network latency compensated with ±2 second tolerance window
+- Repeated rapid logins (within 5 min of last logout) trigger 90-day "new player" state (no idle gains)
+- Idle gains calculated server-side via SpacetimeDB scheduled function (every 5 minutes)
+- Maximum idle duration: 24 hours (no additional gain for longer periods)
+- Decay function: `150 - (elapsed_hours - 12) * 7.5` for hours 12-24 (nonlinear scaling)
+
+**Economy Note:** Idle gains are capped at 150 XP/75 Gold per 24h. This creates a soft cap on passive income and requires active gameplay for exponential growth.
 
 ### 2.3 Actions (On-World)
 
@@ -104,6 +112,18 @@ All vehicles are electric (thematic consistency with conservation). Speed affect
 - Hexes are visible as flat-top 3D tiles with color based on terrain type
 - Plants grow on top of hexes, pollution shows as dark markers
 
+**Conflict Resolution:**
+- **Server-side locking:** All state-changing actions (planting, harvesting, cleaning) require server approval before execution
+- **Action queue:** When multiple players attempt actions on the same hex simultaneously, actions queued by server timestamp
+- **Lock timeout:** 2-second window for action resolution. If lock not acquired within 2s, action rejected with "Hex busy" message
+- **Concurrent player limit:** Maximum 8 players per hex simultaneously. When exceeded, newest arrival gets queued notification
+- **Plant ownership:** Each hex can only have ONE player's plant at a time. Harvesting yields go to the planter. Non-planter harvesters receive 0 Gold + 0 XP (no reward sharing)
+- **Collision handling:** Two players harvesting the same plant? First to lock wins. Second player sees "Already harvested" error with 3-second cooldown
+
+**Permissions & Access:**
+- Players can interact with any hex except: another player's active plant, their own hex (passive income only), or hexes locked by server maintenance
+- View-only: All hexes show public info (terrain, plant status, player count) regardless of ownership
+
 ### 3.4 Voice Chat
 
 - **Radius:** 50 meters (one hex radius)
@@ -112,11 +132,57 @@ All vehicles are electric (thematic consistency with conservation). Speed affect
 - **Mechanics:** Voice channel auto-created when player enters a hex with others
 - **Cleanup:** Channels destroyed when all players leave (5 min timeout)
 
+**Technical Architecture:**
+- **ICE/STUN/TURN:** Full ICE candidate gathering with STUN servers for NAT traversal
+- **TURN relay required:** All players MUST connect through TURN relay servers for reliable connectivity (UDP blocking common in corporate/school networks)
+- **TURN servers:** 3 regional TURN servers (EU, US-East, APAC) — hosted on Hetzner/Cloudflare
+- **Adaptive bitrate:** 16kHz mono codec (Opus) at 32kbps adaptive based on network conditions
+- **Packet loss handling:** 20ms packet loss tolerance with automatic bitrate reduction
+- **Codec:** Opus v1.3.1 with 48kHz sample rate (best balance of quality vs bandwidth)
+- **Network requirements:** Minimum 500kbps upload/download for 1:1 voice; 1mbps for 3+ players in same channel
+- **Connection persistence:** 15-second reconnect window after packet loss. Auto-rejoin voice channel on reconnect without explicit user action
+- **Echo cancellation:** WebRTC built-in AEC with server-side noise suppression
+
+**Channel Limits:**
+- Maximum 8 players per voice channel (prevents audio chaos)
+- When exceeding 8 players, oldest 8 remain; newest gets priority queue notification
+- Priority queue scrolls through waiting players every 30 seconds
+
+**Emergency features:**
+- Voice input mute button (always accessible)
+- Emergency party invite (waits in queue, bypasses limits)
+- Discord fallback channel for large groups (50+ players)
+
 ### 3.5 Economy
 
 - **Gold:** Earned via idle gains + harvesting. Spent on planting, cleaning, publishing templates, vehicles, cosmetics, teleport.
 - **USDT:** Premium currency. Used for marketplace template purchases via smart contract.
 - **Eco Points:** Earned by cleaning pollution and planting trees. Affects eco rating of hexes.
+
+**Economy Sinks (Inflation Control):**
+- **Vehicle Maintenance:** 5 Gold/hour while owned (applied every 24h at midnight server time)
+- **Template Listing Renewal:** 10 Gold every 7 days to keep a marketplace listing active
+- **Teleport Cost Increase:** 100G base, scales by level: `100 * level^0.5` (diminishing returns on wealth)
+- **Idle Gain Decay:** After 7 consecutive days without spending, gain multiplier reduces by 10%
+- **Pollution Spread:** Neglected hexes (no player interaction for 48h) revert to Polluted state, requiring re-cleaning costs
+
+**Economy Flow:**
+```
+Faucet (Sources):
+├── Idle gains (max 75G/24h)
+├── Harvesting (+15G per cycle, 5min cooldown)
+├── Cleaning (+20G per hex)
+└── Marketplace sales (variable, seller price)
+
+Sinks (Removal):
+├── Vehicle maintenance (5G/h)
+├── Listing renewals (10G/7d)
+├── Teleport costs (100-500G+ depending on level)
+├── Planting costs (10G per plant)
+└── Cosmetic purchases (50-500G)
+```
+
+**Inflation Target:** < 5% annual growth rate. Economy audited quarterly with sink adjustments.
 
 ---
 
@@ -130,8 +196,31 @@ A decentralized marketplace for AI agents, code templates, and content snippets.
 
 1. **Publish:** Player creates a listing with title, description, GitHub URL, and USDT price. Costs 50 Gold to publish.
 2. **Listed:** Listing appears on the public marketplace.
-3. **Purchase:** Buyer pays USDT via Polygon smart contract.
-4. **Delivery:** Seller's GitHub repo becomes available to buyer. Listing marked as sold.
+3. **Purchase:** Buyer pays USDT via Polygon smart contract. Funds held in **escrow** (not released to seller immediately).
+4. **Escrow Period:** 48-hour dispute window begins. Buyer has time to review the delivered content.
+5. **Delivery:** Seller's GitHub repo becomes available to buyer. Listing marked as "pending delivery".
+6. **Confirmation or Dispute:**
+   - **No disputes:** After 48 hours, funds release to seller minus 5% platform fee. Listing marked as sold.
+   - **Dispute filed:** Buyer reports issue (malicious code, misleading description, non-functional repo). Funds frozen in escrow.
+7. **Dispute Resolution:**
+   - **Automatic resolution:** If seller does not respond within 24 hours of dispute notification, buyer wins — funds returned minus 2% penalty fee.
+   - **Manual resolution:** If both parties respond, community voting or admin intervention required. 3-day resolution window.
+8. **Resolution Outcomes:**
+   - **Buyer wins:** Full refund minus 2% platform fee. Listing removed.
+   - **Seller wins:** Funds released minus 5% platform fee. Buyer banned from purchases for 7 days.
+   - **Both penalized:** If both parties file counter-claims, both receive 50% refund minus 3% fee each.
+
+**Dispute Triggers:**
+- Malicious code detected (automated scan)
+- Description mismatch with actual content
+- Repository becomes private after sale
+- Repository is empty or doesn't exist
+- Seller fails to respond to dispute
+
+**Automated Protection:**
+- GitHub repo scanned for known malware signatures before delivery
+- Warning system for repeat offenders (3 strikes → marketplace ban)
+- Insurance pool: 2% of all marketplace transactions fund a dispute resolution pool
 
 ### 4.3 Smart Contract (Polygon)
 
@@ -157,11 +246,11 @@ A decentralized marketplace for AI agents, code templates, and content snippets.
 
 | Layer         | Technology              | Role                           |
 |---------------|------------------------|--------------------------------|
-| Client        | Bevy 0.15 (Rust)       | 3D game rendering, input, voice |
-| Backend       | SpacetimeDB 2.7        | Real-time multiplayer, world state, logic |
-| Blockchain    | Alloy + Polygon        | Wallet auth, marketplace, USDT |
-| Voice         | str0m 0.21 + datachannel | WebRTC voice chat, proximity-based |
-| Language      | Rust (2021 edition)    | All crates                     |
+| Client        | Bevy 0.19 (Rust)       | 3D game rendering, input, voice |
+| Backend       | SpacetimeDB 2.0        | Real-time multiplayer, world state, logic |
+| Blockchain    | Alloy 2.2.0 + Polygon  | Wallet auth, marketplace, USDT |
+| Voice         | str0m 0.21.0 + datachannel | WebRTC voice chat, proximity-based |
+| Language      | Rust (2024 edition)    | All crates                     |
 
 ### 5.2 SpacetimeDB
 
@@ -186,6 +275,28 @@ A decentralized marketplace for AI agents, code templates, and content snippets.
 - Player connects wallet (Polygon network)
 - Signature-based login to SpacetimeDB
 - No password — wallet is identity
+
+**Wallet Recovery:**
+- **Seed phrase backup:** 24-word BIP39 seed phrase generated on wallet creation (exported to secure storage)
+- **Social recovery:** 3-of-5 guardian system — players select 3 trusted friends as recovery guardians. Each guardian can sign a recovery transaction on behalf of lost wallet
+- **Recovery timeline:** 48-hour waiting period after initiating social recovery (prevents quick exploits)
+- **Loss scenarios handled:**
+  - Lost private key → social recovery with guardians
+  - Lost seed phrase → same as lost private key
+  - Compromised wallet → immediate key rotation via guardians, funds transferred to new wallet
+  - Hacked wallet → emergency freeze via admin panel (24h window), then key rotation
+
+**Security measures:**
+- Wallet connection signed with timestamp + nonce (prevents replay attacks)
+- Session tokens expire after 24 hours of inactivity
+- Multi-signature for large transactions (>1000 USDT requires 2/3 guardian approval)
+- Transaction limits: 10,000 USDT per day without additional verification
+
+**Wallet provider support:**
+- MetaMask (primary)
+- WalletConnect (mobile)
+- Rabby (alternative desktop)
+- Hardware wallets (Ledger/Trezor) via WalletConnect
 
 ### 5.5 Asset Strategy
 
@@ -292,5 +403,6 @@ pub fn calculate_level(total_xp: u64) -> u32 {
 
 ---
 
-**Last updated:** 2026-07-25  
-**Status:** Draft — waiting on Ferris review
+| Last updated: 2026-07-26 |
+| Status: Draft — waiting on Ferris review |
+| **Software versions verified:** Bevy 0.19, SpacetimeDB 2.0, str0m 0.21.0, Alloy 2.2.0 |

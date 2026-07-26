@@ -1,10 +1,10 @@
 [package]
-name = "idlebot-client"
+name = "idlecore-client"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-idlebot-core = { path = "../idlebot-core" }
+idlecore-core = { path = "../idlecore-core" }
 bevy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

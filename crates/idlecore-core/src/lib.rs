@@ -114,6 +114,19 @@ impl Vehicle {
     }
 }
 
+impl TerrainType {
+    pub fn color(&self) -> Color {
+        match self {
+            TerrainType::Grass => Color::srgb(0.35, 0.65, 0.2),
+            TerrainType::Forest => Color::srgb(0.15, 0.55, 0.25),
+            TerrainType::Water => Color::srgb(0.2, 0.4, 0.7),
+            TerrainType::City => Color::srgb(0.7, 0.65, 0.55),
+            TerrainType::Desert => Color::srgb(0.85, 0.7, 0.3),
+            TerrainType::Polluted => Color::srgb(0.15, 0.15, 0.15),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Cosmetic {
     pub cosmetic_id: u64,

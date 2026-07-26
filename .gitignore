@@ -4,6 +4,7 @@
 target/
 Cargo.lock
 .DS_Store
+._DS_Store
 
 # SpacetimeDB
 stdb_*

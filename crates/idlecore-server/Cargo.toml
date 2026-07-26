@@ -1,10 +1,10 @@
 [package]
-name = "idlebot-server"
+name = "idlecore-server"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-idlebot-core = { path = "../idlebot-core" }
+idlecore-core = { path = "../idlecore-core" }
 spacetimedb = { workspace = true }
 alloy = { workspace = true }
 anyhow = { workspace = true }

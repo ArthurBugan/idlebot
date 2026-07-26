@@ -1,4 +1,6 @@
 //! Renderer de Hexágonos — Bevy
+//!
+//! Renderiza hexágonos flat-top no mundo 3D usando cores procedurais por tipo de terreno.
 
 use crate::world::map_generator::{self, HexData, TerrainType};
 use bevy::prelude::*;
@@ -17,13 +19,7 @@ pub fn spawn_world(mut commands: Commands, query: Query<Entity, With<SpawnWorld>
     let hexes = map_generator::generate_hex_map(&mut rng);
 
     for hex in &hexes {
-        let mesh = create_hex_mesh(
-            hex.center_x,
-            hex.center_y,
-            10.0,
-            hex.terrain.color(),
-            hex.elevation,
-        );
+        let terrain_color = hex.terrain.color();
 
         commands.spawn((
             crate::assets::procedural::HexMesh {
@@ -33,9 +29,9 @@ pub fn spawn_world(mut commands: Commands, query: Query<Entity, With<SpawnWorld>
                 center_y: hex.center_y,
                 terrain: hex.terrain,
             },
-            mesh,
             Name::new(format!("hex_{}_{}", hex.q, hex.r)),
-            Transform::from_xyz(hex.center_x, hex.center_y, 0.0),
+            terrain_color,
+            Transform::from_xyz(hex.center_x, hex.elevation * 0.3, 0.0),
         ));
     }
 

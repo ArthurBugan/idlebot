@@ -1,5 +1,5 @@
 [package]
-name = "idlebot-core"
+name = "idlecore-core"
 version = "0.1.0"
 edition = "2021"
 
