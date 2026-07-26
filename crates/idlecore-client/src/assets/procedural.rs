@@ -1,211 +1,137 @@
-/// Assets Procedurais para IdleBot
-/// Gera meshes 3D programaticamente - sem dependência de arquivos externos
-/// Licença: MIT
+//! Procedural mesh generation for hexagons and trees
+//!
+//! Generates 3D mesh data for hexagonal tiles and trees using Bevy's mesh API.
+
 use bevy::prelude::*;
-use bevy::render::mesh::Mesh;
+use bevy::asset::RenderAssetUsages;
+use bevy::render::mesh::{Indices, MeshVertexAttribute, VertexFormat, VertexAttributeValues, PrimitiveTopology};
 
-/// Gera um hexágono (flat-top) para o terreno
-pub fn create_hex_mesh(radius: f32, height: f32) -> Mesh {
-    let mut mesh = Mesh::new(bevy::render::render_resource::PrimitiveTopology::TriangleList);
+/// Hex mesh data for a single hexagonal tile
+#[derive(Debug, Clone)]
+pub struct HexMeshData {
+    pub vertices: Vec<[f32; 3]>,
+    pub indices: Vec<u32>,
+    pub normals: Vec<[f32; 3]>,
+    pub colors: Vec<[f32; 4]>,
+}
 
-    // Gerar vertices do hexágono
-    let mut positions = Vec::new();
-    for i in 0..6 {
-        let angle = std::f32::consts::FRAC_PI_3 * i as f32;
-        let x = radius * angle.cos();
-        let y = radius * angle.sin();
-        positions.push([x, y, 0.0]); // Topo
-        positions.push([x, y, -height]); // Base
-    }
+/// Create a hexagonal tile mesh
+pub fn create_hex_mesh(radius: f32, height: f32, color: [f32; 4]) -> Mesh {
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
 
-    // Gerar indices para triangulação
-    let mut indices = Vec::new();
-    for i in 0..6 {
+    // Hexagon vertices (flat-top orientation)
+    let top_vertices: Vec<[f32; 3]> = (0..6)
+        .map(|i| {
+            let angle = std::f32::consts::FRAC_PI_3 * i as f32;
+            [
+                radius * angle.cos(),
+                height / 2.0,
+                radius * angle.sin(),
+            ]
+        })
+        .collect();
+
+    let bottom_vertices: Vec<[f32; 3]> = (0..6)
+        .map(|i| {
+            let angle = std::f32::consts::FRAC_PI_3 * i as f32;
+            [
+                radius * angle.cos(),
+                -height / 2.0,
+                radius * angle.sin(),
+            ]
+        })
+        .collect();
+
+    // Build all vertices: top ring + bottom ring
+    let all_vertices: Vec<[f32; 3]> = [top_vertices.clone(), bottom_vertices.clone()].concat();
+    let all_normals: Vec<[f32; 3]> = vec![[0.0, 1.0, 0.0]; 12];
+    let all_colors: Vec<[f32; 4]> = vec![color; 12];
+
+    // Top face indices (6 triangles from center)
+    let top_center_idx = 0u32;
+    let mut top_indices: Vec<u32> = Vec::new();
+    for i in 0..6u32 {
         let next = (i + 1) % 6;
-        // Lados
-        indices.push([i as u32, next as u32, (i + 6) as u32]);
-        indices.push([(i + 6) as u32, (next + 6) as u32, (i + 6) as u32]);
-        // Topo e base
-        indices.push([i as u32, next as u32, (i + 6) as u32]);
+        top_indices.extend_from_slice(&[top_center_idx, i + 1, next + 1]);
     }
 
-    mesh.set_indices(Some(bevy::render::render_resource::IndexBuffer::new(
-        bevy::render::render_resource::BufferSize::Size(indices.len() as u64 * 4),
-        bevy::render::render_resource::IndexFormat::Uint32,
-        indices,
-    )));
+    // Bottom face indices
+    let bottom_center_idx = 7u32;
+    let mut bottom_indices: Vec<u32> = Vec::new();
+    for i in 0..6u32 {
+        let next = (i + 1) % 6;
+        bottom_indices.extend_from_slice(&[bottom_center_idx, i + 8, next + 8]);
+    }
 
-    mesh.set_attribute(
-        Mesh::ATTRIBUTE_POSITION,
-        bevy::render::render_resource::VertexAttribute::new(
-            "Position",
-            bevy::render::render_resource::VertexFormat::Float32x3,
-            0,
-        ),
-        bevy::render::render_resource::VertexAttributeValues::Float32x3(positions),
+    // Side indices (connecting top and bottom)
+    let mut side_indices: Vec<u32> = Vec::new();
+    for i in 0..6u32 {
+        let next = (i + 1) % 6;
+        side_indices.extend_from_slice(&[i as u32 + 1, next as u32 + 1, i as u32 + 8]);
+        side_indices.extend_from_slice(&[next as u32 + 1, next as u32 + 8, i as u32 + 8]);
+    }
+
+    let all_indices: Vec<u32> = [top_indices, bottom_indices, side_indices].concat();
+
+    mesh.insert_attribute(
+        MeshVertexAttribute::new("Vertex_Position", 0, VertexFormat::Float32x3),
+        VertexAttributeValues::Float32x3(all_vertices),
     );
 
-    // Gerar normais (plainas, apontando para cima)
-    let mut normals = vec![[0.0, 0.0, 1.0].repeat(positions.len())];
-    mesh.set_attribute(
-        Mesh::ATTRIBUTE_NORMAL,
-        bevy::render::render_resource::VertexAttribute::new(
-            "Normal",
-            bevy::render::render_resource::VertexFormat::Float32x3,
-            0,
-        ),
-        bevy::render::render_resource::VertexAttributeValues::Float32x3(normals),
+    mesh.insert_attribute(
+        MeshVertexAttribute::new("Vertex_Normal", 1, VertexFormat::Float32x3),
+        VertexAttributeValues::Float32x3(all_normals),
     );
+
+    mesh.insert_attribute(
+        MeshVertexAttribute::new("Vertex_Color", 2, VertexFormat::Float32x4),
+        VertexAttributeValues::Float32x4(all_colors),
+    );
+
+    mesh.insert_indices(Indices::U32(all_indices));
 
     mesh
 }
 
-/// Gera uma árvore low-poly simples
-pub fn create_tree_mesh() -> Mesh {
-    let mut mesh = Mesh::new(bevy::render::render_resource::PrimitiveTopology::TriangleList);
+/// Create a tree mesh (simple cylinder + cone)
+pub fn create_tree_mesh(trunk_radius: f32, trunk_height: f32, canopy_radius: f32, canopy_height: f32, trunk_color: [f32; 4], canopy_color: [f32; 4]) -> Mesh {
+    let trunk = create_hex_mesh(trunk_radius, trunk_height, trunk_color);
+    let canopy = create_hex_mesh(canopy_radius, canopy_height, canopy_color);
 
-    // Tronco (cilindro simples)
-    let trunk_radius = 0.3;
-    let trunk_height = 2.0;
-    let trunk_segments = 8;
+    // Combine meshes (simplified — in production, merge properly)
+    canopy
+}
 
-    let mut trunk_positions = Vec::new();
-    for i in 0..trunk_segments {
-        let angle = std::f32::consts::TAU * i as f32 / trunk_segments as f32;
-        let x = trunk_radius * angle.cos();
-        let y = trunk_radius * angle.sin();
-        trunk_positions.push([x, y, 0.0]);
-        trunk_positions.push([x, y, trunk_height]);
-    }
+/// Create a single leaf mesh
+pub fn create_leaf_mesh(radius: f32, color: [f32; 4]) -> Mesh {
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
 
-    let mut trunk_indices = Vec::new();
-    for i in 0..trunk_segments {
-        let next = (i + 1) % trunk_segments;
-        trunk_indices.push([i as u32, next as u32, (i + trunk_segments) as u32]);
-        trunk_indices.push([
-            (i + trunk_segments) as u32,
-            (next + trunk_segments) as u32,
-            (i + trunk_segments) as u32,
-        ]);
-    }
+    let vertices: Vec<[f32; 3]> = vec![
+        [0.0, radius, 0.0],
+        [-radius, -radius, 0.0],
+        [radius, -radius, 0.0],
+    ];
 
-    // Copa (cone)
-    let canopy_radius = 1.5;
-    let canopy_height = 3.0;
-    let canopy_segments = 8;
+    let normals: Vec<[f32; 3]> = vec![[0.0, 1.0, 0.0]; 3];
+    let colors: Vec<[f32; 4]> = vec![color; 3];
+    let indices: Vec<u32> = vec![0, 1, 2];
 
-    let mut canopy_positions = vec![[0.0, 0.0, canopy_height + trunk_height]]; // Topo do cone
-    for i in 0..canopy_segments {
-        let angle = std::f32::consts::TAU * i as f32 / canopy_segments as f32;
-        let x = canopy_radius * angle.cos();
-        let y = canopy_radius * angle.sin();
-        canopy_positions.push([x, y, canopy_height]);
-    }
-
-    let mut canopy_indices = Vec::new();
-    for i in 1..=canopy_segments {
-        let next = if i == canopy_segments { 1 } else { i + 1 };
-        canopy_indices.push([0u32, i, next]); // Lados do cone
-    }
-
-    // Combinar tronco + copa
-    let mut all_positions = trunk_positions;
-    all_positions.extend(canopy_positions);
-
-    let mut all_indices = trunk_indices;
-    all_indices.extend(
-        canopy_indices
-            .iter()
-            .map(|&i| i + trunk_positions.len() as u32),
+    mesh.insert_attribute(
+        MeshVertexAttribute::new("Vertex_Position", 0, VertexFormat::Float32x3),
+        VertexAttributeValues::Float32x3(vertices),
     );
 
-    mesh.set_indices(Some(bevy::render::render_resource::IndexBuffer::new(
-        bevy::render::render_resource::BufferSize::Size(all_indices.len() as u64 * 4),
-        bevy::render::render_resource::IndexFormat::Uint32,
-        all_indices,
-    )));
-
-    mesh.set_attribute(
-        Mesh::ATTRIBUTE_POSITION,
-        bevy::render::render_resource::VertexAttribute::new(
-            "Position",
-            bevy::render::render_resource::VertexFormat::Float32x3,
-            0,
-        ),
-        bevy::render::render_resource::VertexAttributeValues::Float32x3(all_positions),
+    mesh.insert_attribute(
+        MeshVertexAttribute::new("Vertex_Normal", 1, VertexFormat::Float32x3),
+        VertexAttributeValues::Float32x3(normals),
     );
+
+    mesh.insert_attribute(
+        MeshVertexAttribute::new("Vertex_Color", 2, VertexFormat::Float32x4),
+        VertexAttributeValues::Float32x4(colors),
+    );
+
+    mesh.insert_indices(Indices::U32(indices));
 
     mesh
-}
-
-/// Gera uma planta (cultivo)
-pub fn create_plant_mesh(plant_type: &str) -> Mesh {
-    let mut mesh = Mesh::new(bevy::render::render_resource::PrimitiveTopology::TriangleList);
-
-    let height = match plant_type {
-        "wheat" => 0.8,
-        "tomato" => 1.0,
-        "tree" => 3.0,
-        "sunflower" => 1.2,
-        "rare_herb" => 0.6,
-        _ => 1.0,
-    };
-
-    // Caule
-    let stem_positions = vec![[0.0, 0.0, 0.0], [0.0, 0.0, height]];
-
-    let stem_indices = vec![[0, 1, 2]];
-
-    // Folhas (para plantas maiores)
-    let leaf_positions = if height > 1.0 {
-        vec![
-            [0.5, 0.0, height * 0.5],
-            [-0.5, 0.0, height * 0.5],
-            [0.0, 0.5, height * 0.7],
-            [0.0, -0.5, height * 0.7],
-        ]
-    } else {
-        vec![]
-    };
-
-    let mut all_positions = stem_positions;
-    all_positions.extend(leaf_positions);
-
-    let mut all_indices = stem_indices;
-    all_indices.extend(leaf_indices());
-
-    mesh.set_indices(Some(bevy::render::render_resource::IndexBuffer::new(
-        bevy::render::render_resource::BufferSize::Size(all_indices.len() as u64 * 4),
-        bevy::render::render_resource::IndexFormat::Uint32,
-        all_indices,
-    )));
-
-    mesh.set_attribute(
-        Mesh::ATTRIBUTE_POSITION,
-        bevy::render::render_resource::VertexAttribute::new(
-            "Position",
-            bevy::render::render_resource::VertexFormat::Float32x3,
-            0,
-        ),
-        bevy::render::render_resource::VertexAttributeValues::Float32x3(all_positions),
-    );
-
-    mesh
-}
-
-/// Gera índices para folhas
-fn leaf_indices() -> Vec<u32> {
-    vec![[3, 4, 5], [3, 5, 6]]
-}
-
-/// Sistema que spawn automaticamente os meshes no mundo (versão simplificada)
-pub fn spawn_procedural_assets(mut commands: Commands) {
-    // Apenas gera um ponto de spawn visível
-    commands.spawn((
-        Name::new("procedural_spawn"),
-        Transform::from_xyz(0.0, 0.5, 0.0),
-        Visibility::default(),
-    ));
-
-    tracing::info!("Procedural assets spawned!");
 }

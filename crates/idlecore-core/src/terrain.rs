@@ -1,6 +1,8 @@
 //! Terrain types for IdleBot hex grid.
 //! Spec: PROPOSAL.md section 3.2
 
+use rand::Rng;
+
 /// Terrain type based on spec probabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TerrainType {
@@ -11,6 +13,26 @@ pub enum TerrainType {
     City,
     Desert,
     Polluted,
+}
+
+impl TerrainType {
+    /// Create a random terrain type
+    pub fn from_random<R: Rng>(rng: &mut R) -> Self {
+        let roll = rng.gen_range(0..100);
+        if roll < 40 {
+            TerrainType::Grass
+        } else if roll < 60 {
+            TerrainType::Forest
+        } else if roll < 75 {
+            TerrainType::Water
+        } else if roll < 90 {
+            TerrainType::City
+        } else if roll < 98 {
+            TerrainType::Desert
+        } else {
+            TerrainType::Polluted
+        }
+    }
 }
 
 /// Get eco rating for a terrain type (spec 3.2)

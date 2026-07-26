@@ -91,7 +91,7 @@ fn generate_terrain_label(row: i32, col: i32) -> &'static str {
 /// Calculate teleport cost for current level
 pub fn calc_teleport_cost(level: u32) -> u64 {
     let base = 100u64;
-    (base as f64 * (level as f64).sqrt() as u64).min((level as u64).pow(2))
+    (base as f64 * (level as f64).sqrt()).min((level as u64).pow(2) as f64) as u64
 }
 
 /// Attempt to teleport. Returns true if successful, false if not enough gold.
@@ -100,8 +100,7 @@ pub fn try_teleport(
     target_hex_id: u64,
     range: i32,
 ) -> bool {
-    let econ = &gs.economy;
-    let cost = calc_teleport_cost(econ.level);
+    let cost = calc_teleport_cost(gs.economy.level);
 
     // Verify target is within range
     let dist = hex_distance(gs.current_hex_id, target_hex_id);
@@ -112,13 +111,13 @@ pub fn try_teleport(
     }
 
     // Check gold
-    if econ.gold < cost {
-        println!("[TELEPORT] Not enough gold! Need {}G (have {}G)", cost, econ.gold);
+    if gs.economy.gold < cost {
+        println!("[TELEPORT] Not enough gold! Need {}G (have {}G)", cost, gs.economy.gold);
         return false;
     }
 
     // Spend gold
-    economy::spend_gold(&mut econ.economy, cost);
+    economy::spend_gold(&mut gs.economy, cost);
 
     // Execute teleport
     gs.current_hex_id = target_hex_id;

@@ -1,20 +1,20 @@
 //! Sistema de voice chat - canais por hexágono
 
 use super::types::*;
+use spacetimedb::{ReducerContext, Table};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Join channel de voz
-pub fn join_channel(wallet_address: &str, hex_id: u64) {
+pub fn join_channel(ctx: &ReducerContext, wallet_address: &str, hex_id: u64) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    
+
     // Buscar ou criar channel
-    let channel: Option<VoiceChannelDbEntry> = db::voice_channel::table()
-        .filter(|ch: &VoiceChannelDbEntry| ch.hex_id == hex_id)
-        .first();
-    
+    let channel = ctx.db.voice_channel().iter()
+        .find(|ch| ch.hex_id == hex_id);
+
     match channel {
         Some(mut ch) => {
             // Adicionar player ao channel
@@ -23,7 +23,7 @@ pub fn join_channel(wallet_address: &str, hex_id: u64) {
                 players.push(wallet_address.to_string());
                 ch.players = serde_json::to_string(&players).unwrap();
                 ch.last_activity = now;
-                db::voice_channel::table().update(ch);
+                ctx.db.voice_channel().hex_id().update(ch);
             }
         }
         None => {
@@ -35,53 +35,54 @@ pub fn join_channel(wallet_address: &str, hex_id: u64) {
                 created_at: now,
                 last_activity: now,
             };
-            db::voice_channel::table().insert(channel);
+            ctx.db.voice_channel().insert(channel);
         }
     }
 }
 
 /// Leave channel de voz
-pub fn leave_channel(wallet_address: &str, hex_id: u64) {
-    let ch: Option<VoiceChannelDbEntry> = db::voice_channel::table()
-        .filter(|ch: &VoiceChannelDbEntry| ch.hex_id == hex_id)
-        .first();
-    
+pub fn leave_channel(ctx: &ReducerContext, wallet_address: &str, hex_id: u64) {
+    let ch = ctx.db.voice_channel().iter()
+        .find(|ch| ch.hex_id == hex_id);
+
     if let Some(mut ch) = ch {
         let mut players: Vec<String> = serde_json::from_str(&ch.players).unwrap_or_default();
         players.retain(|p| p != wallet_address);
-        
+
         if players.is_empty() {
             // Remover channel se vazio
-            db::voice_channel::table().delete(hex_id);
+            let channel_to_delete = ch;
+            ctx.db.voice_channel().delete(channel_to_delete);
         } else {
             ch.players = serde_json::to_string(&players).unwrap();
             ch.last_activity = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
-            db::voice_channel::table().update(ch);
+            ctx.db.voice_channel().hex_id().update(ch);
         }
     }
 }
 
 /// Cleanup channels inativos (maior que 5 minutos sem atividade)
-pub fn cleanup_inactive_channels() {
+pub fn cleanup_inactive_channels(ctx: &ReducerContext) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    
+
     let timeout = 300; // 5 minutos
-    
+
     // Buscar channels inativos
-    let channels: Vec<VoiceChannelDbEntry> = db::voice_channel::table().collect();
-    
+    let channels: Vec<VoiceChannelDbEntry> = ctx.db.voice_channel().iter().collect();
+
     for ch in channels {
         let time_diff = now - ch.last_activity;
         if time_diff > timeout {
+            let hex_id = ch.hex_id;
             // Remover channel inativo
-            db::voice_channel::table().delete(ch.hex_id);
-            tracing::debug!("Removed inactive voice channel: {}", ch.hex_id);
+            ctx.db.voice_channel().delete(ch);
+            tracing::debug!("Removed inactive voice channel: {}", hex_id);
         }
     }
 }

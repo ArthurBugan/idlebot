@@ -18,14 +18,14 @@ pub fn calculate_level(total_xp: u64) -> u32 {
     while remaining >= xp_needed {
         remaining -= xp_needed;
         level += 1;
-        xp_needed = Self::xp_for_next_level(level);
+        xp_needed = xp_for_next_level(level);
     }
     level
 }
 
 /// Get the XP remaining before the next level-up
 pub fn xp_remaining_for_next_level(level: u32, total_xp: u64) -> u64 {
-    let xp_needed = Self::xp_for_next_level(level);
+    let xp_needed = xp_for_next_level(level);
     let earned_to_level = total_xp.saturating_sub(xp_needed);
     xp_needed.saturating_sub(earned_to_level)
 }

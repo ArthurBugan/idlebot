@@ -3,12 +3,10 @@ pub mod transaction;
 
 use alloy::network::Ethereum;
 use alloy::primitives::Address;
-use alloy::providers::{Provider, ProviderBuilder, RootProvider};
+use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::LocalSigner;
-use alloy::signers::SigningKey;
-use alloy::signers::Signer as _;
-use alloy::k256::ecdsa::SigningKey as K256SigningKey;
+use alloy::signers::k256::ecdsa::SigningKey;
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use transaction::ContractCall;
@@ -46,7 +44,7 @@ impl ChainConfig {
 pub struct ChainProvider {
     config: ChainConfig,
     signer: LocalSigner<SigningKey>,
-    provider: Arc<RootProvider<Ethereum>>,
+    provider: Arc<dyn Provider<Ethereum>>,
 }
 
 impl ChainProvider {
@@ -79,7 +77,7 @@ impl ChainProvider {
             .input(data.into());
 
         let pending = self.provider.send_transaction(tx).await?;
-        let receipt = pending.await?;
+        let receipt = pending.get_receipt().await?;
         Ok(hex::encode(receipt.transaction_hash))
     }
 

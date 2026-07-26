@@ -7,6 +7,7 @@ use crate::economy;
 use crate::actions;
 use crate::teleport;
 use crate::voice;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------
 // HUD Display Data
@@ -345,7 +346,7 @@ impl VehicleMenu {
                 } else {
                     0.0
                 };
-                self.selected_vehicle = Some((v.cost.to_string(), v.speed_multiplier, speed));
+                self.selected_vehicle = Some((v.cost.to_string(), v.speed_multiplier as u64, speed));
                 println!("[UI] Vehicle selected: {} (cost: {}G)", vehicle_name, v.cost);
                 return Some((vehicle_name.to_string(), v.cost, v.speed_multiplier));
             }
@@ -370,9 +371,7 @@ pub fn render_console(gs: &economy::LocalGameState) {
 
     // Header
     out.push_str(&format!(
-        "\n\x1b[1;42m╔══════════════════════════════════════════════╗\x1b[0m\n"
-        "║          IDLEBOT — Local Testing Mode       ║\n"
-        "╚══════════════════════════════════════════════╝\n"
+        "\n\x1b[1;42m╔══════════════════════════════════════════════╗\x1b[0m\n║          IDLEBOT — Local Testing Mode       ║\n╚══════════════════════════════════════════════╝\n"
     ));
 
     // Player status
@@ -436,12 +435,7 @@ pub fn render_console(gs: &economy::LocalGameState) {
 
     // Debug commands
     out.push_str(&format!(
-        "\n\x1b[1;31m[ DEBUG COMMANDS ]\x1b[0m\n"
-        "  /add_gold <amount>  — Add gold\n"
-        "  /teleport <hex_id>  — Teleport to hex\n"
-        "  /teleport          — Show nearby hexes\n"
-        "  /menu              — Show all options\n"
-        "  /reset             — Reset game state\n"
+        "\n\x1b[1;31m[ DEBUG COMMANDS ]\x1b[0m\n  /add_gold <amount>  — Add gold\n  /teleport <hex_id>  — Teleport to hex\n  /teleport          — Show nearby hexes\n  /menu              — Show all options\n  /reset             — Reset game state\n"
     ));
 
     out.push_str(&format!(

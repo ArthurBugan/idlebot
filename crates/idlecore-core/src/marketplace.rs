@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use crate::economy;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------
 // Marketplace Listing
@@ -226,6 +227,6 @@ impl MarketplaceManager {
 
 /// Print a "chatting about marketplace" message when near other players
 pub fn announce_market_chat(player_name: &str, message: &str) {
-    println!("[VOICE] {} says: \"Hey! Check out my marketplace listing!\"");
+    println!("[VOICE] says: \"Hey! Check out my marketplace listing!\"");
     println!("[VOICE] {} broadcasts: \"{}\"", player_name, message);
 }

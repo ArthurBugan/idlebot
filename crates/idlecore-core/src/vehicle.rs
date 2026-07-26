@@ -3,7 +3,8 @@
 //! Vehicle types: None, Bicycle (2x), Scooter (3x), Motorcycle (5x), Boat (4x), Airplane (10x).
 //! Speed multipliers and gold costs per PROPOSAL section 2.6.
 
-use crate::player::Vehicle;
+use crate::Vehicle;
+use std::time::SystemTime;
 
 /// Purchase a vehicle. Returns success status and deducted cost.
 pub fn purchase_vehicle(econ: &mut crate::economy::PlayerEconomy, vehicle: &Vehicle) -> bool {

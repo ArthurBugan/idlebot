@@ -1,8 +1,18 @@
 //! Mock voice chat system — console-based mock of proximity voice chat.
 
 use crate::economy;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
+
+// ---------------------------------------------------------------------------
+// Console Logging
+// ---------------------------------------------------------------------------
+
+macro_rules! voice_log {
+    ($($arg:tt)*) => {
+        println!("[VOICE] {}", format!($($arg)*));
+    };
+}
 
 // ---------------------------------------------------------------------------
 // Mock Player for voice simulation
@@ -122,26 +132,26 @@ impl VoiceChatManager {
     }
 
     fn ensure_channel(&mut self, hex_id: u64, now: u64) {
+        let player_name = self.get_player_name_at_hex(hex_id);
+        
         if let Some(channel) = self.channels.get_mut(&hex_id) {
             if channel.is_active(now) {
-                channel.add_player(
-                    &self.get_player_name_at_hex(hex_id),
-                    now,
-                );
+                channel.add_player(&player_name, now);
+                let count = channel.player_count();
                 println!("[VOICE] Player '{}' joined voice channel in hex {} ({} players)",
-                    self.get_player_name_at_hex(hex_id), hex_id, channel.player_count());
+                    player_name, hex_id, count);
                 return;
             }
         }
 
-        let channel = VoiceChannel::new(hex_id);
-        channel.add_player(&self.get_player_name_at_hex(hex_id), now);
+        let mut channel = VoiceChannel::new(hex_id);
+        channel.add_player(&player_name, now);
         self.channels.insert(hex_id, channel);
         println!("[VOICE] Voice channel created for hex {} ({} players)", hex_id, 1);
     }
 
     /// Process a player moving to a new hex
-    pub fn player_moved(&mut self, player: &MockPlayer, new_hex_id: u64) {
+    pub fn player_moved(&mut self, player: &mut MockPlayer, new_hex_id: u64) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -150,39 +160,41 @@ impl VoiceChatManager {
         player.hex_id = new_hex_id;
 
         // Leave old hex's channel
-        self.handle_channel_change(player, false, now);
+        self.handle_channel_change(player, false, now, new_hex_id);
 
         // Join new hex's channel
-        self.handle_channel_change(player, true, now);
+        self.handle_channel_change(player, true, now, new_hex_id);
 
         // Periodic cleanup
         self.cleanup_channels(now);
     }
 
-    fn handle_channel_change(&mut self, player: &MockPlayer, entering: bool, now: u64) {
+    fn handle_channel_change(&mut self, player: &MockPlayer, entering: bool, now: u64, new_hex_id: u64) {
         let old_hex = player.hex_id;
+        let player_name = player.name.clone();
 
         if entering {
             if let Some(channel) = self.channels.get_mut(&new_hex_id) {
-                let added = channel.add_player(&player.name, now);
+                let added = channel.add_player(&player_name, now);
                 if added {
+                    let count = channel.player_count();
                     voice_log!("  Entering voice channel in hex {} ({}/{} players)",
-                        new_hex_id, channel.player_count(), economy::MAX_HEX_PLAYERS);
+                        new_hex_id, count, economy::MAX_HEX_PLAYERS);
                 } else {
                     voice_log!("  Channel for hex {} at 8/8 player limit!", new_hex_id);
                 }
             } else {
-                let channel = VoiceChannel::new(new_hex_id);
-                let added = channel.add_player(&player.name, now);
+                let mut channel = VoiceChannel::new(new_hex_id);
+                let added = channel.add_player(&player_name, now);
                 if added {
                     self.channels.insert(new_hex_id, channel);
                     println!("[VOICE] Voice channel created for hex {} ({} player: {})",
-                        new_hex_id, 1, player.name);
+                        new_hex_id, 1, player_name);
                 }
             }
         } else {
             if let Some(channel) = self.channels.get_mut(&old_hex) {
-                if !channel.remove_player(&player.name, now) {
+                if !channel.remove_player(&player_name, now) {
                     voice_log!("  Voice channel destroyed for hex {} (all players left)", old_hex);
                     self.channels.remove(&old_hex);
                 }
@@ -231,16 +243,6 @@ impl VoiceChatManager {
 }
 
 // ---------------------------------------------------------------------------
-// Console Logging
-// ---------------------------------------------------------------------------
-
-macro_rules! voice_log {
-    ($($arg:tt)*) => {
-        println!("[VOICE] {}", format!($($arg)*));
-    };
-}
-
-// ---------------------------------------------------------------------------
 // Test Simulation
 // ---------------------------------------------------------------------------
 
@@ -279,7 +281,7 @@ pub fn setup_voice_channels_for_players(players: &[MockPlayer]) {
             .unwrap()
             .as_secs();
 
-        if *players_in_hex.len() as u32 > economy::MAX_HEX_PLAYERS {
+        if players_in_hex.len() as u32 > economy::MAX_HEX_PLAYERS {
             println!("[VOICE] Hex {} has {} players (limit: {}), newest queued",
                 hex_id, players_in_hex.len(), economy::MAX_HEX_PLAYERS);
         }

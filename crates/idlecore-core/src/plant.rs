@@ -2,18 +2,24 @@
 
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use std::fmt;
 use crate::economy;
+use crate::PlantType;
 
 // ---------------------------------------------------------------------------
 // Plant Types (by index into PLANT_CONFIGS)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum PlantType {
-    Wheat,      // index 0
-    Corn,       // index 1
-    Tree,       // index 2
-    RareHerb,   // index 3
+impl PlantType {
+    /// Get the index of this plant type
+    pub fn index(&self) -> usize {
+        match self {
+            PlantType::Wheat => 0,
+            PlantType::Corn => 1,
+            PlantType::Tree => 2,
+            PlantType::RareHerb => 3,
+        }
+    }
 }
 
 /// Growth data for each plant type. Indexed by PlantType variant number.
@@ -59,7 +65,7 @@ pub const PLANT_CONFIGS: &[PlantGrowthConfig] = &[
 /// Get config for a plant type by index
 pub fn get_plant_config(index: usize) -> &'static PlantGrowthConfig {
     assert!(index < PLANT_CONFIGS.len(), "Unknown plant type index: {}", index);
-    PLANT_CONFIGS[index]
+    &PLANT_CONFIGS[index]
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +218,6 @@ pub enum PlantActionResult {
 
 /// Plant a seed: cost 10G, gives 5 XP
 pub fn plant_on_hex(gs: &mut economy::LocalGameState, plant_type: PlantType) -> PlantActionResult {
-    let econ = &gs.economy;
     let cost = economy::PLANT_COST;
 
     println!("[PLANT] Attempting to plant {:?}...", plant_type);
@@ -223,7 +228,7 @@ pub fn plant_on_hex(gs: &mut economy::LocalGameState, plant_type: PlantType) -> 
         };
     }
 
-    if !economy::spend_gold(&mut econ.economy, cost) {
+    if !economy::spend_gold(&mut gs.economy, cost) {
         return PlantActionResult::Failed {
             reason: format!("Not enough gold. Need {}G", cost),
         };
@@ -233,8 +238,12 @@ pub fn plant_on_hex(gs: &mut economy::LocalGameState, plant_type: PlantType) -> 
         "[PLANT] Planted {:?}. Hex: {}, Cost: {}G, XP: 5",
         plant_type, gs.current_hex_id, cost
     );
-    gs.record_action_named("plant");
-    economy::add_xp(&mut econ.economy, 5);
+    gs.last_action_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    gs.actions_history.push("plant".to_string());
+    economy::add_xp(&mut gs.economy, 5);
 
     let growth_label = match plant_type {
         PlantType::Wheat => "Wheat (1h)",
@@ -250,7 +259,7 @@ pub fn plant_on_hex(gs: &mut economy::LocalGameState, plant_type: PlantType) -> 
     );
 
     PlantActionResult::Success {
-        message: format!("Planted {:?} ({}G cost, 5 XP gained)", plant_type),
+        message: format!("Planted {:?}, 5 XP gained", plant_type),
         xp: 5,
         gold: 0,
     }
@@ -258,7 +267,6 @@ pub fn plant_on_hex(gs: &mut economy::LocalGameState, plant_type: PlantType) -> 
 
 /// Harvest a plant: gives gold + XP + eco based on type
 pub fn harvest_hex(gs: &mut economy::LocalGameState, plant_type: PlantType) -> PlantActionResult {
-    let econ = &gs.economy;
 
     println!("[PLANT] Harvesting {:?} from hex {}", plant_type, gs.current_hex_id);
 
@@ -268,20 +276,24 @@ pub fn harvest_hex(gs: &mut economy::LocalGameState, plant_type: PlantType) -> P
         };
     }
 
-    let (gold_reward, xp_reward, eco_reward) = PLANT_CONFIGS[plant_type as usize]
-        .gold_reward;
-    let xp = PLANT_CONFIGS[plant_type as usize].xp_reward;
-    let eco = PLANT_CONFIGS[plant_type as usize].eco_reward;
+    let config = &PLANT_CONFIGS[plant_type.index()];
+    let gold_reward = config.gold_reward;
+    let xp = config.xp_reward;
+    let eco = config.eco_reward;
 
     println!(
         "[PLANT] Harvesting mature {:?} - {}G gold, {} XP, {} Eco",
         plant_type, gold_reward, xp, eco
     );
-    gs.record_action_named("harvest");
+    gs.last_action_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    gs.actions_history.push("harvest".to_string());
 
-    economy::add_gold(&mut econ.economy, gold_reward);
-    economy::add_xp(&mut econ.economy, xp);
-    economy::add_eco_points(&mut econ.economy, eco);
+    economy::add_gold(&mut gs.economy, gold_reward);
+    economy::add_xp(&mut gs.economy, xp);
+    economy::add_eco_points(&mut gs.economy, eco);
 
     PlantActionResult::Success {
         message: format!(
@@ -295,7 +307,6 @@ pub fn harvest_hex(gs: &mut economy::LocalGameState, plant_type: PlantType) -> P
 
 /// Clean polluted hex: cost 20G, give 20G and 15 XP
 pub fn clean_hex(gs: &mut economy::LocalGameState) -> PlantActionResult {
-    let econ = &gs.economy;
 
     println!("[PLANT] Attempting to clean hex {}", gs.current_hex_id);
 
@@ -305,7 +316,7 @@ pub fn clean_hex(gs: &mut economy::LocalGameState) -> PlantActionResult {
         };
     }
 
-    if !economy::spend_gold(&mut econ.economy, economy::CLEAN_COST) {
+    if !economy::spend_gold(&mut gs.economy, economy::CLEAN_COST) {
         return PlantActionResult::Failed {
             reason: format!("Not enough gold. Need {}G", economy::CLEAN_COST),
         };
@@ -317,11 +328,15 @@ pub fn clean_hex(gs: &mut economy::LocalGameState) -> PlantActionResult {
         economy::CLEAN_GOLD_REWARD,
         economy::CLEAN_XP_REWARD
     );
-    gs.record_action_named("clean");
+    gs.last_action_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    gs.actions_history.push("clean".to_string());
 
-    economy::add_gold(&mut econ.economy, economy::CLEAN_GOLD_REWARD);
-    economy::add_xp(&mut econ.economy, economy::CLEAN_XP_REWARD);
-    economy::add_eco_points(&mut econ.economy, 30);
+    economy::add_gold(&mut gs.economy, economy::CLEAN_GOLD_REWARD);
+    economy::add_xp(&mut gs.economy, economy::CLEAN_XP_REWARD);
+    economy::add_eco_points(&mut gs.economy, 30);
 
     PlantActionResult::Success {
         message: format!(
@@ -335,7 +350,6 @@ pub fn clean_hex(gs: &mut economy::LocalGameState) -> PlantActionResult {
 
 /// Clear terrain: cost 15G, give 5 XP
 pub fn clear_terrain(gs: &mut economy::LocalGameState) -> PlantActionResult {
-    let econ = &gs.economy;
 
     println!("[PLANT] Attempting to clear terrain on hex {}", gs.current_hex_id);
 
@@ -345,7 +359,7 @@ pub fn clear_terrain(gs: &mut economy::LocalGameState) -> PlantActionResult {
         };
     }
 
-    if !economy::spend_gold(&mut econ.economy, economy::CLEAR_COST) {
+    if !economy::spend_gold(&mut gs.economy, economy::CLEAR_COST) {
         return PlantActionResult::Failed {
             reason: format!("Not enough gold. Need {}G", economy::CLEAR_COST),
         };
@@ -355,10 +369,14 @@ pub fn clear_terrain(gs: &mut economy::LocalGameState) -> PlantActionResult {
         "[PLANT] Cleared terrain on hex {}! +{} XP",
         gs.current_hex_id, economy::CLEAR_XP_REWARD
     );
-    gs.record_action_named("clear_terrain");
+    gs.last_action_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    gs.actions_history.push("clear_terrain".to_string());
 
-    economy::add_xp(&mut econ.economy, economy::CLEAR_XP_REWARD);
-    economy::add_eco_points(&mut econ.economy, 5);
+    economy::add_xp(&mut gs.economy, economy::CLEAR_XP_REWARD);
+    economy::add_eco_points(&mut gs.economy, 5);
 
     PlantActionResult::Success {
         message: format!(
@@ -420,7 +438,7 @@ impl LocalPlantTracker {
             plant.check_growth(now);
             if plant.stage == PlantStage::Ready {
                 if let Some(rewards) = plant.harvest_if_ready(now) {
-                    harvested.push((hex_id, plant, rewards));
+                    harvested.push((*hex_id, plant.clone(), rewards));
                     println!(
                         "[PLANT] Tick: Plant {:?} on hex {} ready! +{} XP, +{} Gold, +{} Eco",
                         PLANT_CONFIGS[plant.plant_type_index].type_name,

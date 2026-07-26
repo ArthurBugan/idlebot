@@ -10,7 +10,7 @@ use crate::terrain::TerrainType;
 pub struct PlayerId(pub u64);
 
 /// Component attached to each hex entity in the grid.
-#[derive(Component)]
+#[derive(Component, Clone)]
 pub struct HexTile {
     /// Position of the hex center
     pub pos: Vec3,
@@ -32,7 +32,7 @@ impl HexTile {
         Self {
             pos,
             terrain,
-            eco_rating: crate::terrain::eco_rating(&terrain),
+            eco_rating: crate::terrain::eco_rating(&terrain) as u32,
             owned_by: None,
             has_plant: false,
             has_pollution: false,
@@ -50,5 +50,21 @@ impl HexTile {
     pub fn set_plant_owner(&mut self, player_id: PlayerId) {
         self.has_plant = true;
         self.owned_by = Some(player_id);
+    }
+
+    /// Clear the plant
+    pub fn clear_plant(&mut self) {
+        self.has_plant = false;
+        self.owned_by = None;
+    }
+
+    /// Set pollution
+    pub fn set_polluted(&mut self) {
+        self.has_pollution = true;
+    }
+
+    /// Clean pollution
+    pub fn clean_pollution(&mut self) {
+        self.has_pollution = false;
     }
 }

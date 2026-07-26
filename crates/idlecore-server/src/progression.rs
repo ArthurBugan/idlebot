@@ -1,13 +1,12 @@
 //! Sistema de Progressão — Níveis & Unlocks
 
 use super::types::*;
+use spacetimedb::{ReducerContext, Table};
 
 /// Level up system — quando XP acumulado >= xp_for_next_level(level), sobe de nível
-pub fn check_level_up(player_address: &str) -> Option<u32> {
-    let player: PlayerDbEntry = db::player::table()
-        .filter(|p: &PlayerDbEntry| p.address == player_address)
-        .first()
-        .ok()?;
+pub fn check_level_up(ctx: &ReducerContext, player_address: &str) -> Option<u32> {
+    let player = ctx.db.player().iter()
+        .find(|p| p.address == player_address)?;
 
     let next_level_xp = player.level as u64 * 100 * player.level as u64; // 100 * L²
 
@@ -15,7 +14,7 @@ pub fn check_level_up(player_address: &str) -> Option<u32> {
         let new_level = player.level + 1;
         let mut player = player;
         player.level = new_level;
-        db::player::table().update(player);
+        ctx.db.player().address().update(player);
         Some(new_level)
     } else {
         None
@@ -35,15 +34,13 @@ pub fn unlocks_for_level(level: u32) -> Vec<Unlock> {
     }
 }
 
-/// Verificar se jogador desbloqueou algo
-pub fn check_unlocks(player: &PlayerDbEntry) -> Vec<Unlock> {
+/// Verificar unlocks disponíveis para um jogador
+pub fn available_unlocks(player: &PlayerDbEntry) -> Vec<Unlock> {
     let mut unlocks = Vec::new();
 
     for level in 1..=player.level {
         for unlock in unlocks_for_level(level) {
-            if !player.unlocks.contains(&unlock.to_string()) {
-                unlocks.push(unlock);
-            }
+            unlocks.push(unlock);
         }
     }
 

@@ -4,7 +4,7 @@
 //! applies vehicle maintenance, and calculates teleport/level costs.
 
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
 use chrono::{DateTime, Utc, Duration as ChronoDuration};
 
@@ -147,7 +147,7 @@ pub fn recalculate_level(econ: &mut PlayerEconomy) {
 /// Base: 100G, scales as 100 * sqrt(level)
 pub fn teleport_cost(level: u32) -> u64 {
     // 100 * sqrt(level)
-    ((TELEPORT_BASE_COST as f64) * (level as f64).sqrt() as u64)
+    (((TELEPORT_BASE_COST as f64) * (level as f64).sqrt()) as u64)
         .min((level as u64).pow(2))  // cap at level^2 to avoid absurd costs
 }
 

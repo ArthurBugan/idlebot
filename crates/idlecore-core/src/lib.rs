@@ -3,6 +3,22 @@
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub mod actions;
+pub mod economy;
+pub mod grid;
+pub mod hex;
+pub mod hex_tile;
+pub mod idle;
+pub mod marketplace;
+pub mod plant;
+pub mod player;
+pub mod progression;
+pub mod teleport;
+pub mod terrain;
+pub mod ui;
+pub mod vehicle;
+pub mod voice;
+
 /// Simple RGBA color (0.0–1.0 per channel)
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Color {
@@ -90,9 +106,8 @@ pub struct Plant {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PlantType {
     Wheat,
-    Tomato,
+    Corn,
     Tree,
-    Sunflower,
     RareHerb,
 }
 
@@ -126,6 +141,38 @@ impl Vehicle {
             Vehicle::Boat => 4.0,
             Vehicle::Airplane => 10.0,
         }
+    }
+
+    pub fn purchase_cost(&self) -> u64 {
+        match self {
+            Vehicle::None => 0,
+            Vehicle::Bicycle => 100,
+            Vehicle::Scooter => 500,
+            Vehicle::Motorcycle => 2000,
+            Vehicle::Boat => 5000,
+            Vehicle::Airplane => 20000,
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Vehicle::None => "None",
+            Vehicle::Bicycle => "Bicycle",
+            Vehicle::Scooter => "Scooter",
+            Vehicle::Motorcycle => "Motorcycle",
+            Vehicle::Boat => "Boat",
+            Vehicle::Airplane => "Airplane",
+        }
+    }
+
+    pub fn all_vehicles() -> &'static [Vehicle] {
+        &[
+            Vehicle::Bicycle,
+            Vehicle::Scooter,
+            Vehicle::Motorcycle,
+            Vehicle::Boat,
+            Vehicle::Airplane,
+        ]
     }
 }
 

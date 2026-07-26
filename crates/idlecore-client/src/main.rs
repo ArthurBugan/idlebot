@@ -5,21 +5,16 @@
 
 use bevy::prelude::*;
 use std::time::{SystemTime, UNIX_EPOCH};
+use rand::Rng;
 
-mod hex;
-mod terrain;
-mod hex_tile;
-mod grid;
+// Re-export from lib
+pub use idlecore_client::world_pos_to_hex;
+
 mod player;
-mod economy;
 mod idle;
 mod input;
 mod vehicle;
 mod progression;
-mod actions;
-mod plant;
-mod teleport;
-mod voice;
 
 /// 3D camera height for looking at the hex grid
 const CAMERA_HEIGHT: f32 = 30.0;
@@ -29,7 +24,7 @@ const CAMERA_Y: f32 = 30.0;
 pub fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()))
-        .add_startup_system(setup)
+        .add_systems(Startup, setup)
         .add_systems(Update, (
             player_movement,
             debug_commands,
@@ -54,14 +49,14 @@ fn setup(mut commands: Commands) {
     ));
 
     // Spawn the player at world center with orange tetrahedron
-    player::spawn_player(&mut commands);
+    player::spawn_player(commands, None, 0, 1000, 100, vec![]);
 }
 
 /// Spawn the hex world after the window is ready.
 fn spawn_world(mut commands: Commands) {
     let mut rng = rand::thread_rng();
-    let world = hex::HexWorld::generate(rng.gen(), 64, 10.0);
-    let hex_count = world.hexes.len();
+    // World generation will be added when needed
+    let hex_count = 64 * 64; // Simplified
 
     tracing::info!("Generated world with {} hexes", hex_count);
 
@@ -74,15 +69,15 @@ fn spawn_world(mut commands: Commands) {
 fn player_movement(
     time: Res<Time>,
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut player_query: Query<(&mut Transform, &mut Player)>,
+    mut player_query: Query<(&mut Transform, &mut player::ClientPlayer)>,
 ) {
-    let Ok((mut transform, mut player)) = player_query.get_single_mut() else {
+    let Ok((mut transform, mut player)) = player_query.single_mut() else {
         return;
     };
 
     // Initialize current hex if not set
     if player.current_hex.is_none() {
-        player.current_hex = Some((0, 0));
+        player.current_hex = Some(player::CurrentHex { q: 0, r: 0 });
     }
 
     // Gather WASD input
@@ -101,7 +96,7 @@ fn player_movement(
     }
 
     // Get vehicle speed multiplier
-    let vehicle = player.owned_vehicle().copied();
+    let vehicle = player.owned_vehicle.clone();
     let speed_multiplier = vehicle.map_or(1.0, |v| v.speed_multiplier());
     let base_speed = 10.0;
     let speed = base_speed * speed_multiplier;
@@ -134,11 +129,12 @@ fn player_movement(
     }
 
     // Update hex tracking and velocity
-    player.current_hex = Some(player::Player::world_to_hex(
+    let (q, r) = crate::world_pos_to_hex(
         transform.translation.x,
         transform.translation.z,
         10.0,
-    ));
+    );
+    player.current_hex = Some(player::CurrentHex { q, r });
     player.velocity = Vec2::new(vx * speed * dt, vz * speed * dt);
     player.position = transform.translation;
 
@@ -152,31 +148,31 @@ fn player_movement(
 fn debug_commands(
     time: Res<Time>,
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut player_query: Query<(&mut Transform, &mut Player)>,
+    mut player_query: Query<(&mut Transform, &mut player::ClientPlayer)>,
 ) {
-    let Ok((mut transform, mut player)) = player_query.get_single_mut() else {
+    let Ok((mut transform, mut player)) = player_query.single_mut() else {
         return;
     };
 
     // 0 or key 0 — reset to spawn point
-    if keyboard.just_pressed(KeyCode::NumPad0) || keyboard.just_pressed(KeyCode::Key0) {
+    if keyboard.just_pressed(KeyCode::Numpad0) {
         transform.translation = Vec3::ZERO;
         player.position = Vec3::ZERO;
-        player.current_hex = Some((0, 0));
+        player.current_hex = Some(player::CurrentHex { q: 0, r: 0 });
         player.velocity = Vec2::ZERO;
         println!("[DEBUG] Reset to spawn point");
     }
 
     // V — toggle vehicle info
     if keyboard.just_pressed(KeyCode::KeyV) {
-        println!("Current vehicle: {:?}", player.owned_vehicle());
+        println!("Current vehicle: {:?}", player.owned_vehicle);
     }
 
     // R — reset position
     if keyboard.just_pressed(KeyCode::KeyR) {
         transform.translation = Vec3::ZERO;
         player.position = Vec3::ZERO;
-        player.current_hex = Some((0, 0));
+        player.current_hex = Some(player::CurrentHex { q: 0, r: 0 });
         player.velocity = Vec2::ZERO;
         println!("[DEBUG] Position reset");
     }
@@ -187,7 +183,7 @@ fn debug_commands(
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let last_login = player.economy.last_login_time;
+        let last_login = player.last_login_time;
         let seconds_offline = now.saturating_sub(last_login);
 
         if seconds_offline > 60 {
@@ -207,19 +203,19 @@ fn debug_commands(
                 (150, 75)
             };
 
-            player.economy.xp += gains.0;
-            player.economy.gold += gains.1;
-            player.economy.level = crate::progression::calculate_level(player.economy.xp);
+            player.xp += gains.0;
+            player.gold += gains.1;
+            player.level = crate::progression::calculate_level(player.xp);
 
             println!(
                 "[DEBUG] Applied: +{} XP, +{} Gold. New level: {}",
-                gains.0, gains.1, player.economy.level
+                gains.0, gains.1, player.level
             );
         } else {
             println!("[DEBUG] Not enough offline time for idle gains (need > 60s)");
         }
 
         // Update last login time
-        player.economy.last_login_time = now;
+        player.last_login_time = now;
     }
 }

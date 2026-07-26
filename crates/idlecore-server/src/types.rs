@@ -1,11 +1,11 @@
 //! Types para o servidor SpacetimeDB
 
 use spacetimedb::table;
-use serde::{Deserialize, Serialize};
 
 /// Struct pra representar um jogador no banco
-#[table(name = "player", public)]
+#[table(accessor = player, public)]
 pub struct PlayerDbEntry {
+    #[primary_key]
     pub address: String,
     pub position_x: f32,
     pub position_y: f32,
@@ -23,8 +23,9 @@ pub struct PlayerDbEntry {
 }
 
 /// Struct pra representar um hexágono no banco
-#[table(name = "hex_tile", public)]
+#[table(accessor = hex_tile, public)]
 pub struct HexTileDbEntry {
+    #[primary_key]
     pub hex_id: u64,
     pub center_x: f32,
     pub center_y: f32,
@@ -35,8 +36,9 @@ pub struct HexTileDbEntry {
 }
 
 /// Struct pra representar um channel de voz
-#[table(name = "voice_channel", public)]
+#[table(accessor = voice_channel, public)]
 pub struct VoiceChannelDbEntry {
+    #[primary_key]
     pub hex_id: u64,
     pub players: String,
     pub created_at: u64,
@@ -44,8 +46,9 @@ pub struct VoiceChannelDbEntry {
 }
 
 /// Struct pra representar um listing de mercado
-#[table(name = "market_listing", public)]
+#[table(accessor = market_listing, public)]
 pub struct MarketListingDbEntry {
+    #[primary_key]
     pub listing_id: u64,
     pub seller: String,
     pub title: String,
