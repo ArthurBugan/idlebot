@@ -1,6 +1,7 @@
 use alloy::primitives::{Address, B256};
 use alloy::signers::Signature;
 use anyhow::{Context, Result};
+use std::str::FromStr;
 
 /// Verify a wallet signature
 /// Returns Ok(()) if signature is valid for the given message_hash
@@ -22,21 +23,16 @@ pub fn verify_signature(
         return Ok(false);
     }
 
-    let sig = Signature::from_bytes_and_parity(
-        &sig_bytes[..64],
-        sig_bytes[64] != 0,
-    )
-    .context("Invalid signature")?;
+    // In alloy 2.1.x+, use Signature::try_from for fixed-size bytes
+    let sig = Signature::try_from(&sig_bytes[..65])
+        .context("Invalid signature")?;
 
     // Verify: signers address from signature should match
     let msg_b256 = B256::from_str(message_hash)
         .context("Invalid message hash")?;
 
-    // In alloy 2.1.x, recover_address_from_msg takes &[u8]
-    // We need to hash the message first with keccak256
-    let msg_hash_bytes = alloy::primitives::keccak256(&msg_b256.0);
     let recovered = sig
-        .recover_address_from_msg(&msg_hash_bytes)
+        .recover_address_from_msg(&msg_b256)
         .context("Failed to recover address")?;
 
     Ok(recovered == expected_addr)

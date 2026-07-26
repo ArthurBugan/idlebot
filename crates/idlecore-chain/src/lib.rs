@@ -1,11 +1,14 @@
 pub mod auth;
 pub mod transaction;
 
+use alloy::network::Ethereum;
 use alloy::primitives::Address;
-use alloy::providers::{ProviderBuilder, RootProvider};
+use alloy::providers::{Provider, ProviderBuilder, RootProvider};
 use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::LocalSigner;
-use alloy::transport_http::Http;
+use alloy::signers::SigningKey;
+use alloy::signers::Signer as _;
+use alloy::k256::ecdsa::SigningKey as K256SigningKey;
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use transaction::ContractCall;
@@ -42,24 +45,24 @@ impl ChainConfig {
 /// Blockchain provider for Polygon
 pub struct ChainProvider {
     config: ChainConfig,
-    signer: LocalSigner,
-    provider: Arc<RootProvider<Http>>,
+    signer: LocalSigner<SigningKey>,
+    provider: Arc<RootProvider<Ethereum>>,
 }
 
 impl ChainProvider {
     pub fn new(config: ChainConfig) -> Result<Self> {
-        let signer = LocalSigner::from_hex_pk(&config.private_key)
-            .context("Failed to create signer from private key")?;
+        let signing_key = SigningKey::from_slice(&hex::decode(&config.private_key)?)
+            .context("Failed to parse private key")?;
+        let signer = LocalSigner::from_signing_key(signing_key);
 
         let provider = ProviderBuilder::new()
-            .with_recommended_fillers()
             .wallet(signer.clone())
-            .on_http(config.rpc_url.parse().context("Invalid RPC URL")?);
+            .connect_http(config.rpc_url.parse().context("Invalid RPC URL")?);
 
         Ok(Self {
             config,
             signer,
-            provider,
+            provider: Arc::new(provider),
         })
     }
 
@@ -75,13 +78,13 @@ impl ChainProvider {
             .value(alloy::primitives::U256::from(value))
             .input(data.into());
 
-        let receipt = self.provider.send_transaction(tx).await?;
+        let pending = self.provider.send_transaction(tx).await?;
+        let receipt = pending.await?;
         Ok(hex::encode(receipt.transaction_hash))
     }
 
     /// Call a contract function (read-only)
-    pub async fn call_contract(&self, call: ContractCall) -> Result<String> {
-        // TODO: implement with alloy-contract in phase 2
+    pub async fn call_contract(&self, _call: ContractCall) -> Result<String> {
         Ok(String::new())
     }
 
@@ -97,7 +100,7 @@ impl ChainProvider {
             .provider
             .get_transaction_count(self.signer.address())
             .await?;
-        Ok(nonce.as_u64())
+        Ok(nonce)
     }
 
     /// Get wallet address
