@@ -1,0 +1,35 @@
+# IdleBot — Git Ignore
+
+# Rust / Bevy
+target/
+Cargo.lock
+.DS_Store
+
+# SpacetimeDB
+stdb_*
+spacetime.db
+spacetime.log
+*.whl
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# Contracts
+contracts/artifacts/
+contracts/cache/
+
+# Assets
+assets/.import/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+*.pyc

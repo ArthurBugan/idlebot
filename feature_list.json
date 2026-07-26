@@ -1,0 +1,13 @@
+{
+  "project": "idlebot",
+  "description": "Idle Tamagotchi × Voice Chat × Code Marketplace on a 3D Hex Grid",
+  "proposals": ["PROPOSAL.md"],
+  "features": [],
+  "next_id": 1,
+  "stats": {
+    "total": 0,
+    "pending": 0,
+    "in_progress": 0,
+    "done": 0
+  }
+}
