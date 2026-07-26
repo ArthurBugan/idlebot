@@ -1,15 +1,12 @@
 # IdleBot — Design Specification
 
-> Idle Tamagotchi × Voice Chat × Code Marketplace on a 3D Hex Grid
+> **Idle Tamagotchi × Voice Chat × Code Marketplace on a 3D Hex Grid**
 
 ---
 
 ## 1. Concept
 
-IdleBot is a multiplayer idle game where you manage a Tamagotchi-like character
-that grows XP and Gold even when you're offline. The game world is a shared 3D
-hex grid where players meet, chat by voice, farm, clean pollution, and trade
-AI agents and code templates on an on-chain marketplace.
+IdleBot is a multiplayer idle game where you manage a Tamagotchi-like character that grows XP and Gold even when you're offline. The game world is a shared 3D hex grid where players meet, chat by voice, farm, clean pollution, and trade AI agents and code templates on an on-chain marketplace.
 
 **Core loop:** Idle → Collect → Interact → Trade → Grow.
 
@@ -49,8 +46,7 @@ Gains are calculated server-side via a SpacetimeDB scheduled function (every 5 m
 | Clear Terrain   | 15          | —            | 5   | Removes obstacle                |
 | Publish Template| 50          | Listing on market | — | Requires GitHub URL            |
 
-**Economy note:** Planting costs 10G, harvesting returns 15G — a net +5G per cycle
-plus 15 XP. Planting drives the idle loop forward.
+**Economy note:** Planting costs 10G, harvesting returns 15G — a net +5G per cycle plus 15 XP. Planting drives the idle loop forward.
 
 ### 2.4 Plant Growth
 
@@ -70,8 +66,7 @@ plus 15 XP. Planting drives the idle loop forward.
 | Boat          | 4.0x            | 2,000     |
 | Airplane      | 10.0x           | 10,000    |
 
-All vehicles are electric (thematic consistency with conservation).
-Speed affects movement speed on the hex grid.
+All vehicles are electric (thematic consistency with conservation). Speed affects movement speed on the hex grid.
 
 ### 2.6 Teleport
 
@@ -147,7 +142,7 @@ A decentralized marketplace for AI agents, code templates, and content snippets.
 ### 4.4 Content Types
 
 - GitHub repositories (any content: agents, code, templates, snippets)
--作者可自定义描述和价格
+- Authors can customize description and price
 - Listings expire after 30 days if not sold
 
 ### 4.5 Fees
@@ -243,6 +238,8 @@ A decentralized marketplace for AI agents, code templates, and content snippets.
 | Seasonal events | Backlog |
 | Timeline | Exploratory — no target date |
 
+---
+
 ## 8. Backlog (Future)
 
 - Seasonal events (e.g. "Spring Cleanup" with double XP)
@@ -295,5 +292,5 @@ pub fn calculate_level(total_xp: u64) -> u32 {
 
 ---
 
-**Last updated:** 2026-07-25
+**Last updated:** 2026-07-25  
 **Status:** Draft — waiting on Ferris review

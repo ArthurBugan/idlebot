@@ -1,68 +1,123 @@
-# IdleBot — SDD Template
+# IdleBot
 
 > Idle Tamagotchi × Voice Chat × Code Marketplace on a 3D Hex Grid
 
-## Quick Start
+## Overview
 
-```bash
-cd /home/raspberry/idlebot
-make spec NAME=001-your-feature
-```
+IdleBot is a multiplayer idle game where you manage a Tamagotchi-like character that grows XP and Gold even when you're offline. The game world is a shared 3D hex grid where players meet, chat by voice, farm, clean pollution, and trade AI agents and code templates on an on-chain marketplace.
 
-## Estrutura
+**Core loop:** Idle → Collect → Interact → Trade → Grow.
+
+## Features
+
+- 🎮 **Idle Progression** — XP and Gold accumulate offline (up to 24h)
+- 🌍 **3D Hex Grid World** — Shared multiplayer environment with terrain types
+- 🎤 **Voice Chat** — Proximity-based voice channels (within hex)
+- 🌱 **Farming** — Plant, grow, and harvest resources
+- 🚗 **Vehicles** — Bicycle, Scooter, Motorcycle, Boat, Airplane
+- 💰 **Economy** — Gold, USDT, Eco Points
+- 🛒 **Marketplace** — Trade AI agents and code templates via Polygon
+- 🔐 **Wallet Auth** — Polygon signature login (no passwords)
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Client | Bevy 0.15 (Rust) |
+| Backend | SpacetimeDB 2.7 |
+| Blockchain | Alloy + Polygon |
+| Voice | str0m 0.21 |
+| Language | Rust 2021 |
+
+## Project Structure
 
 ```
 idlebot/
-├── crates/                   # Rust crates (Bevy client, SpacetimeDB server, etc.)
-├── contracts/                # Solidity smart contracts (Polygon)
-├── assets/                   # Low-poly assets (Phase 2+)
-├── scripts/                  # Build and utility scripts
-├── specs/                    # SDD specifications
-│   ├── constitution.md
-│   ├── README.md
-│   └── 001-<slug>/
-├── docs/decisions/           # ADRs
-├── PROPOSAL.md               # Design specification completa
-├── KANBAN.md                 # Progresso e tarefas
-├── Cargo.toml                # Workspace root
-├── Makefile
-├── .gitignore
-└── LICENSE
+├── crates/
+│   ├── idlebot-core/          # Identity, XP, gold, level calc
+│   ├── idlebot-client/        # Bevy 3D rendering, input, voice
+│   ├── idlebot-server/        # SpacetimeDB server modules
+│   └── idlebot-chain/         # Polygon wallet auth, marketplace
+├── contracts/                 # Solidity smart contracts
+├── assets/                    # Low-poly assets (Phase 2+)
+├── scripts/                   # Build and utility scripts
+└── specs/                     # SDD specifications
 ```
 
-## Philosophy
+## Development
 
-> Specs são documentos vivos, refinados conforme você aprende.
-> Força você a pensar antes de digitar. Dá ao future-you o *why* que o código nunca carrega.
+### Prerequisites
 
-## Stack
+- Rust 1.70+ (2021 edition)
+- SpacetimeDB CLI
+- Polygon testnet wallet
 
-| Layer | Technology | Role |
-|-------|-----------|------|
-| Client | Bevy 0.15 (Rust) | 3D game rendering, input, voice |
-| Backend | SpacetimeDB 2.7 | Real-time multiplayer, world state |
-| Blockchain | Alloy + Polygon | Wallet auth, marketplace |
-| Voice | str0m 0.21 | WebRTC voice chat |
+### Build
 
-## Workflow
+```bash
+cd crates/idlebot-core
+cargo build
 
+cd crates/idlebot-client
+cargo build
+
+cd crates/idlebot-server
+cargo build
 ```
-[Human] → SPEC (WHAT) → PLAN (HOW) → TASKS (WHEN) → CODE (DO) → REVIEW → MERGE
+
+### Run
+
+```bash
+# Start SpacetimeDB
+spacetime start
+
+# Run server module
+cd crates/idlebot-server
+cargo run
+
+# Run client
+cd crates/idlebot-client
+cargo run
 ```
 
-## Regras Fundamentais
+## Documentation
 
-1. **Não há código sem spec** para trabalho não-trivial (≥20 linhas ou mudança em contrato público)
-2. **Testes não são opcionais** para novo comportamento — ≥1 assert por requisito
-3. **Secrets nunca no código** — `.env` (gitignored) local, secret manager em produção
-4. **Falhe alto, não silenciosamente**
-5. **Contratos públicos são imutáveis** sem major version bump + CHANGELOG
-6. **Não pule fases** — spec → plan → tasks → implement → review
+- **[PROPOSAL.md](PROPOSAL.md)** — Complete design specification
+- **[KANBAN.md](KANBAN.md)** — Task tracking and progress
+- **[specs/constitution.md](specs/constitution.md)** — Development principles
 
-## Compatibilidade
+## Roadmap
 
-Claude Code · Cursor · GitHub Copilot · Gemini CLI · Amazon Kiro
+### Phase 1: Core Loop (MVP) ✅ In Progress
 
-## Licença
+- [x] Project structure
+- [ ] SpacetimeDB tables + server modules
+- [ ] Hex grid generation + rendering
+- [ ] Player spawn + WASD movement
+- [ ] Idle gains calculation
+- [ ] Basic interactions (plant/harvest/clean)
+- [ ] Voice chat
+- [ ] Wallet login
+
+### Phase 2: Marketplace
+
+- [ ] Smart contract deployment
+- [ ] Marketplace UI
+- [ ] USDT integration
+
+### Phase 3: Content & Polish
+
+- [ ] Vehicle system
+- [ ] Cosmetics
+- [ ] Minimap + global map
+- [ ] Teleport
+- [ ] Asset polish
+
+## License
 
 MIT
+
+---
+
+**Status:** MVP Development  
+**Last Updated:** 2026-07-25
