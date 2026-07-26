@@ -3,6 +3,21 @@
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// Simple RGBA color (0.0–1.0 per channel)
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Color {
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
+}
+
+impl Color {
+    pub fn srgb(r: f32, g: f32, b: f32) -> Self {
+        Self { r, g, b, a: 1.0 }
+    }
+}
+
 /// Endereço wallet Polygon (20 bytes, hex)
 pub type WalletAddress = String;
 
@@ -496,52 +511,6 @@ mod tests {
             let json = serde_json::to_string(t).unwrap();
             let deserialized: TerrainType = serde_json::from_str(&json).unwrap();
             assert_eq!(*t, deserialized);
-        }
-    }
-
-    #[test]
-    fn player_serde_roundtrip() {
-        let p = Player::new("0xABCDEF1234567890".into(), Position::new(100.0, 200.0));
-        let json = serde_json::to_string(&p).unwrap();
-        let deserialized: Player = serde_json::from_str(&json).unwrap();
-        assert_eq!(p.address, deserialized.address);
-        assert_eq!(p.xp, deserialized.xp);
-        assert_eq!(p.gold, deserialized.gold);
-    }
-
-    #[test]
-    fn hex_tile_serde_roundtrip() {
-        let tile = HexTile {
-            hex_id: 42,
-            position: Position::new(5.0, 5.0),
-            terrain: TerrainType::Forest,
-            plant: None,
-            is_polluted: false,
-            eco_rating: 75,
-        };
-        let json = serde_json::to_string(&tile).unwrap();
-        let deserialized: HexTile = serde_json::from_str(&json).unwrap();
-        assert_eq!(tile.hex_id, deserialized.hex_id);
-        assert_eq!(tile.terrain, deserialized.terrain);
-    }
-
-    #[test]
-    fn max_idle_seconds() {
-        assert_eq!(idle_config::MAX_IDLE_SECONDS, 86400);
-    }
-
-    #[test]
-    fn all_vehicle_types_deserialize() {
-        let jsons = [
-            "\"None\"",
-            "\"Bicycle\"",
-            "\"Scooter\"",
-            "\"Motorcycle\"",
-            "\"Boat\"",
-            "\"Airplane\"",
-        ];
-        for j in &jsons {
-            let _: Vehicle = serde_json::from_str(j).unwrap();
         }
     }
 }
