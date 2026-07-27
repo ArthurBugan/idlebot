@@ -1,4 +1,3 @@
-/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 //! Core types shared between client, server, and blockchain.
 //!
 //! This crate is intentionally Bevy-free — terrain, hex math, and grid

@@ -1,4 +1,3 @@
-/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 //! Player component and spawning
 //!
 //! Orange tetrahedron avatar as placeholder for the Tamagotchi character.
