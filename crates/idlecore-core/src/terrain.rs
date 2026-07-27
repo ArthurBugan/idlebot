@@ -1,5 +1,6 @@
+/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 //! Terrain types for IdleBot hex grid.
-//! Spec: PROPOSAL.md section 3.2
+//! Spec probabilities: Grass 50%, Forest 20%, Water 8%, City 10%, Desert 7%, Polluted 5%.
 
 use rand::Rng;
 
@@ -16,18 +17,19 @@ pub enum TerrainType {
 }
 
 impl TerrainType {
-    /// Create a random terrain type
+    /// Create a random terrain type matching spec distribution.
+    /// Probabilities: Grass 50%, Forest 20%, Water 8%, City 10%, Desert 7%, Polluted 5%
     pub fn from_random<R: Rng>(rng: &mut R) -> Self {
         let roll = rng.gen_range(0..100);
-        if roll < 40 {
+        if roll < 50 {
             TerrainType::Grass
-        } else if roll < 60 {
+        } else if roll < 70 {
             TerrainType::Forest
-        } else if roll < 75 {
+        } else if roll < 78 {
             TerrainType::Water
-        } else if roll < 90 {
+        } else if roll < 88 {
             TerrainType::City
-        } else if roll < 98 {
+        } else if roll < 95 {
             TerrainType::Desert
         } else {
             TerrainType::Polluted

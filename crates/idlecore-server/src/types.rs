@@ -58,3 +58,13 @@ pub struct MarketListingDbEntry {
     pub published_at: u64,
     pub sold: bool,
 }
+
+/// Struct pra rastrear idle gains pendentes de cada jogador
+#[table(accessor = idle_gains, public)]
+pub struct IdleGainsEntry {
+    #[primary_key]
+    pub player_id: String,
+    pub pending_xp: u64,
+    pub pending_gold: u64,
+    pub last_calculated_at: u64,
+}

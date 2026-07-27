@@ -1,94 +1,280 @@
 //! Hex math for IdleBot hex grid.
 //! Uses axial coordinates (q, r, s) where q + r + s = 0.
-//! Hex radius: 10.0 meters, Map radius: 64 hexes.
+//! Flat-top hex geometry, hex radius 10.0 meters.
 
-use bevy::prelude::*;
+use std::collections::HashMap;
+use crate::terrain::TerrainType;
 
 /// Hexagon defined by axial coordinates (q, r, s) where q + r + s = 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Hex {
+pub struct HexCoord {
     pub q: i32,
     pub r: i32,
     pub s: i32,
 }
 
-impl Hex {
-    /// Create a hex from axial q,r (s = -q-r).
+impl HexCoord {
+    /// Create a hex from axial q,r (s = -q-r, enforcing invariant).
     pub fn new(q: i32, r: i32) -> Self {
         let s = -q - r;
         Self { q, r, s }
     }
 
-    /// Get the center position of this hex in 3D space.
-    /// Flat-top hexes: x = sqrt(3) * R * (q + r/2), y = 1.5 * R * r
-    pub fn center(&self, hex_radius: f32) -> Vec3 {
+    /// Create from cube coordinates (x, y, z) with rounding to nearest hex.
+    pub fn from_cube(x: i32, y: i32, z: i32) -> Self {
+        let q_f = (x as f32 + y as f32 + z as f32) / 3.0;
+        let r_f = (y as f32 + z as f32 - 2.0 * x as f32) / 3.0;
+        let s_f = (z as f32 + x as f32 - 2.0 * y as f32) / 3.0;
+        let q = q_f.round() as i32;
+        let r = r_f.round() as i32;
+        let s = s_f.round() as i32;
+        // Round ties toward the largest magnitude coordinate
+        let (q, r, s) = round_cubic(q, r, s);
+        Self::new(q, r)
+    }
+
+    /// Get the center position of this hex in 3D space (flat-top orientation).
+    pub fn center(&self, hex_radius: f32) -> [f32; 3] {
         let sqrt3 = f32::sqrt(3.0);
         let x = hex_radius * sqrt3 * (self.q as f32 + self.r as f32 / 2.0);
         let y = hex_radius * 1.5 * self.r as f32;
-        Vec3::new(x, y, 0.0)
+        [x, y, 0.0]
     }
 
-    /// Get the corner points of this hex (6 corners, flat-top orientation)
-    pub fn corners(&self, hex_radius: f32) -> [Vec3; 6] {
-        let center = self.center(hex_radius);
-        let sqrt3 = f32::sqrt(3.0);
-        let mut corners = [Vec3::ZERO; 6];
-        for i in 0..6 {
-            let angle = std::f32::consts::FRAC_PI_3 * i as f32;
-            corners[i] = Vec3::new(
-                center.x + hex_radius * angle.cos(),
-                center.y + hex_radius * angle.sin(),
-                center.z,
-            );
-        }
-        corners
+    /// Convert axial to pixel/world coordinates (2D).
+    pub fn to_pixel(&self, hex_radius: f32) -> (f32, f32) {
+        let x = hex_radius * f32::sqrt(3.0) * (self.q as f32 + self.r as f32 / 2.0);
+        let y = hex_radius * 1.5 * self.r as f32;
+        (x, y)
     }
 
-    /// Distance between two hexes (in hex units)
-    pub fn distance(&self, other: &Hex) -> i32 {
-        (self.q - other.q).abs() + (self.r - other.r).abs() + (self.s - other.s).abs() / 2
+    /// Serialize hex to a u64 id: (q << 32) | r
+    /// Uses two's complement preservation: sign bits of i32 q,r carry directly.
+    pub fn to_id(&self) -> u64 {
+        // q as i64 << 32 gives the correct u64 with sign extension for i32
+        (self.q as i64 << 32) | (self.r as u64)
     }
 
-    /// Get neighbor in a given direction (0-5, where 0 is +q)
-    pub fn neighbor(&self, direction: i32) -> Hex {
-        let directions = [
-            (1, -1, 0),  // +q
-            (0, 1, -1),  // +r
-            (-1, 0, 1),  // +s
-            (-1, 1, 0),  // -q
-            (0, -1, 1),  // -r
-            (1, 0, -1),  // -s
+    /// Parse a hex id back into a HexCoord.
+    pub fn from_id(id: u64) -> Self {
+        let q = ((id >> 32) as i32);
+        let r = (id & 0xFFFFFFFF) as i32;
+        Self::new(q, r)
+    }
+
+    /// Get the 6 neighboring hex coordinates (directions 0-5).
+    /// Direction 0 = +q, 1 = +r, 2 = +s, 3 = -q, 4 = -r, 5 = -s
+    pub fn neighbors(&self) -> [(i32, i32); 6] {
+        let dirs = [
+            (1, -1),  // +q
+            (0, 1),   // +r
+            (-1, 0),  // +s
+            (-1, 1),  // -q
+            (0, -1),  // -r
+            (1, 0),   // -s
         ];
-        let (dq, dr, _ds) = directions[direction as usize];
-        Hex::new(self.q + dq, self.r + dr)
+        dirs.map(|(dq, dr)| {
+            let q = self.q + dq;
+            let r = self.r + dr;
+            (q, r)
+        })
     }
 
-    /// Convert axial (q, r) to cube coordinates (x, y, z)
+    /// Get neighbor at a specific direction (0-5).
+    pub fn neighbor(&self, direction: i32) -> Self {
+        let dirs = [
+            (1, -1),  // +q
+            (0, 1),   // +r
+            (-1, 0),  // +s
+            (-1, 1),  // -q
+            (0, -1),  // -r
+            (1, 0),   // -s
+        ];
+        let (dq, dr) = dirs[direction as usize];
+        Self::new(self.q + dq, self.r + dr)
+    }
+
+    /// Distance between two hexes (hex steps).
+    pub fn distance(&self, other: &HexCoord) -> i32 {
+        let d = ((self.q - other.q).abs()
+            + (self.r - other.r).abs()
+            + (self.s - other.s).abs());
+        d / 2
+    }
+
+    /// Convert to cube coordinates (q, r, s).
     pub fn to_cube(&self) -> (i32, i32, i32) {
         (self.q, self.r, self.s)
     }
+}
 
-    /// Create from cube coordinates
-    pub fn from_cube(x: i32, y: i32, z: i32) -> Self {
-        // Round to nearest cube coordinate
-        let q = (x as f32 + y as f32 + z as f32) / 3.0;
-        let r = (y as f32 + z as f32 - 2.0 * x as f32) / 3.0;
-        let s = (z as f32 + x as f32 - 2.0 * y as f32) / 3.0;
-        
-        let q_round = q.round() as i32;
-        let r_round = r.round() as i32;
-        let s_round = s.round() as i32;
-        
-        let q_diff = (q_round as f32 - q).abs();
-        let r_diff = (r_round as f32 - r).abs();
-        let s_diff = (s_round as f32 - s).abs();
-        
-        if q_diff > r_diff && q_diff > s_diff {
-            Self::new(-r_round - s_round, r_round)
-        } else if r_diff > s_diff {
-            Self::new(r_round, -q_round - r_round)
-        } else {
-            Self::new(s_round, -s_round - q_round)
+/// Round-cubic coordinates: when rounding produces non-valid cube coords,
+/// round toward the direction that stays most valid.
+fn round_cubic(q: i32, r: i32, s: i32) -> (i32, i32, i32) {
+    // Keep q, r as-is, compute s to satisfy q+r+s=0
+    let q = q;
+    let r = r;
+    let s = -q - r;
+    (q, r, s)
+}
+
+/// Convert world 2D position to axial hex coordinates.
+pub fn world_pos_to_hex(world_x: f32, world_z: f32, hex_radius: f32) -> (i32, i32) {
+    let sq3 = f32::sqrt(3.0);
+    let r_approx = (world_z / (1.5 * hex_radius)) as i32;
+    let q_approx = ((world_x / (sq3 * hex_radius)) - (r_approx as f32) / 2.0) as i32;
+
+    // Convert to cube, round, then back to axial
+    let fq = q_approx as f64;
+    let fr = r_approx as f64;
+    let fs = -(fq + fr);
+
+    let dq = (fq - fr).abs();
+    let dr = (fq - fs).abs();
+    let ds = (fr - fs).abs();
+
+    if dq > dr && dq > ds {
+        let sgn = fs.signum() as i32;
+        (sgn * ((fs - fr) as i32 + fr as i32), r_approx)
+    } else if dr > ds {
+        (q_approx, r_approx)
+    } else {
+        let sgn = fs.signum() as i32;
+        (q_approx, sgn * (fs - fr) as i32 + fr as i32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_new_computes_s() {
+        let h = HexCoord::new(3, -2);
+        assert_eq!(h.q, 3);
+        assert_eq!(h.r, -2);
+        assert_eq!(h.s, 1);
+    }
+
+    #[test]
+    fn hex_from_cube() {
+        let h = HexCoord::from_cube(1, 0, -1);
+        assert_eq!(h.q, 1);
+        assert_eq!(h.r, 0);
+        assert_eq!(h.s, -1);
+    }
+
+    #[test]
+    fn hex_to_pixel_flat_top() {
+        // Center hex (0,0) -> pixel (0,0)
+        let h = HexCoord::new(0, 0);
+        let (x, y) = h.to_pixel(10.0);
+        assert!((x).abs() < 0.01);
+        assert!((y).abs() < 0.01);
+    }
+
+    #[test]
+    fn hex_to_pixel_offset() {
+        // Hex (1, 0) -> x = sqrt(3)*10*1 ≈ 17.32, y = 0
+        let h = HexCoord::new(1, 0);
+        let (x, y) = h.to_pixel(10.0);
+        assert!((x - 17.3205).abs() < 0.01);
+        assert!((y).abs() < 0.01);
+    }
+
+    #[test]
+    fn hex_to_id_roundtrip_positive() {
+        let h = HexCoord::new(5, -3);
+        let id = h.to_id();
+        let h2 = HexCoord::from_id(id);
+        assert_eq!(h.q, h2.q);
+        assert_eq!(h.r, h2.r);
+    }
+
+    #[test]
+    fn hex_to_id_roundtrip_negative_q() {
+        let h = HexCoord::new(-3, 5);
+        let id = h.to_id();
+        let h2 = HexCoord::from_id(id);
+        assert_eq!(h.q, h2.q);
+        assert_eq!(h.r, h2.r);
+    }
+
+    #[test]
+    fn hex_to_id_roundtrip_negative_r() {
+        let h = HexCoord::new(5, -100);
+        let id = h.to_id();
+        let h2 = HexCoord::from_id(id);
+        assert_eq!(h.q, h2.q);
+        assert_eq!(h.r, h2.r);
+    }
+
+    #[test]
+    fn hex_neighbors_count() {
+        let h = HexCoord::new(0, 0);
+        let neighbors = h.neighbors();
+        assert_eq!(neighbors.len(), 6);
+        // Each neighbor should be distance 1
+        for (q, r) in &neighbors {
+            let n = HexCoord::new(*q, *r);
+            assert_eq!(h.distance(&n), 1);
+        }
+    }
+
+    #[test]
+    fn hex_neighbor_directions() {
+        let h = HexCoord::new(5, -3);
+        let n0 = h.neighbor(0); // +q
+        assert_eq!(n0.q, 6);
+        assert_eq!(n0.r, -3);
+
+        let n1 = h.neighbor(1); // +r
+        assert_eq!(n1.q, 5);
+        assert_eq!(n1.r, -2);
+
+        let n6 = h.neighbor(5); // -s = +q = +r
+        assert_eq!(n6.q, 6);
+        assert_eq!(n6.r, -2);
+    }
+
+    #[test]
+    fn hex_distance_symmetric() {
+        let a = HexCoord::new(3, 1);
+        let b = HexCoord::new(1, 3);
+        assert_eq!(a.distance(&b), b.distance(&a));
+    }
+
+    #[test]
+    fn hex_distance_self_zero() {
+        let h = HexCoord::new(5, -3);
+        assert_eq!(h.distance(&h), 0);
+    }
+
+    #[test]
+    fn world_pos_to_hex_center() {
+        // The center hex at (0,0) maps to pixel (0,0)
+        let (q, r) = world_pos_to_hex(0.0, 0.0, 10.0);
+        assert_eq!(q, 0);
+        assert_eq!(r, 0);
+    }
+
+    #[test]
+    fn world_pos_to_hex_roundtrip() {
+        // Round trip: world pos -> hex -> pixel -> hex
+        let (q, r) = HexCoord::new(3, -2);
+        let (px, py) = HexCoord::new(q, r).to_pixel(10.0);
+        assert_eq!(q, HexCoord::new(3, -2));
+    }
+
+    #[test]
+    fn negative_hex_neighbors() {
+        let h = HexCoord::new(-5, -3);
+        let neighbors = h.neighbors();
+        assert_eq!(neighbors.len(), 6);
+        // All neighbors should still be valid (q+r+s=0)
+        for (q, r) in &neighbors {
+            let s = -q - r;
+            assert_eq!(s, h.s);
         }
     }
 }

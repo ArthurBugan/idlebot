@@ -1,14 +1,15 @@
-//! Core types e utilitários compartilhados entre cliente, servidor e blockchain
+//! Core types shared between client, server, and blockchain.
+//!
+//! This crate is intentionally Bevy-free — terrain, hex math, and grid
+//! data are pure Rust types. Bevy rendering lives in idlecore-client.
 
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub mod actions;
 pub mod economy;
 pub mod grid;
 pub mod hex;
 pub mod hex_tile;
-pub mod idle;
 pub mod marketplace;
 pub mod plant;
 pub mod player;
@@ -18,6 +19,7 @@ pub mod terrain;
 pub mod ui;
 pub mod vehicle;
 pub mod voice;
+pub mod idle_config;
 
 /// Simple RGBA color (0.0–1.0 per channel)
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -31,6 +33,11 @@ pub struct Color {
 impl Color {
     pub fn srgb(r: f32, g: f32, b: f32) -> Self {
         Self { r, g, b, a: 1.0 }
+    }
+
+    /// Convert to Bevy Color type for materials.
+    pub fn to_bevy(&self) -> bevy::color::Color {
+        bevy::color::Color::srgb(self.r, self.g, self.b)
     }
 }
 
@@ -53,29 +60,15 @@ impl Position {
         ((self.x - other.x).powi(2) + (self.y - other.y).powi(2)).sqrt()
     }
 
+    /// Convert world 2D position to axial hex coordinates.
     pub fn to_hex(&self, hex_radius: f32) -> u64 {
-        let q = (self.x * 2.0 / (3.0_f32.sqrt() * hex_radius)) as i64;
-        let r = (self.y * 2.0 / (3.0 * hex_radius * 0.75)) as i64;
-        let s = -q - r;
-        let rq = q as f64;
-        let rr = r as f64;
-        let rs = s as f64;
-        let fq = rq.round();
-        let fr = rr.round();
-        let fs = rs.round();
-        let dq = (fq - rq).abs();
-        let dr = (fr - rr).abs();
-        let ds = (fs - rs).abs();
-        let (fq, fr) = if dq > dr && dq > ds {
-            (-fr - fs, fr)
-        } else if dr > ds {
-            (fq, -fq - fs)
-        } else {
-            (fq, fr)
-        };
-        ((fq as u64) << 32) | (fr as u64)
+        hex::world_pos_to_hex(self.x, self.y, hex_radius).0 as u64
     }
 }
+
+/// Core hex tile data (shared between core, server, client).
+/// See hex_tile.rs for detailed docs.
+pub use hex_tile::HexTileData;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TerrainType {
@@ -99,7 +92,7 @@ pub struct Plant {
     pub plant_type: PlantType,
     pub stage: PlantStage,
     pub planted_at: u64,
-    pub grow_duration: Duration,
+    pub grow_duration: std::time::Duration,
     pub owner: Option<WalletAddress>,
 }
 
@@ -111,17 +104,7 @@ pub enum PlantType {
     RareHerb,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HexTile {
-    pub hex_id: u64,
-    pub position: Position,
-    pub terrain: TerrainType,
-    pub plant: Option<Plant>,
-    pub is_polluted: bool,
-    pub eco_rating: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Vehicle {
     None,
     Bicycle,
@@ -177,19 +160,20 @@ impl Vehicle {
 }
 
 impl TerrainType {
+    /// Get the Bevy Color for this terrain.
     pub fn color(&self) -> Color {
         match self {
-            TerrainType::Grass => Color::srgb(0.35, 0.65, 0.2),
-            TerrainType::Forest => Color::srgb(0.15, 0.55, 0.25),
-            TerrainType::Water => Color::srgb(0.2, 0.4, 0.7),
-            TerrainType::City => Color::srgb(0.7, 0.65, 0.55),
-            TerrainType::Desert => Color::srgb(0.85, 0.7, 0.3),
-            TerrainType::Polluted => Color::srgb(0.15, 0.15, 0.15),
+            TerrainType::Grass => Color::srgb(0.496, 0.792, 0.322),
+            TerrainType::Forest => Color::srgb(0.133, 0.545, 0.133),
+            TerrainType::Water => Color::srgb(0.255, 0.404, 0.882),
+            TerrainType::City => Color::srgb(0.502, 0.502, 0.502),
+            TerrainType::Desert => Color::srgb(0.953, 0.643, 0.376),
+            TerrainType::Polluted => Color::srgb(0.294, 0.000, 0.514),
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cosmetic {
     pub cosmetic_id: u64,
     pub name: String,
@@ -243,8 +227,8 @@ impl Player {
             gold: 100,
             level: 1,
             eco_points: 0,
-            last_seen: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
+            last_seen: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
             is_online: false,
@@ -328,31 +312,6 @@ impl BuyableItem {
     }
 }
 
-pub mod idle_config {
-    use super::*;
-
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct IdleGains {
-        pub xp: u64,
-        pub gold: u64,
-    }
-
-    pub fn gains_for_time(elapsed: Duration) -> IdleGains {
-        let seconds = elapsed.as_secs();
-        if seconds < 3600 {
-            IdleGains { xp: 10, gold: 5 }
-        } else if seconds < 21600 {
-            IdleGains { xp: 60, gold: 30 }
-        } else if seconds < 43200 {
-            IdleGains { xp: 100, gold: 50 }
-        } else {
-            IdleGains { xp: 150, gold: 75 }
-        }
-    }
-
-    pub const MAX_IDLE_SECONDS: u64 = 86400;
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketListing {
     pub listing_id: u64,
@@ -386,7 +345,7 @@ pub struct SubscriptionEvent {
 pub struct GameConfig {
     pub hex_radius_meters: f32,
     pub max_players_per_hex: u32,
-    pub voice_channel_timeout: Duration,
+    pub voice_channel_timeout: std::time::Duration,
     pub idle_max_hours: u32,
     pub market_fee_percent: f64,
     pub min_template_price_usdt: f64,
@@ -398,7 +357,7 @@ impl Default for GameConfig {
         Self {
             hex_radius_meters: 10.0,
             max_players_per_hex: 20,
-            voice_channel_timeout: Duration::from_secs(300),
+            voice_channel_timeout: std::time::Duration::from_secs(300),
             idle_max_hours: 24,
             market_fee_percent: 0.05,
             min_template_price_usdt: 0.01,
@@ -512,52 +471,5 @@ mod tests {
         let gains = idle_config::IdleGains { xp: 10, gold: 5 };
         assert_eq!(gains.xp, 10);
         assert_eq!(gains.gold, 5);
-    }
-
-    #[test]
-    fn hex_tile_polluted() {
-        let tile = HexTile {
-            hex_id: 2,
-            position: Position::new(10.0, 0.0),
-            terrain: TerrainType::Polluted,
-            plant: None,
-            is_polluted: true,
-            eco_rating: 10,
-        };
-        assert!(tile.is_polluted);
-        assert_eq!(tile.terrain, TerrainType::Polluted);
-    }
-
-    #[test]
-    fn plant_stage_progression() {
-        let mut plant = Plant {
-            plant_type: PlantType::Wheat,
-            stage: PlantStage::Planted,
-            planted_at: 0,
-            grow_duration: Duration::from_secs(300),
-            owner: None,
-        };
-        assert_eq!(plant.stage, PlantStage::Planted);
-        plant.stage = PlantStage::Growing;
-        assert_eq!(plant.stage, PlantStage::Growing);
-        plant.stage = PlantStage::Ready;
-        assert_eq!(plant.stage, PlantStage::Ready);
-    }
-
-    #[test]
-    fn terrain_type_serde_roundtrip() {
-        let terrains = [
-            TerrainType::Grass,
-            TerrainType::Forest,
-            TerrainType::Water,
-            TerrainType::Polluted,
-            TerrainType::City,
-            TerrainType::Desert,
-        ];
-        for t in &terrains {
-            let json = serde_json::to_string(t).unwrap();
-            let deserialized: TerrainType = serde_json::from_str(&json).unwrap();
-            assert_eq!(*t, deserialized);
-        }
     }
 }

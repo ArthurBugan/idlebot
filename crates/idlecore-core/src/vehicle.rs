@@ -3,8 +3,8 @@
 //! Vehicle types: None, Bicycle (2x), Scooter (3x), Motorcycle (5x), Boat (4x), Airplane (10x).
 //! Speed multipliers and gold costs per PROPOSAL section 2.6.
 
-use crate::Vehicle;
 use std::time::SystemTime;
+use crate::Vehicle;
 
 /// Purchase a vehicle. Returns success status and deducted cost.
 pub fn purchase_vehicle(econ: &mut crate::economy::PlayerEconomy, vehicle: &Vehicle) -> bool {
@@ -51,7 +51,7 @@ pub fn apply_idle_gains(econ: &mut crate::economy::PlayerEconomy) {
         return; // Less than 1 minute, no gains
     }
 
-    let gains = crate::idle::gains_for_time(elapsed);
+    let gains = crate::idle_config::gains_for_time(elapsed);
 
     econ.xp += gains.xp;
     econ.gold += gains.gold;

@@ -6,43 +6,41 @@ pub mod types;
 pub mod world;
 pub mod market;
 pub mod voice;
-pub mod progression;
+pub mod scheduler;
 
 use spacetimedb::{reducer, ReducerContext};
-use world::ActionResult;
 
-/// Когда игрок меняет гекс (view)
+/// Quando o jogador muda de hex (view)
 #[reducer]
 pub fn hex_changed(_ctx: &ReducerContext) {}
 
-/// Когда игрок получает idle
+/// Quando o jogador perde tempo idle (view)
 #[reducer]
 pub fn idle_gained(_ctx: &ReducerContext) {}
 
-/// Когда элемент куплен
+/// Quando item é comprado
 #[reducer]
 pub fn item_purchased(_ctx: &ReducerContext) {}
 
-/// Когда листинг создан
+/// Quando listing é criado
 #[reducer]
 pub fn listing_created(_ctx: &ReducerContext) {}
 
-/// Когда листинг продан
+/// Quando listing é vendido
 #[reducer]
 pub fn listing_sold(_ctx: &ReducerContext) {}
 
-/// Когда игрок входит в voice channel
+/// Quando jogador entra no canal de voz
 #[reducer]
 pub fn voice_join(_ctx: &ReducerContext) {}
 
-/// Когда игрок выходит из voice channel
+/// Quando jogador sai do canal de voz
 #[reducer]
 pub fn voice_leave(_ctx: &ReducerContext) {}
 
 /// Init — runs once on deploy
 #[reducer(init)]
 pub fn init(_ctx: &ReducerContext) {
-    // World generation is handled by the scheduler or first player connection
     tracing::info!("IdleBot module initialized");
 }
 
@@ -54,7 +52,10 @@ pub fn login(
     signature: String,
     nonce: u64,
 ) {
+    // Mark player as online and reset idle tracking
     crate::world::handle_login(ctx, &wallet_address, &signature, nonce);
+    crate::world::mark_online(ctx, &wallet_address);
+    crate::world::reset_idle_tracking(ctx, &wallet_address);
     tracing::info!("Player logged in: {}", wallet_address);
 }
 
@@ -62,6 +63,7 @@ pub fn login(
 #[reducer]
 pub fn logout(ctx: &ReducerContext, wallet_address: String) {
     crate::world::mark_offline(ctx, &wallet_address);
+    crate::world::reset_idle_tracking(ctx, &wallet_address);
     tracing::info!("Player logged out: {}", wallet_address);
 }
 
@@ -98,16 +100,16 @@ pub fn interact_hex(
 ) {
     let result = crate::world::interact_hex(ctx, &wallet_address, hex_id, &action, plant_type);
     match result {
-        Ok(ActionResult::Success {
+        Ok(crate::world::ActionResult::Success {
             xp_gained,
             gold_gained,
             ..
         }) => {
             if xp_gained > 0 || gold_gained > 0 {
-                // Trigger idle_gained event
+                // Trigger idle_gained event for notification
             }
         }
-        Ok(ActionResult::Failed { reason }) => {
+        Ok(crate::world::ActionResult::Failed { reason }) => {
             tracing::warn!("Action failed: {}", reason);
         }
         Err(e) => {
@@ -178,10 +180,10 @@ pub fn update_plants(ctx: &ReducerContext) {
     crate::world::update_plants(ctx);
 }
 
-/// Calculate idle gains (called periodically via scheduler)
+/// Calculate idle gains (called periodically via scheduler — 5 min interval)
 #[reducer]
 pub fn calculate_idle(ctx: &ReducerContext) {
-    crate::world::calculate_idle_gains(ctx);
+    crate::scheduler::process_idle_gains(ctx);
 }
 
 /// Cleanup inactive voice channels

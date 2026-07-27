@@ -1,3 +1,4 @@
+/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 //! Player component and spawning
 //!
 //! Orange tetrahedron avatar as placeholder for the Tamagotchi character.
@@ -49,6 +50,7 @@ impl ClientPlayer {
         gold: u64,
         eco_points: u64,
         equipped_cosmetics: Vec<String>,
+        last_seen: u64,
     ) -> Self {
         Self {
             position,
@@ -60,12 +62,14 @@ impl ClientPlayer {
             eco_points,
             owned_vehicle: vehicle,
             equipped_cosmetics,
-            last_login_time: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            last_login_time: last_seen,
             time_offline: None,
         }
+    }
+
+    /// Set the player's last seen timestamp
+    pub fn set_last_seen(&mut self, seconds: u64) {
+        self.last_login_time = seconds;
     }
 }
 

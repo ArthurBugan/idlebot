@@ -4,7 +4,7 @@ members = [
     "crates/idlecore-core",
     "crates/idlecore-server",
     "crates/idlecore-client",
-    # "crates/idlecore-chain",  # excluded: alloy WASM compilation issues (non-critical)
+    "crates/idlecore-chain",
 ]
 
 [workspace.dependencies]

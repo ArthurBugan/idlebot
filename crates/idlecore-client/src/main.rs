@@ -1,3 +1,4 @@
+/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 //! IdleBot — Bevy 0.19 hex grid single-player client.
 //!
 //! Main entry point: start the Bevy app with hex world, player, WASD movement,
@@ -9,7 +10,6 @@ use bevy::pbr::StandardMaterial;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::asset::Assets;
 use bevy::render::mesh::Mesh;
-use std::time::{SystemTime, UNIX_EPOCH};
 use rand::Rng;
 
 // Re-export from lib
@@ -324,10 +324,7 @@ fn debug_commands(
 
     // L — apply idle gains (simulate login after offline time)
     if keyboard.just_pressed(KeyCode::KeyL) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = now()
         let last_login = player.last_login_time;
         let seconds_offline = now.saturating_sub(last_login);
 
