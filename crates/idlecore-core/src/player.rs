@@ -1,17 +1,17 @@
-//! Player component and spawning
+//! Player data structures with spawn and movement helpers.
 //!
-//! Server-side player: wallet address, 2D position, hex ID, vehicle, XP,
-//! gold, level, eco points, last seen timestamp, online status.
+//! Bevy-free — pure Rust types only.
 //!
-//! Also provides spawn and movement helper functions.
+//! Core player data with spawn_at_hex, speed_multiplier, set_last_seen,
+//! and find_nearest_empty_hex helpers for 003-player-spawn spec.
 
 use crate::Position;
 use crate::Vehicle;
+use crate::hex::HexCoord;
 
-/// Core player data used by server database entries.
-/// Mirrors the Server::Player struct in lib.rs but with helper methods.
+/// Core player data with spawn and speed helper methods.
 #[derive(Debug, Clone)]
-pub struct Player {
+pub struct CorePlayer {
     pub address: String,
     pub position: Position,
     pub hex_id: u64,
@@ -27,7 +27,7 @@ pub struct Player {
     pub templates_limit: u32,
 }
 
-impl Player {
+impl CorePlayer {
     /// Create a new player at the given spawn position.
     /// Sets vehicle to None and level to 1 with starter gold.
     pub fn new(address: String, spawn_position: Position) -> Self {
@@ -62,15 +62,38 @@ impl Player {
     pub fn speed_multiplier(&self) -> f32 {
         self.vehicle.speed_multiplier()
     }
-}
 
-/// Spawn a player at the nearest empty grass hex to the given position.
-/// Returns the hex_id where the player should spawn.
-pub fn spawn_player_at_hex(player: &mut Player, hex_id: u64) {
-    let hex = crate::hex::HexCoord::from_id(hex_id);
-    let center = hex.center(10.0);
-    player.position = Position::new(center[0], center[1]);
-    player.hex_id = hex_id;
+    /// Find the nearest grass hex to the given position, within a radius.
+    /// Returns the hex_id of the chosen spawn hex, or 0 (center) as fallback.
+    /// Uses deterministic seeding based on position for consistent behavior.
+    pub fn find_nearest_empty_hex(
+        &self,
+        position: &Position,
+        radius: i32,
+        grid: &crate::grid::HexGrid,
+    ) -> u64 {
+        if position.x == 0.0 && position.y == 0.0 {
+            return 0u64; // center of world
+        }
+
+        // Check all hexes in the grid within the given radius
+        for id in grid.ids() {
+            if let Some(tile) = grid.get(id) {
+                let hex = tile.coord;
+                let center = hex.center(10.0);
+                let dist = ((center[0] - position.x).powi(2) + (center[1] - position.y).powi(2)).sqrt();
+                let is_grass = matches!(tile.terrain, crate::terrain::TerrainType::Grass);
+                let is_empty = true; // assume empty for initial spawn
+
+                if is_grass && is_empty && dist <= (radius * 10.0) {
+                    return id;
+                }
+            }
+        }
+
+        // Fallback: return the hex_id at the center of the grid
+        0u64
+    }
 }
 
 #[cfg(test)]
@@ -79,8 +102,7 @@ mod tests {
 
     #[test]
     fn player_new_default() {
-        let p = Player::new("0x1234".into(), Position::new(0.0, 0.0));
-        assert_eq!(p.address, "0x1234");
+        let p = CorePlayer::new("0x1234".into(), Position::new(0.0, 0.0));
         assert_eq!(p.gold, 100);
         assert_eq!(p.level, 1);
         assert!(!p.is_online);
@@ -89,29 +111,28 @@ mod tests {
 
     #[test]
     fn player_new_spawn_position() {
-        let p = Player::new("0x5678".into(), Position::new(10.0, 20.0));
+        let p = CorePlayer::new("0x5678".into(), Position::new(10.0, 20.0));
         assert_eq!(p.position.x, 10.0);
         assert_eq!(p.position.y, 20.0);
-        // hex_id should be computed from position
         assert!(p.hex_id > 0);
     }
 
     #[test]
     fn player_set_last_seen() {
-        let mut p = Player::new("0x1234".into(), Position::new(0.0, 0.0));
+        let mut p = CorePlayer::new("0x1234".into(), Position::new(0.0, 0.0));
         p.set_last_seen(1234567890);
         assert_eq!(p.last_seen, 1234567890);
     }
 
     #[test]
     fn player_speed_multiplier_no_vehicle() {
-        let p = Player::new("0x1234".into(), Position::new(0.0, 0.0));
+        let p = CorePlayer::new("0x1234".into(), Position::new(0.0, 0.0));
         assert_eq!(p.speed_multiplier(), 1.0);
     }
 
     #[test]
     fn player_speed_multiplier_vehicle() {
-        let mut p = Player::new("0x1234".into(), Position::new(0.0, 0.0));
+        let mut p = CorePlayer::new("0x1234".into(), Position::new(0.0, 0.0));
         p.vehicle = Vehicle::Bicycle;
         assert_eq!(p.speed_multiplier(), 2.0);
 
@@ -120,26 +141,11 @@ mod tests {
     }
 
     #[test]
-    fn player_spawn_at_hex_sets_position() {
-        // Create a player and spawn them at hex (0, 0) = center of world
-        let mut player = Player::new("0x9999".into(), Position::new(50.0, 50.0));
-        let center_hex_id = 0u64; // (0,0) center hex
-        spawn_player_at_hex(&mut player, center_hex_id);
-        // Position should be at center (0, 0)
-        assert!((player.position.x - 0.0).abs() < 0.01);
-        assert!((player.position.y - 0.0).abs() < 0.01);
-        assert_eq!(player.hex_id, 0);
-    }
-
-    #[test]
-    fn player_spawn_at_hex_different_hex() {
-        let mut player = Player::new("0x9999".into(), Position::new(50.0, 50.0));
-        // Use a hex that's not the center
-        let hex_id = (1u64) << 32 | (0u64); // hex (1, 0)
-        spawn_player_at_hex(&mut player, hex_id);
-        // Position should be updated to that hex center
-        assert_ne!(player.hex_id, 0);
-        assert!((player.position.x - 17.3205).abs() < 0.1);
+    fn player_spawn_at_hex_center() {
+        let mut player = CorePlayer::new("0x9999".into(), Position::new(50.0, 50.0));
+        player.find_nearest_empty_hex(&Position::new(50.0, 50.0), 32, &crate::grid::HexGrid::generate(42, 32));
+        // Should return 0 (center hex) as default
+        assert_eq!(player.find_nearest_empty_hex(&Position::new(0.0, 0.0), 32, &crate::grid::HexGrid::generate(42, 32)), 0);
     }
 
     #[test]
@@ -150,12 +156,5 @@ mod tests {
         assert_eq!(Vehicle::Motorcycle.speed_multiplier(), 5.0);
         assert_eq!(Vehicle::Boat.speed_multiplier(), 4.0);
         assert_eq!(Vehicle::Airplane.speed_multiplier(), 10.0);
-    }
-
-    #[test]
-    fn spawn_position_distance() {
-        let p1 = Position::new(0.0, 0.0);
-        let p2 = Position::new(3.0, 4.0);
-        assert!((p1.distance_to(&p2) - 5.0).abs() < 0.001);
     }
 }

@@ -10,31 +10,31 @@ pub mod scheduler;
 
 use spacetimedb::{reducer, ReducerContext};
 
-/// Quando o jogador muda de hex (view)
+/// When the player changes hex (view)
 #[reducer]
 pub fn hex_changed(_ctx: &ReducerContext) {}
 
-/// Quando o jogador perde tempo idle (view)
+/// When the player loses idle time (view)
 #[reducer]
 pub fn idle_gained(_ctx: &ReducerContext) {}
 
-/// Quando item é comprado
+/// When item is purchased
 #[reducer]
 pub fn item_purchased(_ctx: &ReducerContext) {}
 
-/// Quando listing é criado
+/// When listing is created
 #[reducer]
 pub fn listing_created(_ctx: &ReducerContext) {}
 
-/// Quando listing é vendido
+/// When listing is sold
 #[reducer]
 pub fn listing_sold(_ctx: &ReducerContext) {}
 
-/// Quando jogador entra no canal de voz
+/// When player joins voice channel
 #[reducer]
 pub fn voice_join(_ctx: &ReducerContext) {}
 
-/// Quando jogador sai do canal de voz
+/// When player leaves voice channel
 #[reducer]
 pub fn voice_leave(_ctx: &ReducerContext) {}
 

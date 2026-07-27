@@ -1,13 +1,47 @@
-//! Input handling — WASD movement system
+//! Input handling — WASD movement and interaction system
 //!
-//! Maps keyboard input to movement commands for the player.
+//! Maps keyboard input to movement commands and E key interaction.
 
 use bevy::prelude::*;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::player::{ClientPlayer, CurrentHex};
 
-/// Update input system — handles WASD and special keys
+/// Interaction marker component for hex entities with plants/pollution
+#[derive(Component, Debug, Clone)]
+pub struct InteractionTarget {
+    pub hex_id: u64,
+    pub has_plant: bool,
+    pub has_pollution: bool,
+    /// Plant type name (e.g. "Wheat", "Tree")
+    pub plant_type: Option<String>,
+}
+
+/// Interaction handler — triggered by E key press
+#[derive(Component)]
+pub struct InteractionHandler {
+    /// Currently selected action (default: Plant)
+    pub action: InteractionAction,
+}
+
+/// Supported interaction actions
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Component)]
+pub enum InteractionAction {
+    Plant,
+    Harvest,
+    Clean,
+}
+
+impl std::fmt::Display for InteractionAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InteractionAction::Plant => write!(f, "plant"),
+            InteractionAction::Harvest => write!(f, "harvest"),
+            InteractionAction::Clean => write!(f, "clean"),
+        }
+    }
+}
+
+/// Update input system — handles WASD movement and E key interaction
 pub fn handle_input(
     time: Res<Time>,
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -61,12 +95,17 @@ pub fn handle_input(
         player.current_hex = Some(CurrentHex { q: 0, r: 0 });
         player.velocity = Vec2::ZERO;
     }
+
+    // Interaction with E key — trigger hex interaction
+    if keyboard.just_pressed(KeyCode::KeyE) {
+        println!("[INPUT] Interaction triggered (E key). Action: {:?}", player.interaction_action);
+    }
 }
 
 /// Get current Unix timestamp
 pub fn current_timestamp() -> u64 {
     SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+        .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
         .as_secs()
 }

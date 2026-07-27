@@ -2,6 +2,76 @@
 
 use spacetimedb::table;
 
+/// PlantType serialized as JSON string (Wheat, Corn, Tree, RareHerb)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlantTypeString {
+    Wheat,
+    Corn,
+    Tree,
+    RareHerb,
+}
+
+impl PlantTypeString {
+    pub fn to_json(&self) -> String {
+        match self {
+            PlantTypeString::Wheat => "\"Wheat\"".to_string(),
+            PlantTypeString::Corn => "\"Corn\"".to_string(),
+            PlantTypeString::Tree => "\"Tree\"".to_string(),
+            PlantTypeString::RareHerb => "\"RareHerb\"".to_string(),
+        }
+    }
+
+    pub fn from_json(s: &str) -> Option<Self> {
+        match s {
+            "Wheat" => Some(PlantTypeString::Wheat),
+            "Corn" => Some(PlantTypeString::Corn),
+            "Tree" => Some(PlantTypeString::Tree),
+            "RareHerb" => Some(PlantTypeString::RareHerb),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for PlantTypeString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlantTypeString::Wheat => write!(f, "Wheat"),
+            PlantTypeString::Corn => write!(f, "Corn"),
+            PlantTypeString::Tree => write!(f, "Tree"),
+            PlantTypeString::RareHerb => write!(f, "RareHerb"),
+        }
+    }
+}
+
+/// Plant JSON for DB storage
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlantJson {
+    pub plant_type: String,
+    pub planted_at: u64,
+    pub growth_time_seconds: u64,
+}
+
+impl PlantJson {
+    pub fn new(plant_type: &str, planted_at: u64) -> Self {
+        let growth_time = match plant_type {
+            "Wheat" => 3600,
+            "Corn" => 5400,
+            "Tree" => 21600,
+            "RareHerb" => 43200,
+            _ => 3600,
+        };
+        Self {
+            plant_type: plant_type.to_string(),
+            planted_at,
+            growth_time_seconds: growth_time,
+        }
+    }
+
+    pub fn is_mature(&self, now: u64) -> bool {
+        now >= self.planted_at + self.growth_time_seconds
+    }
+}
+
 /// Struct pra representar um jogador no banco
 #[table(accessor = player, public)]
 pub struct PlayerDbEntry {
@@ -30,7 +100,7 @@ pub struct HexTileDbEntry {
     pub center_x: f32,
     pub center_y: f32,
     pub terrain: String,
-    pub plant: Option<String>,
+    pub plant: Option<String>,  // JSON serialized Plant
     pub is_polluted: bool,
     pub eco_rating: u32,
 }

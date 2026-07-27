@@ -1,7 +1,4 @@
 //! Core types shared between client, server, and blockchain.
-//!
-//! This crate is intentionally Bevy-free — terrain, hex math, and grid
-//! data are pure Rust types. Bevy rendering lives in idlecore-client.
 
 use serde::{Deserialize, Serialize};
 
@@ -67,10 +64,7 @@ impl Position {
 }
 
 /// Core hex tile data (shared between core, server, client).
-/// See hex_tile.rs for detailed docs.
 pub use hex_tile::HexTileData;
-
-
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PlantStage {
