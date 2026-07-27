@@ -1,6 +1,4 @@
-/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 //! Terrain types for IdleBot hex grid.
-//! Spec probabilities: Grass 50%, Forest 20%, Water 8%, City 10%, Desert 7%, Polluted 5%.
 
 use rand::Rng;
 
@@ -51,7 +49,7 @@ pub fn is_farmable(terrain: &TerrainType) -> bool {
     matches!(terrain, TerrainType::Grass)
 }
 
-/// Check if terrain is compatible for planting (grass, forest, city, desert)
+/// Check if terrain is compatible for planting
 pub fn is_compatible_for_planting(terrain: &TerrainType) -> bool {
     matches!(
         terrain,

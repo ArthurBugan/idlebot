@@ -2,11 +2,8 @@
 //! Uses axial coordinates (q, r, s) where q + r + s = 0.
 //! Flat-top hex geometry, hex radius 10.0 meters.
 
-use std::collections::HashMap;
-use crate::terrain::TerrainType;
-
 /// Hexagon defined by axial coordinates (q, r, s) where q + r + s = 0.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct HexCoord {
     pub q: i32,
     pub r: i32,
@@ -49,10 +46,10 @@ impl HexCoord {
     }
 
     /// Serialize hex to a u64 id: (q << 32) | r
-    /// Uses two's complement preservation: sign bits of i32 q,r carry directly.
+    /// Uses i64 sign extension to preserve i32 sign bits.
     pub fn to_id(&self) -> u64 {
-        // q as i64 << 32 gives the correct u64 with sign extension for i32
-        (self.q as i64 << 32) | (self.r as u64)
+        let q_signed = self.q as i64;
+        ((q_signed << 32) | (self.r as u64)) as u64
     }
 
     /// Parse a hex id back into a HexCoord.
@@ -96,9 +93,7 @@ impl HexCoord {
 
     /// Distance between two hexes (hex steps).
     pub fn distance(&self, other: &HexCoord) -> i32 {
-        let d = ((self.q - other.q).abs()
-            + (self.r - other.r).abs()
-            + (self.s - other.s).abs());
+        let d = (self.q - other.q).abs() + (self.r - other.r).abs() + (self.s - other.s).abs();
         d / 2
     }
 
@@ -203,6 +198,15 @@ mod tests {
     #[test]
     fn hex_to_id_roundtrip_negative_r() {
         let h = HexCoord::new(5, -100);
+        let id = h.to_id();
+        let h2 = HexCoord::from_id(id);
+        assert_eq!(h.q, h2.q);
+        assert_eq!(h.r, h2.r);
+    }
+
+    #[test]
+    fn hex_to_id_negative_both() {
+        let h = HexCoord::new(-50, -40);
         let id = h.to_id();
         let h2 = HexCoord::from_id(id);
         assert_eq!(h.q, h2.q);

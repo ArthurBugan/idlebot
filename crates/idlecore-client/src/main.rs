@@ -1,4 +1,3 @@
-/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 //! IdleBot — Bevy 0.19 hex grid single-player client.
 //!
 //! Main entry point: start the Bevy app with hex world, player, WASD movement,

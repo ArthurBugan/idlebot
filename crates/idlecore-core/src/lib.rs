@@ -1,3 +1,4 @@
+/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 //! Core types shared between client, server, and blockchain.
 //!
 //! This crate is intentionally Bevy-free — terrain, hex math, and grid
@@ -70,15 +71,7 @@ impl Position {
 /// See hex_tile.rs for detailed docs.
 pub use hex_tile::HexTileData;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum TerrainType {
-    Grass,
-    Forest,
-    Water,
-    Polluted,
-    City,
-    Desert,
-}
+
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PlantStage {

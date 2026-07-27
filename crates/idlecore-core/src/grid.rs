@@ -3,7 +3,8 @@
 //! Generates a bounded hex grid of HexTiles with deterministic terrain assignment
 //! using a seeded PRNG. Uses axial coordinates bounded by distance <= radius.
 
-use rand::Rng;
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
 use crate::hex::HexCoord;
 use crate::terrain::TerrainType;
 
@@ -24,32 +25,34 @@ pub struct HexGrid {
 impl HexGrid {
     /// Generate a deterministic hex grid using the given seed and radius.
     ///
-    /// For radius=100, produces approximately 12,481 hexes (area-based counting).
+    /// For radius=100, produces approximately 12,481 hexes.
     pub fn generate(seed: u64, radius: i32) -> Self {
-        let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+        let mut rng = SmallRng::seed_from_u64(seed);
         let mut grid = Self::default();
+        let max_sq: i64 = radius as i64 * radius as i64;
 
         for q in -radius..=radius {
             for r in -radius..=radius {
                 let s = -q - r;
                 // Bounded by cube distance: q^2 + r^2 + s^2 <= radius^2
-                if q.abs() <= radius && r.abs() <= radius && s.abs() <= radius {
-                    if (q as i64).checked_mul(q as i64)
-                        .map(|sq| {
-                            sq
-                                + (r as i64).checked_mul(r as i64)?
-                                + (s as i64).checked_mul(s as i64)?
-                                <= (radius as i64).checked_mul(radius as i64)?
-                        })
-                        .unwrap_or(false)
-                    {
-                        let hex_id = (q as u64) << 32 | (r as u64);
-                        let terrain = TerrainType::from_random(&mut rng);
-                        grid.hexes.insert(hex_id, HexTile {
-                            coord: HexCoord::new(q, r),
-                            terrain,
-                            elevation: rng.gen(),
-                        });
+                if (q as i64).abs() <= radius as i64 && (r as i64).abs() <= radius as i64 {
+                    let sq = (q as i64).checked_mul(q as i64);
+                    if let Some(sq) = sq {
+                        let sqr = (r as i64).checked_mul(r as i64);
+                        if let Some(qr) = sq.checked_add(sqr) {
+                            let sqs = (s as i64).checked_mul(s as i64);
+                            if let Some(qrs) = qr.checked_add(sqs) {
+                                if qrs <= max_sq {
+                                    let hex_id = (q as u64) << 32 | (r as u64);
+                                    let terrain = TerrainType::from_random(&mut rng);
+                                    grid.hexes.insert(hex_id, HexTile {
+                                        coord: HexCoord::new(q, r),
+                                        terrain,
+                                        elevation: rng.gen(),
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -83,7 +86,6 @@ impl HexGrid {
         if self.hexes.is_empty() {
             return 0;
         }
-        // Find max |q| and |r| across all hexes
         let mut max_q = 0i32;
         let mut max_r = 0i32;
         let mut max_s = 0i32;
