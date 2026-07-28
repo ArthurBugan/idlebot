@@ -1,3 +1,5 @@
+/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
+/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 //! IdleBot — Bevy 0.19 hex grid single-player client.
 
 use bevy::prelude::*;
@@ -104,20 +106,45 @@ fn create_hex_mesh(radius: f32) -> Mesh {
 mod map_generator;
 mod idle;
 mod player;
+// ... existing imports
+use crate::voice::mod; // <-- New: Import the voice module
+use bevy::prelude::*;
+use bevy::ecs::schedule::IntoSystemConfigs;
+use bevy::render::mesh::Mesh3d;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+// --- IdleBot Modules ---
+mod map_generator;
+mod idle;
+mod player;
 mod progression;
 mod vehicle;
 
-/// Main function — start the Bevy app.
-pub fn main() {
+// --- Voice Chat Modules (New/Migrated) ---
+pub mod voice {
+    pub mod indicator;
+    pub mod ui;
+    pub mod update;
+}
+
+// --- Main Entry ---
+fn main() {
     eprintln!("=== IdleBot Starting ===");
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_systems(Startup, (setup, spawn_world))
-        .add_systems(Update, (player_movement, debug_commands))
+        // Initialize voice module dependencies
+        .add_plugins(voice::mod::VoicePlugin) 
+        // Startup Phase: Set up graphics and initialize voice UI
+        .add_systems(Startup, (setup, spawn_world, voice::ui::setup_voice_ui("LocalPlayer")))
+        // Update Phase: Handle player input, run game logic, and update voice state
+        .add_systems(Update, (player_movement, debug_commands, voice::update::voice_indicator_updater))
         .run();
 }
 
-/// Startup: spawn camera, light, player.
+// ... (rest of main.rs content unchanged)
+
+// ... rest of file unchanged
+
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
