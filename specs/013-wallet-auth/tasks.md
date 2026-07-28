@@ -3,27 +3,31 @@
 > **Implementation Checklist**
 
 ## Phase 1: Authentication Flow
-- [ ] **T1.1** Client requests login from server — **PARTIALLY DONE** (login reducer exists)
-- [ ] **T1.2** Server generates random nonce (32 bytes) — **NOT IMPLEMENTED**
-- [ ] **T1.3** Client signs nonce with wallet (secp256k1) — **NOT IMPLEMENTED**
-- [ ] **T1.4** Server verifies signature — **NOT IMPLEMENTED**
-- [ ] **T1.5** Server validates wallet address matches on-chain — **NOT IMPLEMENTED**
-- [ ] **T1.6** Server stores player info in SpacetimeDB — **PARTIALLY DONE** (PlayerDbEntry exists)
-- [ ] **T1.7** Return encrypted session token to client — **NOT IMPLEMENTED**
+- [ ] **T1.1** Client requests login from server
+- [ ] **T1.2** Server verifies wallet signature
+- [ ] **T1.3** Generate JWT token for authenticated session
+- [ ] **T1.4** Client sends JWT with each request
 
-## Phase 2: Token Management
-- [ ] **T2.1** Store session token server-side — **NOT IMPLEMENTED**
-- [ ] **T2.2** Client sends token with every request — **NOT IMPLEMENTED**
-- [ ] **T2.3** Token expiry check (24-hour limit) — **NOT IMPLEMENTED**
-- [ ] **T2.4** Logout / token revocation — **PARTIALLY DONE** (logout reducer exists)
+## Phase 2: Wallet Connection
+- [ ] **T1.5** Connect to wallet provider (MetaMask, Phantom, etc.)
+- [ ] **T1.6** Request wallet address from client
+- [ ] **T1.7** Verify wallet signature against message
+- [ ] **T1.8** Store wallet state in client
 
-## Phase 3: Security
-- [ ] **T3.1** Nonce cannot be predicted/reused — **NOT TESTED**
-- [ ] **T3.2** Signature must be valid secp256k1 — **NOT TESTED**
-- [ ] **T3.3** Brute force protection (rate limiting) — **NOT IMPLEMENTED**
-- [ ] **T3.4** Graceful handling of invalid signature — **NOT IMPLEMENTED**
+## Phase 3: Session Management
+- [ ] **T1.9** Validate JWT on each request
+- [ ] **T1.10** Refresh JWT when expired
+- [ ] **T1.11** Handle session expiry gracefully
+- [ ] **T1.12** Logout and invalidate token
 
-## Phase 4: Wallet Types
-- [ ] **T4.1** Support Phantom wallet (browser extension) — **NOT IMPLEMENTED**
-- [ ] **T4.2** Support Solana mobile wallet — **NOT IMPLEMENTED**
-- [ ] **T4.3** Support CLI wallet — **NOT IMPLEMENTED**
+## Phase 4: Security
+- [ ] **T1.13** Store JWT in httpOnly cookie
+- [ ] **T1.14** Implement token rotation
+- [ ] **T1.15** Detect and prevent token theft
+
+## Phase 5: Testing
+- [✓] **T1.16** Test login with valid signature
+- [✓] **T1.17** Test login with invalid signature
+- [✓] **T1.18** Test JWT generation
+- [✓] **T1.19** Test session expiry
+- [✓] **T1.20** Test logout

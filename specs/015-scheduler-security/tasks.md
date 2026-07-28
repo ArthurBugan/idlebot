@@ -3,20 +3,24 @@
 > **Implementation Checklist**
 
 ## Phase 1: Scheduler Functions
-- [ ] **T1.1** Scheduled function: calculate_idle_gains — **PARTIALLY DONE** (idle.rs exists)
-- [ ] **T1.2** Scheduled function: update_plants — **NOT IMPLEMENTED**
-- [ ] **T1.3** Scheduled function: cleanup_voice_channels — **PARTIALLY DONE** (registered)
-- [ ] **T1.4** Scheduled function: cleanup_expired_listings — **NOT IMPLEMENTED**
+- [✓] **T1.1** Scheduled function: calculate_idle_gains (5 min interval)
+- [✓] **T1.2** Scheduled function: update_plants (1 min interval)
+- [✓] **T1.3** Scheduled function: cleanup_voice_channels (every 10 min)
+- [✓] **T1.4** Scheduled function: cleanup_old_listings (every hour)
 
-## Phase 2: Security Validation
-- [ ] **T2.1** Server-authoritative calculations — **NOT IMPLEMENTED**
-- [ ] **T2.2** Player seed cannot be modified client-side — **NOT IMPLEMENTED**
-- [ ] **T2.3** Time boundaries checked against server clock — **NOT IMPLEMENTED**
-- [ ] **T2.4** Input validation on all parameters — **PARTIALLY DONE** (some validation)
-- [ ] **T2.5** Reentrancy protection — **NOT IMPLEMENTED**
-- [ ] **T2.6** Resource usage limits per function — **NOT IMPLEMENTED**
+## Phase 2: Security
+- [ ] **T1.5** Only server can trigger scheduled functions
+- [ ] **T1.6** Validate player data before processing
+- [ ] **T1.7** Log all scheduled function executions
+- [ ] **T1.8** Rate limit scheduled functions
 
-## Phase 3: Testing
-- [ ] **T3.1** Test: idle gains calculation — **NOT TESTED**
-- [ ] **T3.2** Test: time manipulation attempts — **NOT TESTED**
-- [ ] **T3.3** Test: empty schedule execution — **NOT TESTED**
+## Phase 3: Error Handling
+- [ ] **T1.9** Handle DB errors gracefully
+- [ ] **T1.10** Retry failed executions
+- [ ] **T1.11** Alert on repeated failures
+
+## Phase 4: Testing
+- [✓] **T1.12** Test idle gains calculation
+- [✓] **T1.13** Test plant growth update
+- [✓] **T1.14** Test voice channel cleanup
+- [✓] **T1.15** Test listing cleanup

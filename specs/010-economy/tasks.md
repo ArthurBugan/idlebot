@@ -5,27 +5,33 @@
 ## Phase 1: Currency Display
 - [ ] **T1.1** Create EconomyPanel component showing all 3 currencies
 - [ ] **T1.2** Display Gold balance
-- [ ] **T1.3** Display USDT balance  
-- [ ] **T1.4** Display Eco Points
+- [ ] **T1.3** Display XP balance
+- [ ] **T1.4** Display Eco points balance
 
-## Phase 2: Gold Economy
-- [ ] **T1.5** Gold earned via idle gains (spawn threshold)
-- [ ] **T1.6** Gold earned via actions (planting, harvesting, selling)
-- [ ] **T1.7** Gold spent on planting (10G per action)
-- [ ] **T1.8** Gold spent on vehicle purchase
-- [ ] **T1.9** Gold spent on cosmetic purchase
-- [ ] **T1.10** Gold spent on teleport (100G)
+## Phase 2: Gold Income
+- [ ] **T1.5** Calculate gold income from matches (50-150G per match)
+- [ ] **T1.6** Calculate gold income from idle hours (1.5G/hour base)
+- [ ] **T1.7** Calculate gold income from online time (1G/hour)
 
-## Phase 3: USDT Economy
-- [ ] **T2.1** USDT price ratio fixed (1 USDT = 2.0281G)
-- [ ] **T2.2** USDT balance tracked in DB
-- [ ] **T2.3** USDT deducted for template purchase
-- [ ] **T2.4** Cooldown check (6 hours) before withdrawing
+## Phase 3: Currency Exchange
+- [ ] **T1.8** Implement convert gold to XP (2.5 XP per gold)
+- [ ] **T1.9** Implement convert XP to gold (0.4 gold per XP)
+- [ ] **T1.10** Implement convert USDT to gold (1 USDT = 200 gold)
+- [ ] **T1.11** Implement convert gold to USDT (200 gold = 1 USDT)
 
-## Phase 4: Eco Points
-- [ ] **T3.1** Eco Points earned: Clean (+10), Plant tree (+5), Harvest tree (+2)
-- [ ] **T3.2** Eco Points affect hex eco_rating
-- [ ] **T3.3** Eco rating decreases slowly (max 11, target 0)
+## Phase 4: Cooldown System
+- [ ] **T1.12** Implement 6-hour cooldown on currency conversion
+- [ ] **T1.13** Display cooldown timer in UI
+- [ ] **T1.14** Prevent conversion during cooldown
 
-## Phase 5: Economy Ledger
-- [ ] **T4.1** Transaction record: player_id, from/to, amount, currency, timestamp
+## Phase 5: USDT Withdrawal
+- [ ] **T1.15** Implement withdraw gold to wallet (1 gold = 1 USDT)
+- [ ] **T1.16** Calculate USDT amount from gold balance
+- [ ] **T1.17** Implement 24-hour withdrawal cooldown
+- [ ] **T1.18** Display pending transactions
+
+## Phase 6: Testing
+- [ ] **T1.19** Test currency display updates
+- [ ] **T1.20** Test currency conversion rates
+- [ ] **T1.21** Test cooldown prevents spam
+- [ ] **T1.22** Test withdrawal process

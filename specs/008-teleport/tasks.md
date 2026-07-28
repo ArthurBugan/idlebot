@@ -2,38 +2,29 @@
 
 > **Implementation Checklist**
 
-## Phase 1: Core Teleport System
-- [ ] **T1.1** Create TeleportSystem struct in idlecore-core/src/teleport.rs
-- [ ] **T1.2** Implement teleport cost calculation (100G base, level-dependent)
-- [ ] **T1.3** Implement cooldown logic (60 seconds)
-- [ ] **T1.4** Implement teleport execution (teleport to target hex)
-- [ ] **T1.5** Write unit tests for teleport cost calculation
-- [ ] **T1.6** Write unit tests for cooldown logic
+## Phase 1: Server Teleport Logic
+- [ ] **T1.1** Define TeleportSystem struct (last_teleport, cooldown: Duration)
+- [ ] **T1.2** Implement can_teleport() method (check cooldown)
+- [ ] **T1.3** Implement execute_teleport() (deduct 100G, update position, set cooldown)
+- [ ] **T1.4** Define TeleportError enum (InsufficientGold, OnCooldown, InvalidTarget)
 
-## Phase 2: Server Integration
-- [ ] **T2.1** Add teleport reducer to server main.rs
-- [ ] **T2.2** Implement teleport validation (gold check, cooldown check)
-- [ ] **T2.3** Implement teleport execution (position update, gold deduction)
-- [ ] **T2.4** Register teleport in server modules
+## Phase 2: Client Teleport UI
+- [ ] **T1.5** Define TeleportUI struct (selected_hex, destination_hex, cooldown_timer)
+- [ ] **T1.6** Implement click hex → select destination logic
+- [ ] **T1.7** Implement confirm teleport button
+- [ ] **T1.8** Calculate teleport cost (100G)
 
-## Phase 3: Client Integration
-- [ ] **T3.1** Wire minimap hex selection for teleport
-- [ ] **T3.2** Implement teleport UI (confirm button, cooldown display)
-- [ ] **T3.3** Handle teleport animation/particle effect
-- [ ] **T3.4** Test teleport in client window
-- [ ] **T3.5** Test teleport cooldown timer display
+## Phase 3: Teleport Animation
+- [ ] **T1.9** Create teleport particle effect (simple Bevy sprite particles)
+- [ ] **T1.10** Animate player movement to target hex
+- [ ] **T1.11** Display cooldown timer in UI
 
-## Phase 4: Testing & Polish
-- [ ] **T4.1** Integration test: select hex → confirm → teleport
-- [ ] **T4.2** Edge case: insufficient gold
-- [ ] **T4.3** Edge case: teleport on cooldown
-- [ ] **T4.4** Edge case: teleport to occupied hex
-- [ ] **T4.5** Visual test: teleport animation plays
+## Phase 4: State Sync
+- [ ] **T1.12** Server broadcasts new player position after teleport
+- [ ] **T1.13** Update other players' view to show teleported player
 
-## Verification
-- [ ] All unit tests pass
-- [ ] Teleport cost calculated correctly (100G base, scales with level)
-- [ ] Cooldown timer works (60 seconds)
-- [ ] Teleport executes instantly
-- [ ] Gold deducted correctly
-- [ ] Player position updates after teleport
+## Phase 5: Testing
+- [ ] **T1.14** Test teleport with sufficient gold
+- [ ] **T1.15** Test teleport on cooldown
+- [ ] **T1.16** Test teleport animates correctly
+- [ ] **T1.17** Test server-authoritative teleport (prevents cheating)

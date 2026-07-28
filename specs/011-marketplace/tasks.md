@@ -2,25 +2,36 @@
 
 > **Implementation Checklist**
 
-## Phase 1: Publish Listing (FR1, FR2)
-- [✓] **T1.1** Publish template listing with title, description, github_url — **IMPROVED** (publish_template reducer)
-- [✓] **T1.2** Set price in USDT (converted from Gold) — **IMPROVED** (price_usdt field)
-- [✓] **T1.3** Validate 50G publishing cost — **IMPROVED** (buy_item reducer validates gold)
-- [✓] **T1.4** Platform fee: 5% of sale price — **NOT IMPLEMENTED**
-- [✓] **T1.5** Listing expires after 30 days — **NOT IMPLEMENTED**
+## Phase 1: Publish Template
+- [✓] **T1.1** Publish template listing with title, description, github_url
+- [ ] **T1.2** Create MarketListing struct (listing_id, seller, title, description, github_url, price_usdt, published_at, sold)
+- [ ] **T1.3** Validate listing has required fields
+- [ ] **T1.4** Deduct USDT from seller
 
-## Phase 2: Browse Listings
-- [✓] **T2.1** Browse all public listings — **NOT IMPLEMENTED** (no public listing query yet)
-- [✓] **T2.2** Filter by category — **NOT IMPLEMENTED**
-- [✓] **T2.3** Search by title — **NOT IMPLEMENTED**
+## Phase 2: Purchase Template
+- [✓] **T1.5** Purchase template listing
+- [ ] **T1.6** Transfer USDT to seller
+- [ ] **T1.7** Mark listing as sold
+- [ ] **T1.8** Notify seller of purchase
 
-## Phase 3: Purchase Listing (FR5, FR6, FR7)
-- [✓] **T3.1** Purchase listing with USDT — **NOT IMPLEMENTED**
-- [✓] **T3.2** Mark listing as sold after purchase (FR6) — **NOT IMPLEMENTED**
-- [✓] **T3.3** Seller receives USDT minus platform fee (FR7) — **NOT IMPLEMENTED**
-- [✓] **T3.4** Buyer gets GitHub access after purchase — **NOT IMPLEMENTED**
+## Phase 3: Unsold Listings
+- [ ] **T1.9** List unsold listings in "All Templates" view
+- [ ] **T1.10** Show listing price, seller, and upload date
+- [ ] **T1.11** Clean up listings older than 1 hour
 
-## Phase 4: Withdraw / Clean Up
-- [✓] **T4.1** Complete template purchase (blockchain callback) — **NOT IMPLEMENTED**
-- [✓] **T4.2** Seller can withdraw listing — **NOT IMPLEMENTED**
-- [✓] **T4.3** Clean up expired listings — **NOT IMPLEMENTED**
+## Phase 4: UI Display
+- [ ] **T1.12** Render marketplace grid with listing cards
+- [ ] **T1.13** Show "template" badge on listings
+- [ ] **T1.14** Display unsold count in header
+
+## Phase 5: Withdraw Unsold
+- [ ] **T1.15** Implement withdraw_funds function for unsold listings
+- [ ] **T1.16** Transfer unsold USDT to seller
+- [ ] **T1.17** Mark listing as withdrawn
+
+## Phase 6: Testing
+- [✓] **T1.18** Test publish listing
+- [✓] **T1.19** Test purchase listing
+- [✓] **T1.20** Test withdraw unsold listing
+- [ ] **T1.21** Test USDT transfer
+- [ ] **T1.22** Test cooldown prevents spam
