@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use crate::voice::indicator::{VoiceIndicator, VoiceChannelState};
+use super::voice_indicator::VoiceIndicator;
 
 /// Bevy System: Draws the voice chat overlay onto the screen.
 /// This implements the visual rendering for FR5/FR6.
@@ -29,7 +29,7 @@ pub fn voice_ui_system(
 }
 
 // This function would handle setting up the initial UI entities in the Bevy app lifecycle.
-pub fn setup_voice_ui(mut commands: Commands, player_id: &str) {
+pub fn setup_voice_ui(_commands: Commands, _player_id: &str) {
     // TODO: Spawn Camera, add Voice Overlay Entity hierarchy here.
     println!("Voice UI system setup complete. Entities spawned.");
 }

@@ -1,3 +1,8 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+use spacetimedb::{ReducerContext, Table};
+use crate::types::VoiceChannelDbEntry;
+use crate::types::voice_channel;
+
 /// Join channel de voz
 pub fn join_channel(ctx: &ReducerContext, wallet_address: &str, hex_id: u64) {
     let now = SystemTime::now()
@@ -12,7 +17,7 @@ pub fn join_channel(ctx: &ReducerContext, wallet_address: &str, hex_id: u64) {
     match channel_entry {
         Some(mut ch) => {
             // Player already present or trying to rejoin. Update activity.
-            let players: Vec<String> = serde_json::from_str(&ch.players).unwrap_or_default();
+            let mut players: Vec<String> = serde_json::from_str(&ch.players).unwrap_or_default();
             if !players.contains(&wallet_address.to_string()) {
                 // New player joining existing channel
                 players.push(wallet_address.to_string());
@@ -80,9 +85,9 @@ pub fn cleanup_inactive_channels(ctx: &ReducerContext) {
     for ch in channels {
         let time_diff = now - ch.last_activity;
         if time_diff > timeout {
-            // Deleting based purely on timeout, consistent with original code structure.
+            let cid = ch.hex_id;
             ctx.db.voice_channel().delete(ch);
-            tracing::debug!("Removed inactive voice channel: {}", ch.hex_id);
+            tracing::debug!("Removed inactive voice channel: {}", cid);
         }
     }
 }

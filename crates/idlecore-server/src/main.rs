@@ -183,7 +183,7 @@ pub fn update_plants(ctx: &ReducerContext) {
 
 /// Calculate idle gains (called periodically via scheduler -- 5 min interval)
 #[reducer]
-pub fn calculate_idle(ctx: &ReducerContext) {
+pub fn calculate_idle(_ctx: &ReducerContext) {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     crate::scheduler::process_idle_gains(now);
 }

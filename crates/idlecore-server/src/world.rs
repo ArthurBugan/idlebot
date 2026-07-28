@@ -3,8 +3,9 @@
 //! Handles player movement, plant interactions with maturity checks,
 //! pollution cleanup, and world generation.
 
-use super::types::*;
 use spacetimedb::{ReducerContext, Table};
+use crate::types::{HexTileDbEntry, PlayerDbEntry, PlantJson};
+use crate::types::{hex_tile, player};
 use rand::Rng;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -267,7 +268,7 @@ pub fn get_hexes_with_plants(ctx: &ReducerContext) -> Vec<(u64, PlantGrowthState
 
 /// Update plant growth — called periodically via scheduler.
 /// Marks mature plants so they can be harvested.
-pub fn update_plants(ctx: &ReducerContext) {
+pub fn update_plants(_ctx: &ReducerContext) {
     // In SpacetimeDB, we can't easily iterate and update in one call.
     // For the local/development version, we log.
     // In production, this would be done via views that check maturity.
@@ -279,7 +280,7 @@ pub fn update_plants(ctx: &ReducerContext) {
 // ---------------------------------------------------------------------------
 
 /// Cleanup old unsold listings
-pub fn cleanup_old_listings(ctx: &ReducerContext) {
+pub fn cleanup_old_listings(_ctx: &ReducerContext) {
     tracing::trace!("Cleaning up old listings");
 }
 

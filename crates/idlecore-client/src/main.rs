@@ -1,13 +1,37 @@
-/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
-/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 //! IdleBot — Bevy 0.19 hex grid single-player client.
 
 use bevy::prelude::*;
 use bevy::pbr::StandardMaterial;
 use bevy::asset::Assets;
 use bevy::render::mesh::Mesh;
-use rand::Rng;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+
+
+/// Convert world position (x, z) to axial hex coordinates (q, r).
+fn world_pos_to_hex(world_x: f32, world_z: f32, hex_radius: f32) -> (i32, i32) {
+    let sq3 = 1.732050808f32;
+    let r_approx = (world_z / (1.5 * hex_radius)) as i32;
+    let q_approx = ((world_x / (sq3 * hex_radius)) - (r_approx as f32) / 2.0) as i32;
+
+    let fq = q_approx as f64;
+    let fr = r_approx as f64;
+    let fs = -(fq + fr);
+
+    let dq = (fq - fr).abs();
+    let dr = (fq - fs).abs();
+    let ds = (fr - fs).abs();
+
+    if dq > dr && dq > ds {
+        let sgn = fs.signum() as i32;
+        (sgn * ((fs - fr) as i32 + fr as i32), r_approx)
+    } else if dr > ds {
+        (q_approx, r_approx)
+    } else {
+        let sgn = fs.signum() as i32;
+        (q_approx, sgn * (fs - fr) as i32 + fr as i32)
+    }
+}
 
 /// Create a capsule-shaped player avatar (cylinder with rounded ends)
 fn create_player_mesh() -> Mesh {
@@ -46,7 +70,7 @@ fn create_player_mesh() -> Mesh {
     // Side faces
     for i in 0..segments {
         let i2 = i * 2;
-        let i2n = ((i + 1) * 2);
+        let i2n = (i + 1) * 2;
         indices.extend_from_slice(&[i2 as u32, i2n as u32, (i2 + 1) as u32]);
         indices.extend_from_slice(&[i2n as u32, (i2 + 1) as u32, (i2n + 1) as u32]);
     }
@@ -104,40 +128,25 @@ fn create_hex_mesh(radius: f32) -> Mesh {
 
 #[path = "world/map_generator.rs"]
 mod map_generator;
-mod idle;
-mod player;
-// ... existing imports
-use crate::voice::mod; // <-- New: Import the voice module
-use bevy::prelude::*;
-use bevy::ecs::schedule::IntoSystemConfigs;
-use bevy::render::mesh::Mesh3d;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-// --- IdleBot Modules ---
-mod map_generator;
+#[path = "voice/voice_system.rs"]
+mod voice_system;
+
 mod idle;
 mod player;
 mod progression;
 mod vehicle;
 
-// --- Voice Chat Modules (New/Migrated) ---
-pub mod voice {
-    pub mod indicator;
-    pub mod ui;
-    pub mod update;
-}
+mod voice;
 
 // --- Main Entry ---
 fn main() {
     eprintln!("=== IdleBot Starting ===");
     App::new()
         .add_plugins(DefaultPlugins)
-        // Initialize voice module dependencies
-        .add_plugins(voice::mod::VoicePlugin) 
         // Startup Phase: Set up graphics and initialize voice UI
-        .add_systems(Startup, (setup, spawn_world, voice::ui::setup_voice_ui("LocalPlayer")))
-        // Update Phase: Handle player input, run game logic, and update voice state
-        .add_systems(Update, (player_movement, debug_commands, voice::update::voice_indicator_updater))
+        .add_systems(Startup, (setup, spawn_world))
+        .add_systems(Update, (player_movement, debug_commands, voice::voice_update::voice_indicator_updater))
         .run();
 }
 
@@ -272,7 +281,7 @@ fn player_movement(
         let new_pos = Vec3::new(old_pos.x + delta.x, old_pos.y, old_pos.z + delta.y);
         transform.translation = new_pos;
         player.position = new_pos;
-        let (q, r) = idlecore_client::world_pos_to_hex(transform.translation.x, transform.translation.z, 10.0);
+        let (q, r) = world_pos_to_hex(transform.translation.x, transform.translation.z, 10.0);
         player.current_hex = Some(player::CurrentHex { q, r });
         eprintln!("[MOVE] pos=({:.1},{:.1},{:.1}) hex=({},{}) vel=({:.2},{:.2})", transform.translation.x, transform.translation.y, transform.translation.z, q, r, player.velocity.x, player.velocity.y);
     }

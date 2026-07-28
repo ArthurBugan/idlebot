@@ -1,7 +1,8 @@
 //! Sistema de mercado - publish e compra de templates
 
-use super::types::*;
+use super::types::MarketListingDbEntry;
 use spacetimedb::{ReducerContext, Table};
+use crate::types::{market_listing, player};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Publishar template no market

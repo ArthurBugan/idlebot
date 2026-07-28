@@ -3,7 +3,6 @@
 
 use crate::types::IdleGainsEntry;
 use idlecore_core::idle_config;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Compute the elapsed offline time for a player (capped at MAX_IDLE_SECONDS).
 pub fn capped_elapsed(last_seen: u64, now: u64) -> u64 {

@@ -1,7 +1,8 @@
 //! Sistema de Progressão — Níveis & Unlocks
 
-use super::types::*;
-use spacetimedb::{ReducerContext, Table};
+use super::types::PlayerDbEntry;
+use spacetimedb::ReducerContext;
+use crate::types::player;
 
 /// Level up system — quando XP acumulado >= xp_for_next_level(level), sobe de nível
 pub fn check_level_up(ctx: &ReducerContext, player_address: &str) -> Option<u32> {

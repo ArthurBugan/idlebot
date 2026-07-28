@@ -1,5 +1,3 @@
-/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
-/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 //! Sistema de voice chat — placeholder para future integração
 //!
 //! Currently a stub — no actual WebRTC or voice functionality yet.
@@ -68,37 +66,4 @@ pub struct VoiceChannelState {
     pub players: Vec<String>,
     pub is_active: bool,
     pub my_turn_to_speak: bool,
-}
-// Note: Removed implementation details for add/remove to focus on migration, but keeping the base structs.
-// Full implementation details of add/remove methods would need to be migrated/added below.
-// For now, the structs are defined and the main component is updated.
-
-    pub presence_tick: u32,
-}
-
-impl VoiceChannel {
-    /// Create a new voice channel with a single player
-    pub fn new(hex_id: u64, player: String) -> Self {
-        Self {
-            hex_id,
-            players: vec![player],
-        }
-    }
-
-    /// Add a player to the channel
-    pub fn add_peer(&mut self, peer: String) {
-        if !self.players.contains(&peer) {
-            self.players.push(peer);
-        }
-    }
-
-    /// Remove a player from the channel
-    pub fn remove_peer(&mut self, peer: &str) {
-        self.players.retain(|p| p != peer);
-    }
-
-    /// Check if a player is in the channel
-    pub fn has_player(&self, peer: &str) -> bool {
-        self.players.contains(&peer.to_string())
-    }
 }
