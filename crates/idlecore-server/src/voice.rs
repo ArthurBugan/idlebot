@@ -1,9 +1,3 @@
-//! Sistema de voice chat - canais por hexágono
-
-use super::types::*;
-use spacetimedb::{ReducerContext, Table};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 /// Join channel de voz
 pub fn join_channel(ctx: &ReducerContext, wallet_address: &str, hex_id: u64) {
     let now = SystemTime::now()
@@ -12,28 +6,35 @@ pub fn join_channel(ctx: &ReducerContext, wallet_address: &str, hex_id: u64) {
         .as_secs();
 
     // Buscar ou criar channel
-    let channel = ctx.db.voice_channel().iter()
+    let channel_entry = ctx.db.voice_channel().iter()
         .find(|ch| ch.hex_id == hex_id);
 
-    match channel {
+    match channel_entry {
         Some(mut ch) => {
-            // Adicionar player ao channel
-            let mut players: Vec<String> = serde_json::from_str(&ch.players).unwrap_or_default();
+            // Player already present or trying to rejoin. Update activity.
+            let players: Vec<String> = serde_json::from_str(&ch.players).unwrap_or_default();
             if !players.contains(&wallet_address.to_string()) {
+                // New player joining existing channel
                 players.push(wallet_address.to_string());
                 ch.players = serde_json::to_string(&players).unwrap();
                 ch.last_activity = now;
+
+                // Transition to active state if the second player joins
+                if players.len() >= 2 && !ch.is_active {
+                    ch.is_active = true;
+                }
                 ctx.db.voice_channel().hex_id().update(ch);
             }
         }
         None => {
-            // Criar novo channel
+            // First player joins: create PENDING channel.
             let players = vec![wallet_address.to_string()];
             let channel = VoiceChannelDbEntry {
                 hex_id,
                 players: serde_json::to_string(&players).unwrap(),
                 created_at: now,
                 last_activity: now,
+                is_active: false, // <-- NEW: Starts inactive/pending
             };
             ctx.db.voice_channel().insert(channel);
         }
@@ -50,10 +51,10 @@ pub fn leave_channel(ctx: &ReducerContext, wallet_address: &str, hex_id: u64) {
         players.retain(|p| p != wallet_address);
 
         if players.is_empty() {
-            // Remover channel se vazio
-            let channel_to_delete = ch;
-            ctx.db.voice_channel().delete(channel_to_delete);
+            // If the last player leaves, destroy channel.
+            ctx.db.voice_channel().delete(ch);
         } else {
+            // Players remain, update activity. is_active state persists.
             ch.players = serde_json::to_string(&players).unwrap();
             ch.last_activity = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -79,10 +80,9 @@ pub fn cleanup_inactive_channels(ctx: &ReducerContext) {
     for ch in channels {
         let time_diff = now - ch.last_activity;
         if time_diff > timeout {
-            let hex_id = ch.hex_id;
-            // Remover channel inativo
+            // Deleting based purely on timeout, consistent with original code structure.
             ctx.db.voice_channel().delete(ch);
-            tracing::debug!("Removed inactive voice channel: {}", hex_id);
+            tracing::debug!("Removed inactive voice channel: {}", ch.hex_id);
         }
     }
 }

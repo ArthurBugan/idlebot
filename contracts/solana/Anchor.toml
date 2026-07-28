@@ -1,0 +1,18 @@
+[features]
+seeds = false
+skip-lint = false
+
+[provider]
+cluster = "devnet"
+wallet = "~/.config/solana/idlebot-wallet.json"
+
+[programs.localnet]
+marketplace = "Fg6PaFpoGk58pnDmIBm3wWV7eNu8g2cjzdDc9aX5J6ZP"
+subscription = "3DGzCYwvQoxCs9jGkV3zY95CsAJLB7mSaFQ3Eo7X7qRJ"
+
+[programs.devnet]
+marketplace = "Fg6PaFpoGk58pnDmIBm3wWV7eNu8g2cjzdDc9aX5J6ZP"
+subscription = "3DGzCYwvQoxCs9jGkV3zY95CsAJLB7mSaFQ3Eo7X7qRJ"
+
+[registry]
+url = "https://api.apr.dev"

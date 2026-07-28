@@ -1,0 +1,17 @@
+[package]
+name = "idlebot-anchor-workspace"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anchor-lang = "0.29.0"
+solana-program = "~1.15.23"
+spl-token = { version = "4.0", features = ["no-entrypoint"] }
+spl-token-2022 = { version = "0.9", features = ["no-entrypoint"] }
+serde = { version = "1", default-features = false, features = ["derive"] }
+borsh = { version = "0.10", features = ["derive"] }
+log = "0.4"
+
+[dev-dependencies]
+anchor-lang = { version = "0.29.0", features = ["test-bpf"] }
+anchor-spl = "0.29.0"
