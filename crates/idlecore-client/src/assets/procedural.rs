@@ -95,7 +95,7 @@ pub fn create_hex_mesh(radius: f32, height: f32, color: [f32; 4]) -> Mesh {
 
 /// Create a tree mesh (simple cylinder + cone)
 pub fn create_tree_mesh(trunk_radius: f32, trunk_height: f32, canopy_radius: f32, canopy_height: f32, trunk_color: [f32; 4], canopy_color: [f32; 4]) -> Mesh {
-    let trunk = create_hex_mesh(trunk_radius, trunk_height, trunk_color);
+    let _trunk = create_hex_mesh(trunk_radius, trunk_height, trunk_color);
     let canopy = create_hex_mesh(canopy_radius, canopy_height, canopy_color);
 
     // Combine meshes (simplified — in production, merge properly)

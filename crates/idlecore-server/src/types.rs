@@ -1,5 +1,6 @@
 //! Types para o servidor SpacetimeDB
 
+use serde::{Deserialize, Serialize};
 use spacetimedb::table;
 
 /// PlantType serialized as JSON string (Wheat, Corn, Tree, RareHerb)
@@ -93,6 +94,7 @@ pub struct PlayerDbEntry {
 }
 
 /// Struct pra representar um hexágono no banco
+#[derive(Clone)]
 #[table(accessor = hex_tile, public)]
 pub struct HexTileDbEntry {
     #[primary_key]

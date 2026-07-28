@@ -3,6 +3,7 @@
 //! Generates a bounded hex grid of HexTiles with deterministic terrain assignment
 //! using a seeded PRNG. Uses axial coordinates bounded by distance <= radius.
 
+use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use crate::hex::HexCoord;
@@ -35,24 +36,21 @@ impl HexGrid {
             for r in -radius..=radius {
                 let s = -q - r;
                 // Bounded by cube distance: q^2 + r^2 + s^2 <= radius^2
-                if (q as i64).abs() <= radius as i64 && (r as i64).abs() <= radius as i64 {
-                    let sq = (q as i64).checked_mul(q as i64);
-                    if let Some(sq) = sq {
-                        let sqr = (r as i64).checked_mul(r as i64);
-                        if let Some(qr) = sq.checked_add(sqr) {
-                            let sqs = (s as i64).checked_mul(s as i64);
-                            if let Some(qrs) = qr.checked_add(sqs) {
-                                if qrs <= max_sq {
-                                    let hex_id = (q as u64) << 32 | (r as u64);
-                                    let terrain = TerrainType::from_random(&mut rng);
-                                    grid.hexes.insert(hex_id, HexTile {
-                                        coord: HexCoord::new(q, r),
-                                        terrain,
-                                        elevation: rng.gen(),
-                                    });
-                                }
-                            }
-                        }
+                let q64 = q as i64;
+                let r64 = r as i64;
+                let s64 = s as i64;
+                if q64.unsigned_abs() <= radius as u64 && r64.unsigned_abs() <= radius as u64 {
+                    let sq = q64 * q64;
+                    let sqr = r64 * r64;
+                    let sqs = s64 * s64;
+                    if sq.saturating_add(sqr).saturating_add(sqs) <= max_sq {
+                        let hex_id = ((q as u32) as u64) << 32 | (r as u32) as u64;
+                        let terrain = TerrainType::from_random(&mut rng);
+                        grid.hexes.insert(hex_id, HexTile {
+                            coord: HexCoord::new(q, r),
+                            terrain,
+                            elevation: rng.gen(),
+                        });
                     }
                 }
             }

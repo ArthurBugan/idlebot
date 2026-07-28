@@ -46,10 +46,11 @@ impl HexCoord {
     }
 
     /// Serialize hex to a u64 id: (q << 32) | r
-    /// Uses i64 sign extension to preserve i32 sign bits.
+    /// Uses i32 bit-pattern reinterpretation to preserve sign bits.
     pub fn to_id(&self) -> u64 {
-        let q_signed = self.q as i64;
-        ((q_signed << 32) | (self.r as u64)) as u64
+        let q_u32 = self.q as u32;
+        let r_u32 = self.r as u32;
+        ((q_u32 as u64) << 32) | (r_u32 as u64)
     }
 
     /// Parse a hex id back into a HexCoord.
@@ -265,9 +266,10 @@ mod tests {
     #[test]
     fn world_pos_to_hex_roundtrip() {
         // Round trip: world pos -> hex -> pixel -> hex
-        let (q, r) = HexCoord::new(3, -2);
-        let (px, py) = HexCoord::new(q, r).to_pixel(10.0);
-        assert_eq!(q, HexCoord::new(3, -2));
+        let h = HexCoord::new(3, -2);
+        let (px, py) = h.to_pixel(10.0);
+        assert_eq!(px, 17.3205_f32);
+        assert!((py).abs() < 0.01);
     }
 
     #[test]

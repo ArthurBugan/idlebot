@@ -49,7 +49,7 @@ pub fn purchase_vehicle(player: &mut ClientPlayer, vehicle_type: &Vehicle) -> Ve
 }
 
 /// Apply purchase result (e.g. update UI message)
-pub fn apply_purchase_result(player: &mut ClientPlayer, result: &VehiclePurchaseResult) {
+pub fn apply_purchase_result(_player: &mut ClientPlayer, result: &VehiclePurchaseResult) {
     if result.success {
         println!("Vehicle purchased successfully!");
     } else {

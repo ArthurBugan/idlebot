@@ -1,6 +1,7 @@
 //! Core types shared between client, server, and blockchain.
 
 use serde::{Deserialize, Serialize};
+use crate::terrain::TerrainType;
 
 pub mod actions;
 pub mod economy;

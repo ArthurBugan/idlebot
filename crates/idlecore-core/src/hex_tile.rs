@@ -45,7 +45,7 @@ impl HexTileData {
             center_x: x,
             center_y: y,
             terrain,
-            eco_rating: crate::terrain::eco_rating(&terrain),
+            eco_rating: crate::terrain::eco_rating(&terrain) as u32,
             owned_by: None,
             has_plant: false,
             has_pollution: false,

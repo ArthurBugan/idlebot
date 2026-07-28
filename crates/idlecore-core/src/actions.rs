@@ -2,8 +2,9 @@
 //! Validates gold, plant state, pollution, and executes actions.
 
 use crate::economy;
-use crate::plant::{Plant, PlantActionResult, PlantType};
-use crate::HexTileState;
+use crate::plant::{Plant, PlantActionResult, PlantType, HexTileState};
+use crate::Player;
+use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 
 // ---------------------------------------------------------------------------
@@ -128,12 +129,12 @@ pub fn execute_plant(player: &mut crate::Player, hex: &mut HexTileState, plant_t
     player.xp += 5;
 
     // Check level up
-    if player.xp >= player.xp_for_next_level() {
-        player.level = player.calculate_level(player.xp);
+    if player.xp >= Player::xp_for_next_level(player.level) {
+        player.level = Player::calculate_level(player.xp);
     }
 
     // Plant the seed
-    let display_name = plant_type.plant_type_name().to_string();
+    let display_name = plant_type.config().type_name.to_string();
     hex.plant = Some(Plant::new(plant_type));
     hex.is_polluted = false;
     hex.eco_rating = (hex.eco_rating + 10).min(100);
@@ -141,30 +142,30 @@ pub fn execute_plant(player: &mut crate::Player, hex: &mut HexTileState, plant_t
     ActionResult::Success {
         message: format!("Planted {display_name}, +5 XP"),
         xp_change: 5,
-        gold_change: -PLANT_COST as i64,
+        gold_change: -(PLANT_COST as i64),
     }
 }
 
 /// Execute harvest action: collect gold + XP, remove plant.
-pub fn execute_harvest(player: &mut crate::Player, hex: &HexTileState, now: u64) -> ActionResult {
+pub fn execute_harvest(player: &mut crate::Player, hex: &mut HexTileState, now: u64) -> ActionResult {
     // The plant must be mature (validated beforehand)
-    let plant = hex.plant.as_ref().unwrap(); // safe: validated by caller
-    let config = plant.plant_type.config();
+    let plant_type = hex.plant.as_ref().unwrap().plant_type; // safe: validated by caller
+    let config = plant_type.config();
 
     // Add rewards
     player.gold += config.gold_reward;
     player.xp += config.xp_reward;
 
     // Check level up
-    if player.xp >= player.xp_for_next_level() {
-        player.level = player.calculate_level(player.xp);
+    if player.xp >= Player::xp_for_next_level(player.level) {
+        player.level = Player::calculate_level(player.xp);
     }
 
     // Remove plant
     hex.plant = None;
 
     ActionResult::Success {
-        message: format!("Harvested {}! +{}G, +{} XP", plant.plant_type, config.gold_reward, config.xp_reward),
+        message: format!("Harvested {}! +{}G, +{} XP", plant_type, config.gold_reward, config.xp_reward),
         xp_change: config.xp_reward,
         gold_change: config.gold_reward as i64,
     }
@@ -177,8 +178,8 @@ pub fn execute_clean(player: &mut crate::Player, hex: &mut HexTileState) -> Acti
     player.xp += CLEAN_XP_REWARD;
 
     // Check level up
-    if player.xp >= player.xp_for_next_level() {
-        player.level = player.calculate_level(player.xp);
+    if player.xp >= Player::xp_for_next_level(player.level) {
+        player.level = Player::calculate_level(player.xp);
     }
 
     // Remove pollution
@@ -208,7 +209,7 @@ mod tests {
 
     #[test]
     fn test_validate_plant_insufficient_gold() {
-        let player = test_player();
+        let mut player = test_player();
         player.gold = 5;
         let hex = HexTileState::new(0, "Grass".into(), "0x1234");
         let result = validate_plant(&player, &hex);
@@ -370,7 +371,7 @@ mod tests {
             growth_time_seconds: 3600,
         });
         // Make it mature
-        let result = execute_harvest(&mut player, &hex, now + 3600);
+        let result = execute_harvest(&mut player, &mut hex, now + 3600);
 
         assert_eq!(player.gold, 115);
         assert_eq!(player.xp, 10);

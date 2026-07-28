@@ -85,7 +85,7 @@ impl CorePlayer {
                 let is_grass = matches!(tile.terrain, crate::terrain::TerrainType::Grass);
                 let is_empty = true; // assume empty for initial spawn
 
-                if is_grass && is_empty && dist <= (radius * 10.0) {
+                if is_grass && is_empty && dist <= (radius as f32 * 10.0) {
                     return id;
                 }
             }

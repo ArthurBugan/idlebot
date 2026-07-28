@@ -1,7 +1,6 @@
 //! Sistema de mapa - geração procedural de hexágonos
 
 use rand::Rng;
-use std::collections::HashMap;
 
 /// Dados de um hexágono no mapa
 #[derive(Debug, Clone)]

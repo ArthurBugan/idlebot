@@ -12,6 +12,4 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-str0m = { workspace = true }
-datachannel = { workspace = true }
 rand = { workspace = true }

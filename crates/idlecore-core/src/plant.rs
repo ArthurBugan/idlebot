@@ -71,7 +71,12 @@ impl PlantType {
 
     /// Get config for this plant type
     pub fn config(&self) -> &'static PlantGrowthConfig {
-        PLANT_CONFIGS[self.index()]
+        &PLANT_CONFIGS[self.index()]
+    }
+
+    /// Display name for this plant type
+    pub fn plant_type_name(&self) -> &'static str {
+        self.config().type_name
     }
 }
 
@@ -122,7 +127,7 @@ pub enum PlantStage {
 }
 
 /// Hex tile state for plant tracking
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct HexTileState {
     pub hex_id: u64,
     pub terrain: String,

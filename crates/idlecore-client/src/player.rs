@@ -8,7 +8,6 @@ use bevy::asset::RenderAssetUsages;
 use bevy::render::mesh::{Indices, MeshVertexAttribute, VertexFormat, VertexAttributeValues, PrimitiveTopology};
 use bevy::ecs::prelude::Component;
 use idlecore_core::Vehicle;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::progression;
 
@@ -86,7 +85,7 @@ pub fn spawn_player(
 
     let player_entity = commands.spawn((
         Name::new("player"),
-        ClientPlayer::new_spawn(vehicle, position, level, xp, gold, eco_points, equipped_cosmetics),
+        ClientPlayer::new_spawn(vehicle, position, level, xp, gold, eco_points, equipped_cosmetics, 0),
         Mesh3d::default(),
         Transform::from_xyz(position.x, position.y, position.z),
     ));

@@ -32,30 +32,28 @@ pub fn xp_remaining_for_next_level(level: u32, total_xp: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn xp_for_next_level() {
-        assert_eq!(xp_for_next_level(1), 100);
-        assert_eq!(xp_for_next_level(2), 400);
-        assert_eq!(xp_for_next_level(3), 900);
-        assert_eq!(xp_for_next_level(10), 10_000);
+    fn test_xp_for_next_level() {
+        assert_eq!(super::xp_for_next_level(1), 100);
+        assert_eq!(super::xp_for_next_level(2), 400);
+        assert_eq!(super::xp_for_next_level(3), 900);
+        assert_eq!(super::xp_for_next_level(10), 10_000);
     }
 
     #[test]
-    fn calculate_level() {
-        assert_eq!(calculate_level(0), 1);
-        assert_eq!(calculate_level(99), 1);
-        assert_eq!(calculate_level(100), 2);
-        assert_eq!(calculate_level(499), 2);
-        assert_eq!(calculate_level(500), 3);
+    fn test_calculate_level() {
+        assert_eq!(super::calculate_level(0), 1);
+        assert_eq!(super::calculate_level(99), 1);
+        assert_eq!(super::calculate_level(100), 2);
+        assert_eq!(super::calculate_level(499), 2);
+        assert_eq!(super::calculate_level(500), 3);
     }
 
     #[test]
-    fn xp_remaining() {
-        assert_eq!(xp_remaining_for_next_level(1, 0), 100);
-        assert_eq!(xp_remaining_for_next_level(1, 100), 0);
-        assert_eq!(xp_remaining_for_next_level(1, 150), 0);
-        assert_eq!(xp_remaining_for_next_level(2, 300), 100);
+    fn test_xp_remaining() {
+        assert_eq!(super::xp_remaining_for_next_level(1, 0), 100);
+        assert_eq!(super::xp_remaining_for_next_level(1, 100), 0);
+        assert_eq!(super::xp_remaining_for_next_level(1, 150), 0);
+        assert_eq!(super::xp_remaining_for_next_level(2, 300), 100);
     }
 }

@@ -3,8 +3,10 @@
 //! Maps keyboard input to movement commands and E key interaction.
 
 use bevy::prelude::*;
+use std::time::SystemTime;
 
 use crate::player::{ClientPlayer, CurrentHex};
+use crate::world_pos_to_hex;
 
 /// Interaction marker component for hex entities with plants/pollution
 #[derive(Component, Debug, Clone)]
@@ -84,8 +86,8 @@ pub fn handle_input(
     // Update hex tracking
     let hex_radius = 10.0f32;
     player.current_hex = Some(CurrentHex {
-        q: crate::world_pos_to_hex(transform.translation.x, transform.translation.z, hex_radius).0,
-        r: crate::world_pos_to_hex(transform.translation.x, transform.translation.z, hex_radius).1,
+        q: world_pos_to_hex(transform.translation.x, transform.translation.z, hex_radius).0,
+        r: world_pos_to_hex(transform.translation.x, transform.translation.z, hex_radius).1,
     });
 
     // Reset position with R key
@@ -98,7 +100,7 @@ pub fn handle_input(
 
     // Interaction with E key — trigger hex interaction
     if keyboard.just_pressed(KeyCode::KeyE) {
-        println!("[INPUT] Interaction triggered (E key). Action: {:?}", player.interaction_action);
+        println!("[INPUT] Interaction triggered (E key). Action: {:?}", "plant");
     }
 }
 

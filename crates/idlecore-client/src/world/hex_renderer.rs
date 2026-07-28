@@ -2,7 +2,7 @@
 //!
 //! Renderiza hexágonos flat-top no mundo 3D usando cores procedurais por tipo de terreno.
 
-use crate::map_generator::{HexData, TerrainType};
+use crate::map_generator::TerrainType;
 use bevy::prelude::*;
 
 /// Componente de spawn point (centro do mapa)

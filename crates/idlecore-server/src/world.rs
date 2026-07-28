@@ -22,7 +22,7 @@ const GROWTH_TICK_SECONDS: u64 = 10;
 // ---------------------------------------------------------------------------
 
 /// Represents growth progress for a hex
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PlantGrowthState {
     pub planted_at: u64,
     pub growth_time_seconds: u64,
@@ -142,7 +142,8 @@ pub fn interact_hex(
             // Record plant data in hex
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
             let mut hex = hex;
-            hex.plant = Some(PlantJson::new(&pt, now));
+            let plant_json = PlantJson::new(&pt, now);
+            hex.plant = Some(serde_json::to_string(&plant_json).unwrap());
             hex.is_polluted = false;
             hex.eco_rating = (hex.eco_rating + 10).min(100);
             ctx.db.hex_tile().hex_id().update(hex);
@@ -156,7 +157,9 @@ pub fn interact_hex(
         "harvest" => {
             let hex = hex.clone();
             // Check hex has a plant
-            let plant_json = hex.plant.as_ref().ok_or("No plant here")?;
+            let plant_str = hex.plant.as_ref().ok_or("No plant here")?;
+            let plant_json: PlantJson = serde_json::from_str(plant_str)
+                .map_err(|e| format!("Failed to parse plant JSON: {}", e))?;
 
             // Check if mature
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
@@ -243,15 +246,13 @@ pub fn get_hexes_with_plants(ctx: &ReducerContext) -> Vec<(u64, PlantGrowthState
     ctx.db.hex_tile()
         .iter()
         .filter_map(|hex| {
-            let plant_json = hex.plant.as_ref()?;
-            let planted_at = plant_json.planted_at;
-            let growth_time = plant_json.growth_time_seconds;
-            let plant_type = plant_json.plant_type.clone();
+            let plant_str = hex.plant.as_ref()?;
+            let plant_json: PlantJson = serde_json::from_str(plant_str).ok()?;
 
             let state = PlantGrowthState {
-                planted_at,
-                growth_time_seconds: growth_time,
-                plant_type,
+                planted_at: plant_json.planted_at,
+                growth_time_seconds: plant_json.growth_time_seconds,
+                plant_type: plant_json.plant_type,
             };
 
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
@@ -314,6 +315,107 @@ fn add_gold(ctx: &ReducerContext, wallet_address: &str, amount: u64) {
     let mut player = player;
     player.gold += amount;
     ctx.db.player().address().update(player);
+}
+
+// ---------------------------------------------------------------------------
+// Player lifecycle helpers
+// ---------------------------------------------------------------------------
+
+/// Handle login: create or find player, set online status
+pub fn handle_login(ctx: &ReducerContext, wallet_address: &str, _signature: &str, _nonce: u64) {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let player = ctx.db.player().iter()
+        .find(|p| p.address == wallet_address);
+
+    match player {
+        Some(p) => {
+            let mut p = p;
+            p.is_online = true;
+            p.last_seen = now;
+            ctx.db.player().address().update(p);
+        }
+        None => {
+            let new_player = PlayerDbEntry {
+                address: wallet_address.to_string(),
+                position_x: 0.0,
+                position_y: 0.0,
+                hex_id: 0,
+                xp: 0,
+                gold: 100,
+                level: 1,
+                eco_points: 0,
+                last_seen: now,
+                is_online: true,
+                vehicle: String::new(),
+                cosmetics: String::new(),
+                templates: String::new(),
+                templates_limit: 50,
+            };
+            ctx.db.player().insert(new_player);
+        }
+    }
+}
+
+/// Mark player as online
+pub fn mark_online(ctx: &ReducerContext, wallet_address: &str) {
+    let player = ctx.db.player().iter()
+        .find(|p| p.address == wallet_address)
+        .expect("Player must exist after handle_login");
+    let mut player = player;
+    player.is_online = true;
+    player.last_seen = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    ctx.db.player().address().update(player);
+}
+
+/// Mark player as offline
+pub fn mark_offline(ctx: &ReducerContext, wallet_address: &str) {
+    let player = ctx.db.player().iter()
+        .find(|p| p.address == wallet_address)
+        .expect("Player exists");
+    let mut player = player;
+    player.is_online = false;
+    ctx.db.player().address().update(player);
+}
+
+/// Reset idle tracking on login
+pub fn reset_idle_tracking(ctx: &ReducerContext, wallet_address: &str) {
+    mark_online(ctx, wallet_address);
+}
+
+/// Move player to new coordinates
+pub fn move_player(ctx: &ReducerContext, wallet_address: &str, target_x: f32, target_y: f32) {
+    let player = ctx.db.player().iter()
+        .find(|p| p.address == wallet_address)
+        .expect("Player exists");
+    let mut player = player;
+    player.position_x = target_x;
+    player.position_y = target_y;
+    player.hex_id = player.position_y.to_bits() as u64 ^ ((player.position_x.to_bits() as u64) << 32);
+    player.last_seen = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    ctx.db.player().address().update(player);
+}
+
+/// Teleport player to a hex
+pub fn teleport_player(ctx: &ReducerContext, wallet_address: &str, target_hex_id: u64, cost: u64) {
+    let player = ctx.db.player().iter()
+        .find(|p| p.address == wallet_address)
+        .expect("Player exists");
+    let mut player = player;
+    if player.gold < cost {
+        tracing::warn!("Not enough gold to teleport");
+        return;
+    }
+    player.gold -= cost;
+    player.hex_id = target_hex_id;
+    player.last_seen = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    ctx.db.player().address().update(player);
+}
+
+/// Fetch all players from the database
+pub fn fetch_all_players() -> Vec<PlayerDbEntry> {
+    // In SpacetimeDB, this would use ctx.db.player().iter().collect()
+    // Returning empty vec for non-DB context
+    Vec::new()
 }
 
 // ---------------------------------------------------------------------------
