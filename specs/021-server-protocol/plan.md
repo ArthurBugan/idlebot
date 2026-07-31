@@ -1,39 +1,58 @@
 # Plan 021: Server-Client Protocol
 
-> **Implementation strategy**: Define message types, implement serialization (Borsh), set up WebSocket transport, add protocol version negotiation, compression, movement prediction, and connection recovery.
+> **Implementation Plan**
 
-## Verification Steps
-1. Define InputMessage enum: MoveInput, PlantAction, HarvestAction, CleanAction, TeleportAction, Heartbeat
-2. Define ActionResult enum: MoveConfirmed, PlantResult, HarvestResult, CleanResult, TeleportResult, Failed
-3. Define ServerEvent enum: PlayerJoined, PlayerLeft, LevelUp, VoiceChannelCreated, VoiceChannelDestroyed, MarketplaceEvent, EcoPointsEvent
-4. Implement Borsh serialization for all message types
-5. Implement Borsh deserialization (round-trip test)
-6. Define protocol version header (first 1 byte)
-7. Define message sequence numbers (uint32, first field in each message)
-8. Implement lz4 compression for messages
-9. Set up WebSocket transport for custom messages (in addition to SpacetimeDB replication)
-10. Implement client-side movement prediction
-11. Implement server correction when client diverges
-12. Implement view filtering (only send nearby players, voice channels)
-13. Add heartbeat every 10 seconds on client
-14. Add heartbeatAck response on server
-15. Implement connection recovery on disconnect
-16. Test serialization round-trip for all message types
-17. Test protocol version negotiation
-18. Test compression efficiency (>50% reduction)
-19. Test movement prediction accuracy
-20. Test server correction triggers correctly
+## Architecture
 
-## Implementation Order
-1. Define enums (InputMessage, ActionResult, ServerEvent) in server/src/types.rs
-2. Implement Borsh Serialize/Deserialize traits
-3. Implement protocol version header
-4. Implement sequence numbers
-5. Implement compression (lz4)
-6. Set up WebSocket transport
-7. Implement client-side movement prediction
-8. Implement server-side correction
-9. Implement view filtering
-10. Add heartbeat/heartbeatAck
-11. Implement connection recovery
-12. Test all components
+### Protocol Design
+- SpacetimeDB replication as primary protocol
+- Custom message types for actions (move, plant, harvest, clean, teleport, etc.)
+- Pub/Sub events for level-ups, voice, marketplace
+- Borsh serialization for wire format
+- Optional lz4 compression for large messages
+
+### Message Flow
+1. Client → Server: InputMessage (move 100ms, actions on trigger)
+2. Server → Client: ActionResult (validated result)
+3. Server → Client: StateUpdate (replication, filtered by view radius)
+4. Server → Client: Event (level-up, voice, marketplace)
+5. Client → Server: Heartbeat (every 10s)
+
+### Sequence Numbering
+- Client tracks sequence for ordering
+- Server validates sequence (allow 1 skip)
+- Prevents replay attacks
+
+## Files to Create
+
+### Core (idlecore-core)
+- Create `src/protocol/messages.rs` — InputMessage, ActionResult, ServerEvent enums with Borsh serialization
+
+### Server (idlecore-server)
+- Modify `src/main.rs` — Wire message handlers, sequence tracking
+- Create `src/protocol/handlers.rs` — Action validation and response generation
+
+### Client (idlecore-client)
+- Modify `src/input.rs` — Serialize input messages, handle responses
+- Create `src/protocol/event_handler.rs` — Process server events
+- Modify `src/lib.rs` — Add protocol version, heartbeat
+
+## Dependencies
+- Requires 013-wallet-auth (connection flow)
+- Requires 009-minimap (position updates)
+- Requires 010-economy (action validation)
+- Requires 005-voice-chat (voice events)
+- Requires 011-marketplace (marketplace events)
+
+## Testing Strategy
+1. Unit test: Borsh serialization/deserialization roundtrip
+2. Unit test: InputMessage contains all action variants
+3. Integration test: Client sends move → server corrects position
+4. Integration test: Level-up event broadcasts to all clients
+5. Edge case: Message compression reduces size > 50%
+6. Edge case: Sequence number wraparound (u32 max)
+
+## Timeline
+- **Estimate:** 2-3 days
+- **Phase:** Phase 3 (Protocol)
+- **Blocked Until:** Core protocol types (after 010-economy, 013-wallet-auth are complete)

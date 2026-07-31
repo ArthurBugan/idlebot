@@ -4,38 +4,41 @@
 
 ## Architecture
 
-### Marketplace Data Model
-- Listing: id, seller_id, title, description, github_url, price_usdt, category, published_at, expires_at, is_sold, buyer_id
+### Marketplace Listing Model
 - Publish: Create listing with title, description, GitHub URL, USDT price (costs 50G)
-- Browse: View all public listings
-- Purchase: Pay USDT, platform fee 5%, seller receives remainder
+- Browse: View all public listings with search/filter
+- Purchase: Pay USDT via smart contract (platform fee: 5%)
+- Delivery: Listing marked as sold, 30-day expiry
 
-### Smart Contract Integration
-- Anchor-based marketplace program (see spec 012 for Anchor implementation)
-- 1:1 mapping from Solidity TemplateMarket.sol to Rust
+### Platform Integration
+- Server records listings (server-authoritative)
+- Smart contract (Solana/Anchor) handles USDT transfers
+- Platform fee: 5% of sale price deducted automatically
 
 ## Files to Create/Modify
 
-### Core (idlecore-core)
-- `src/marketplace.rs` — MarketplaceListing struct, publish/browse/purchase logic
-
 ### Server (idlecore-server)
-- `src/market.rs` — Register marketplace reducers, smart contract interaction
+- `src/market.rs` — MarketplaceSystem struct, publish_listing(), buy_listing(), is_expired()
+
+### Smart Contracts (new)
+- `contracts/solana/programs/src/marketplace.rs` — Anchor marketplace program
+- `contracts/solana/programs/src/token_utils.rs` — USDT transfer helpers
 
 ### Client (idlecore-client)
-- `src/marketplace_ui.rs` — Publish form, browse grid, purchase flow
-
-## Testing Strategy
-1. Unit test: Publishing deducts 50G correctly
-2. Unit test: Purchase transfers USDT correctly
-3. Unit test: Platform fee (5%) calculated correctly
-4. Integration test: Publish → browse → purchase flow
-5. Edge case: Expired listing cleanup
+- Modify `src/interaction.rs` — Add publish/buy action handlers
 
 ## Dependencies
-- Depends on 010-economy (gold/USDT management)
-- Depends on 012-smart-contracts-anchor (Anchor marketplace program)
+- Requires 010-economy (USDT currency system)
+- Requires 012-smart-contracts (Anchor marketplace program)
+- Requires 019-database-schema (table definitions)
+
+## Testing Strategy
+1. Unit test: Publish listing deducts 50G correctly
+2. Unit test: Buy listing deducts USDT, marks sold
+3. Integration test: Full publish→browse→buy flow
+4. Edge case: Expired listing rejected, already-sold rejected
 
 ## Timeline
-- **Estimate:** 2-3 days
-- **Phase:** MVP Core Loop
+- **Estimate:** 3-4 days
+- **Phase:** Phase 2 (Marketplace)
+- **Blocked Until:** 010-economy and 012-smart-contracts must be complete

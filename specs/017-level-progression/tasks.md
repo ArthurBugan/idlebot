@@ -2,35 +2,43 @@
 
 > **Implementation Checklist**
 
-## Phase 1: Progression Formula
-- [✓] **T1.1** Calculate current level from total XP: `level = floor(log_{(level+1)^2 - level^2}(total_xp))`
-- [✓] **T1.2** XP required for level N: `100 * N^2`
-- [✓] **T1.3** XP gained from actions (plant +5, harvest +10, clean +15)
-- [✓] **T1.4** XP gained from idle gains (server-calculated)
+## Phase 1: Data Model
+- [ ] **T1.1** Define ProgressionState struct (current_level, total_xp)
+- [ ] **T1.2** Define XP contribution per action (plant=5, harvest=10, clean=15)
+- [ ] **T1.3** Define IdleGainXP struct (level bracket → XP amount)
 
-## Phase 2: Server Progression (NFR1)
-- [ ] **T1.5** Level calculation runs on server only
-- [✓] **T1.6** XP accrual is server-authoritative
-- [✓] **T1.7** Database stores `total_xp` + `current_level` atomically
-- [✓] **T1.8** Level up broadcast event to all connected clients
+## Phase 2: Level Calculation
+- [ ] **T2.1** Implement xp_for_next_level(level) → 100 * level^2
+- [ ] **T2.2** Implement calculate_level(total_xp) — incremental loop
+- [ ] **T2.3** Verify: calculate_level(0)=1, calculate_level(100)=2, calculate_level(500)=3
+- [ ] **T2.4** Implement cache_latest_level() for O(1) UI lookup
 
-## Phase 3: Level Display (FR2)
-- [✓] **T1.9** Render current level on player avatar
-- [✓] **T1.10** XP progress bar visible: "X / Y XP to next level"
+## Phase 3: XP Bar Calculation
+- [ ] **T3.1** Implement xp_progress() → current_level / xp_for_next_level
+- [ ] **T3.2** Implement xp_remaining() → xp_for_next_level - current_level
+- [ ] **T3.3** Format as "X / Y XP to Level N"
 
-## Phase 4: XP Tracking (FR3)
-- [✓] **T1.11** Track total XP earned (not per-action)
-- [✓] **T1.12** XP bar updates in real-time as XP is earned
-- [✓] **T1.13** Cache current level for O(1) lookup
+## Phase 4: Server Authority
+- [ ] **T4.1** Move level calculation to server-side
+- [ ] **T4.2** Implement apply_xp(gained) — server calls calculate_level
+- [ ] **T4.3** Implement check_level_up() — return new_level if advanced
 
-## Phase 5: Persistence (FR5)
-- [✓] **T1.14** Save total_xp on every XP gain
-- [✓] **T1.15** Save current_level after level up
-- [✓] **T1.16** Recover state on reconnect
+## Phase 5: Level-Up Event
+- [ ] **T5.1** Emit LevelUp event on advancement
+- [ ] **T5.2** Broadcast to all subscribed clients
+- [ ] **T5.3** Client displays level-up notification
 
-## Phase 6: Testing
-- [✓] **T2.1** Level 1 at 0 XP
-- [✓] **T2.2** Level 2 at 100 XP
-- [✓] **T2.3** Level 3 at 500 XP
-- [✓] **T2.4** Level 4 at 1400 XP
-- [✓] **T2.5** Level broadcast event fires at correct level
+## Phase 6: Persistence
+- [ ] **T5.4** Persist level and total_xp in database after each change
+- [ ] **T5.5** Reconstruct level from total_xp on new session
+
+## Phase 7: Testing
+- [ ] **T6.1** Level correctly calculated from total XP through formula
+- [ ] **T6.2** Current level rendered on player avatar
+- [ ] **T6.3** XP bar reflects progress correctly
+- [ ] **T6.4** Server broadcasts Level Up event
+- [ ] **T6.5** Database persists level and total_xp atomically
+
+## Verification
+- [✓] xp_for_next_level formula: 100 * level^2
+- [✓] calculate_level returns correct level for known XP values

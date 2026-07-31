@@ -4,48 +4,42 @@
 
 ## Architecture
 
-### Scheduled Function Architecture
-- SpacetimeDB scheduled functions with strict validation
-- Server-authoritative calculations (no client input)
-- Rate limiting and error handling
-- Audit logging for all scheduled actions
+### Scheduled Functions (SpacetimeDB)
+1. **idle_gains** — Every 5 min: calculate idle XP/gold for offline players
+2. **plant_updates** — Every 10 sec: check plant maturity, update status
+3. **voice_cleanup** — Every 1 min: destroy empty voice channels
+4. **listing_cleanup** — Every 1 hour: mark expired marketplace listings
 
 ### Security Measures
-- Validate scheduled function is server-only
-- Atomic updates (all-or-nothing)
+- Server-authoritative only (no client-triggered execution)
+- Atomic updates (all-or-nothing transactions)
+- Audit logging for all scheduled actions
 - Error handling without player impact
-- Performance: < 100ms per scheduled function
-
-### Audit Logging
-- Track all scheduled actions (function name, timestamp, player_id, action_type, data)
-- Log to dedicated table for debugging and monitoring
 
 ## Files to Create/Modify
 
 ### Server (idlecore-server)
-- `src/scheduler/mod.rs` — Scheduler module with all scheduled functions
-- `src/main.rs` — Register scheduled functions
-- `src/scheduler/idle.rs` — Idle gains calculation (every 5 minutes)
-- `src/scheduler/plant.rs` — Plant growth updates (every 10 seconds)
-- `src/scheduler/voice.rs` — Voice channel cleanup (every 1 minute)
-- `src/scheduler/listing.rs` — Marketplace listing cleanup (every 1 hour)
-
-### Core (idlecore-core)
-- `src/scheduler.rs` — Scheduler configuration (intervals, enabled/disabled flags)
-
-## Testing Strategy
-1. Unit test: Idle gains calculation
-2. Unit test: Plant growth update
-3. Unit test: Voice channel cleanup
-4. Integration test: All scheduled functions run on schedule
-5. Edge case: Scheduler crash recovery
+- Create `src/scheduler/idle.rs` — Idle gains calculation
+- Create `src/scheduler/plant.rs` — Plant growth updates
+- Create `src/scheduler/voice.rs` — Voice channel cleanup
+- Create `src/scheduler/listing.rs` — Listing cleanup
+- Modify `src/scheduler/mod.rs` — Register all schedulers
+- Modify `src/main.rs` — Wire scheduler functions
 
 ## Dependencies
-- Depends on 001-idle-gains (idle gains calculation)
-- Depends on 004-interactions (action execution)
-- Depends on 005-voice-chat (voice channel management)
-- Depends on 011-marketplace (listing cleanup)
+- Requires 001-idle-gains (idle gains calculation)
+- Requires 004-interactions (plant state)
+- Requires 005-voice-chat (voice channels)
+- Requires 011-marketplace (marketplace listings)
+
+## Testing Strategy
+1. Unit test: Idle gains calculation for various time ranges
+2. Unit test: Plant maturity check
+3. Integration test: Voice channel destruction after 5 min emptiness
+4. Integration test: Expired listing cleanup
+5. Edge case: Error during scheduled function doesn't crash
 
 ## Timeline
 - **Estimate:** 2-3 days
-- **Phase:** MVP Core Loop
+- **Phase:** Phase 3 (Security)
+- **Blocked Until:** All target systems (idle gains, plants, voice, marketplace) must be complete

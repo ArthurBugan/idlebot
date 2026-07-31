@@ -5,43 +5,45 @@
 ## Architecture
 
 ### Connection Flow
-1. Client connects to SpacetimeDB server
-2. Server authenticates via JWT/session token
-3. Client connected to replication tables
+1. Wallet auth → JWT → SpacetimeDB client connection
+2. Subscribe to replication tables (players, hex_tiles, voice_channels, market_listings)
+3. Server-side view radius filtering (3-hex radius)
 
-### State Synchronization
-- Player state at 100ms intervals (position, hex, vehicle, cosmetics)
-- View radius filtering (clients only receive nearby player updates)
-- Server-authoritative hex occupancy rules
+### State Sync
+- Position updates at 100ms intervals
+- Client-side movement prediction + server correction
+- Conflict resolution: proximity rule (within hex radius)
 
-### Conflict Resolution
-- Two players on same hex: use proximity (within hex radius)
-- All state changes validated server-side before applying
-- Automatic disconnect handling (5s grace period)
+### Disconnect/Reconnect
+- Server marks Disconnecting on disconnect
+- 5-second grace period, then cleanup
+- Reconnect: validate JWT, restore position, mark Online
 
 ## Files to Create/Modify
 
 ### Server (idlecore-server)
-- `src/main.rs` — Register multiplayer reducers (player state updates, hex occupancy)
+- Modify `src/main.rs` — Connection flow, subscription management
+- Create `src/multiplayer.rs` — State sync, conflict resolution
+- Modify `src/voice.rs` — Voice channel management on disconnect
 
 ### Client (idlecore-client)
-- `src/multiplayer.rs` — Multiplayer connection, state sync, view radius
-- `src/main.rs` — Wire multiplayer systems
-
-### Core (idlecore-core)
-- `src/player.rs` — Add multi-player fields (current_hex, is_online)
-
-## Testing Strategy
-1. Unit test: View radius filtering (only nearby players visible)
-2. Unit test: Conflict resolution (two players same hex)
-3. Integration test: 10 players spawning and moving independently
-4. Edge case: Player disconnect mid-game
+- Modify `src/lib.rs` — Subscribe to replication tables
+- Modify `src/player.rs` — Movement prediction system
+- Modify `src/world/hex_renderer.rs` — Show other players
 
 ## Dependencies
-- Depends on 003-player-spawn (player state)
-- Depends on 002-hex-grid (hex occupancy)
-- Depends on 019-database-schema (player table schema)
+- Requires 013-wallet-auth (connection flow)
+- Requires 014-player-identity (player state)
+- Requires 005-voice-chat (voice channels)
+- Requires 009-minimap (player positions)
+
+## Testing Strategy
+1. Unit test: Hex occupancy conflict resolution
+2. Unit test: View radius filtering (3-hex radius)
+3. Integration test: 2+ players in same hex
+4. Edge case: Rapid disconnect/reconnect cycles
 
 ## Timeline
 - **Estimate:** 3-5 days
-- **Phase:** Post-MVP Multiplayer
+- **Phase:** Phase 3 (Multiplayer)
+- **Blocked Until:** Most specs already have core code (player, hex grid, voice)

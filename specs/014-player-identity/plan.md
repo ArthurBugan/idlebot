@@ -4,53 +4,41 @@
 
 ## Architecture
 
-### Player Data Model
-- Wallet address as unique player ID (64-char hex)
-- Player profile stored in SpacetimeDB
-- Support for display name (optional, up to 20 chars), avatar (5 options), bio
-- Activity statistics (play time, actions, etc.)
+### Player Identity
+- Wallet address (64-char hex) as unique player ID
+- Display name (optional, up to 20 alphanumeric chars)
+- Avatar selection (5 default: Tetrahedron, Cube, Sphere, Cylinder, Cone)
+- Bio (optional)
+- Activity statistics (plants_planted, plants_harvested, pollution_cleaned, etc.)
 
-### Database Schema
-```sql
-CREATE TABLE player_identity (
-    wallet_address TEXT PRIMARY KEY,
-    display_name TEXT DEFAULT NULL,
-    avatar TEXT DEFAULT 'tetrahedron',
-    bio TEXT DEFAULT NULL,
-    play_count INTEGER DEFAULT 0,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX idx_player_name ON player_identity(display_name);
-```
-
-### Session Management
-- JWT token with wallet_address as claim
-- Session expiration: 24 hours
-- Refresh token mechanism
+### SpacetimeDB Schema
+- Player table with all identity fields
+- Index on address (unique), index on display_name
+- Player profile updates (no conflict resolution needed — single owner)
 
 ## Files to Create/Modify
 
-### Core (idlecore-core)
-- `src/player.rs` — Player struct with identity fields
-
 ### Server (idlecore-server)
-- `src/types.rs` — PlayerIdentityDbEntry table schema
-- `src/main.rs` — Register player identity reducers
+- Modify `src/types.rs` — Add Player struct
+- Modify `src/main.rs` — Add player management functions
+- Create `src/player.rs` — PlayerManager with create, update_name, get_stats
+
+### Core (idlecore-core)
+- Modify `src/player.rs` — Add avatar type enum, identity fields
 
 ### Client (idlecore-client)
-- `src/identity.rs` — Player profile data, avatar display
-- `src/main.rs` — Wire identity system
-
-## Testing Strategy
-1. Unit test: Player identity creation on first login
-2. Unit test: Display name validation (length, characters)
-3. Unit test: Avatar selection
-4. Integration test: Login → profile display → logout
+- Modify `src/player.rs` — Display player info, avatar
 
 ## Dependencies
-- Depends on 013-wallet-auth (wallet signature login)
-- Depends on 019-database-schema (table schema)
+- Requires 013-wallet-auth (player creation from wallet address)
+- Requires 014-player-identity (player data model)
+
+## Testing Strategy
+1. Unit test: Player creation from wallet address
+2. Unit test: Display name validation (max 20 chars, alphanumeric only)
+3. Integration test: Player stats tracking across actions
+4. Edge case: Name collision handled
 
 ## Timeline
-- **Estimate:** 2-3 days
-- **Phase:** MVP Core Loop
+- **Estimate:** 2 days
+- **Phase:** Phase 3 (Identity)

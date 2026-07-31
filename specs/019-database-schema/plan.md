@@ -1,38 +1,48 @@
-# Plan 019: Database Schema
+# Plan 019: Database Schema Design
 
 > **Implementation Plan**
 
 ## Architecture
 
-### Core Tables
-1. **players** — wallet_address, display_name, avatar, bio, level, total_xp, gold, eco_points
-2. **hex_tiles** — hex_id, terrain, owner, pollution_level, eco_rating
-3. **market_listings** — listing_id, seller, title, github_url, description, price, is_sold
-4. **voice_channels** — hex_id, player_ids (JSON), created_at, last_occupied
-5. **idle_gains** — player_id, pending_xp, pending_gold, last_calculated_at
-6. **subscriptions** — user, premium_until, limit
-7. **vehicles** — player_id, vehicle_type, equipped, purchased
-8. **cosmetics** — player_id, category, type, purchased, equipped
-9. **transactions** — player_id, timestamp, action, gold_change, eco_change
+### Schema Overview
+9 tables: players, hex_tiles, vehicles, cosmetics, voice_channels, market_listings, idle_gains, transactions, scheduled_functions_state
 
-## Files to Create/Modify
+### Index Strategy
+- SpacetimeDB auto-creates PK/FK indexes
+- Explicit indexes on frequently queried fields (address, hex_id, player_id, seller_id)
 
-### Server (idlecore-server)
-- `src/types.rs` — All table schemas, DB entry types
-- `src/main.rs` — Register table initializations
+### Replication Filters
+- Server-side filtering by view radius (manhattan_distance ≤ 5 for hexes, ≤ 3 for players)
+- Active-only filtering (voice channels, scheduled functions)
+
+## Files to Create
+
+### Chain (idlecore-chain)
+- Create `src/schema.rs` — SpacetimeDB table definitions, indexes, filters
 
 ### Core (idlecore-core)
-- `src/lib.rs` — Export DB types
+- Modify `src/lib.rs` — Import schema types
 
-## Testing Strategy
-1. Verify table schema in SpacetimeDB
-2. Test CRUD operations for each table
-3. Performance test: concurrent writes
+### Server (idlecore-server)
+- Modify `src/types.rs` — Add SpacetimeDB table types
+
+### Client (idlecore-client)
+- Modify `src/lib.rs` — Import schema for subscriptions
 
 ## Dependencies
-- Independent (foundation spec)
-- Required by all other specs
+- Requires 013-wallet-auth (player creation)
+- Requires 014-player-identity (player data model)
+- Requires 015-scheduler-security (scheduler state)
+
+## Testing Strategy
+1. Unit test: Table schema compiles and validates
+2. Integration test: Create player → query by address
+3. Integration test: View radius filter returns correct hexes
+4. Edge case: Empty tables handle gracefully
 
 ## Timeline
-- **Estimate:** 1 day
-- **Phase:** Foundation
+- **Estimate:** 2 days
+- **Phase:** Phase 3 (Infrastructure)
+
+## Ponytail Note
+ponytail: Minimal schema definition — types only, no index implementation until first table is used in production.

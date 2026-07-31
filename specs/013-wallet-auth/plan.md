@@ -5,50 +5,44 @@
 ## Architecture
 
 ### Authentication Flow
-1. Client requests login from server
-2. Server generates random nonce (32 bytes)
-3. Client signs nonce with wallet
-4. Client submits nonce + signature to server
-5. Server verifies signature, recovers wallet address
-6. Server creates/looks up player, generates JWT/session token
-7. Client stores token for authenticated requests
+1. Client requests login → Server generates random nonce
+2. Client signs nonce with wallet (MetaMask, etc.)
+3. Client submits nonce + signature → Server
+4. Server verifies signature, recovers address
+5. Server creates/looks up player, generates JWT/session token
 
-### Signature Verification
-- Ethereum-style signature recovery (EIP-191 typed messages)
-- Server uses EIP-712 struct hashing for domain separation
-- Domain separator: `{name: "idlebot", version: 1}`
-
-### Nonce Generation
-- Server-side CSPRNG (SpacetimeDB hash, not `time::rng` which is not secure)
-- Nonce must be unique per login session
+### Session Management
+- JWT with address + expiration (e.g., 24 hours)
+- SpacetimeDB stores player records (existing)
+- No password storage — wallet address is unique identifier
 
 ## Files to Create/Modify
 
 ### Core (idlecore-core)
-- `src/auth.rs` — Signature verification, EIP-712 domain separator
+- Modify `src/lib.rs` — Add wallet auth integration
 
 ### Chain (idlecore-chain)
-- `src/auth.rs` — Wallet address type, session management
+- Modify `src/auth.rs` — Add signature verification, nonce generation
 
 ### Server (idlecore-server)
-- `src/main.rs` — Register login, logout, wallet_change reducers
-- `src/types.rs` — WalletAuthDbEntry table
+- Modify `src/main.rs` — Add verify_login handler
+- Modify `src/types.rs` — Add Session struct
 
 ### Client (idlecore-client)
-- `src/wallet_auth.rs` — Wallet connection UI, nonce signing
-- `src/main.rs` — Wire authentication flow
-
-## Testing Strategy
-1. Unit test: EIP-712 signature verification
-2. Unit test: Nonce generation uniqueness
-3. Unit test: Session token generation
-4. Integration test: Full login flow (wallet sign → server verify → JWT)
-5. Edge case: Replay attack (same nonce twice)
+- Modify `src/main.rs` — Add wallet connection UI
+- Modify `src/input.rs` — Add signMessage handler
 
 ## Dependencies
-- Requires 014-player-identity (player creation on first login)
-- Requires 019-database-schema (player table schema)
+- Requires 014-player-identity (player creation from wallet address)
+- Requires polygon wallet library (alloy or ethers)
+- Requires JWT library
+
+## Testing Strategy
+1. Unit test: Nonce generation (32 bytes random)
+2. Unit test: Signature verification (recover address matches)
+3. Integration test: Full login flow (request → sign → submit → session)
+4. Edge case: Replay attack (same nonce rejected)
 
 ## Timeline
 - **Estimate:** 2-3 days
-- **Phase:** MVP Core Loop
+- **Phase:** Phase 3 (Authentication + Security)

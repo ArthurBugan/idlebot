@@ -2,36 +2,36 @@
 
 > **Implementation Checklist**
 
-## Phase 1: Currency Display
-- [ ] **T1.1** Create EconomyPanel component showing all 3 currencies
-- [ ] **T1.2** Display Gold balance
-- [ ] **T1.3** Display XP balance
-- [ ] **T1.4** Display Eco points balance
+## Phase 1: Data Model
+- [ ] **T1.1** Define CurrencyType enum (Gold, USDT)
+- [ ] **T1.2** Define PlayerEconomy struct (gold, usdt, eco_points, lifetime stats)
+- [ ] **T1.3** Implement add_gold(), spend_gold() with negative balance prevention
+- [ ] **T1.4** Implement add_eco_points() method
 
-## Phase 2: Gold Income
-- [ ] **T1.5** Calculate gold income from matches (50-150G per match)
-- [ ] **T1.6** Calculate gold income from idle hours (1.5G/hour base)
-- [ ] **T1.7** Calculate gold income from online time (1G/hour)
+## Phase 2: Economy Actions
+- [ ] **T1.5** Define EconomyAction enum (Plant, Harvest, Clean, Teleport, Publish, etc.)
+- [ ] **T1.6** Implement execute_action() with gold deduction/validation
+- [ ] **T1.7** Implement harvest action with gold reward + XP
+- [ ] **T1.8** Implement clean action with eco point reward
 
-## Phase 3: Currency Exchange
-- [ ] **T1.8** Implement convert gold to XP (2.5 XP per gold)
-- [ ] **T1.9** Implement convert XP to gold (0.4 gold per XP)
-- [ ] **T1.10** Implement convert USDT to gold (1 USDT = 200 gold)
-- [ ] **T1.11** Implement convert gold to USDT (200 gold = 1 USDT)
+## Phase 3: Economy Ledger
+- [ ] **T1.9** Define Transaction struct (id, player_id, timestamp, action, gold_change, etc.)
+- [ ] **T1.10** Create EconomyLedger for transaction recording
+- [ ] **T1.11** Add transaction creation to execute_action()
 
-## Phase 4: Cooldown System
-- [ ] **T1.12** Implement 6-hour cooldown on currency conversion
-- [ ] **T1.13** Display cooldown timer in UI
-- [ ] **T1.14** Prevent conversion during cooldown
+## Phase 4: Integration
+- [ ] **T2.1** Wire idle gains to gold earning (modify server scheduler)
+- [ ] **T2.2** Wire action costs to economy (modify reducer logic)
+- [ ] **T2.3** Wire vehicle/cosmetic purchases to economy
+- [ ] **T2.4** Display currencies in client UI
 
-## Phase 5: USDT Withdrawal
-- [ ] **T1.15** Implement withdraw gold to wallet (1 gold = 1 USDT)
-- [ ] **T1.16** Calculate USDT amount from gold balance
-- [ ] **T1.17** Implement 24-hour withdrawal cooldown
-- [ ] **T1.18** Display pending transactions
+## Phase 5: Testing
+- [ ] **T3.1** Gold earned/spent correctly on all actions
+- [ ] **T3.2** Eco Points earned on clean actions
+- [ ] **T3.3** No negative balances allowed
+- [ ] **T3.4** Transaction history accessible
 
-## Phase 6: Testing
-- [ ] **T1.19** Test currency display updates
-- [ ] **T1.20** Test currency conversion rates
-- [ ] **T1.21** Test cooldown prevents spam
-- [ ] **T1.22** Test withdrawal process
+## Verification
+- [✓] PlayerEconomy struct has all currency fields
+- [✓] spend_gold() prevents negative balance
+- [✓] All action types have execute_action implementation

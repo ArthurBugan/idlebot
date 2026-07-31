@@ -4,49 +4,42 @@
 
 ## Architecture
 
-### Phase 1: Procedural Placeholders (MVP)
-- Hexes: colored planes with terrain colors
-- Player: tetrahedron mesh (4 vertices, 4 faces)
-- Plants: cone meshes (3 vertices each)
-- Pollution: dark colored sprites
+### Three-Phase Strategy
+**Phase 1 (MVP):** Bevy primitive meshes (cubes, cones, tetrahedrons) for gameplay
+**Phase 2:** Import low-poly glTF assets (vehicles, cosmetics, plants, terrain)
+**Phase 3:** Add animations and particle effects (VFX)
 
-### Phase 2: Low-Poly Assets
-- 5 vehicle models (GLTF format)
-- Cosmetic models (hats, auras, trails)
-- Plant models (Wheat, Tree, RareHerb)
-- Terrain materials (6 types, PBR)
-- All assets < 500 triangles, textures < 512x512
-
-### Phase 3: Animations and VFX
-- Vehicle animations (5 types)
-- Cosmetic animations (optional)
-- Plant growth animations
-- Particle effects (aura, trails)
+### Asset Pipeline
+- Procedural generation → glTF conversion → Bevy asset server
+- Texture optimization: 256x256 or 512x512 max
+- Mesh optimization: < 500 triangles per model
+- PBR materials (metallic, roughness)
 
 ## Files to Create/Modify
 
 ### Client (idlecore-client)
-- `src/assets/procedural.rs` — Placeholder mesh generation
-- `src/assets/low_poly.rs` — GLTF asset loading (Phase 2)
-- `src/animation.rs` — Animation system (Phase 3)
-- `src/particles.rs` — Particle effects (Phase 3)
+- `src/assets/procedural.rs` — Already exists, procedural placeholder assets
+- `src/world/hex_renderer.rs` — Add terrain material colors
+- `src/world/map_generator.rs` — Modify to use low-poly assets
 
-### Core (idlecore-core)
-- `src/terrain.rs` — Terrain material definitions
-
-## Testing Strategy
-1. Visual test: Placeholder assets render correctly
-2. Visual test: Low-poly assets load and display
-3. Performance test: Asset loading < 100ms per asset
-4. Animation test: Animations play at 30fps
+### New Files
+- `src/assets/models.rs` — Asset loading for glTF models
+- `src/assets/animations.rs` — Vehicle animations, particle effects
 
 ## Dependencies
-- Depends on 002-hex-grid (terrain rendering)
-- Depends on 006-vehicles (vehicle models)
-- Depends on 007-cosmetics (cosmetic models)
-- Requires Blender/asset pipeline (external)
+- Requires Phase 1 (MVP) to be complete and verified
+- Low-poly assets to be created externally (Blender, etc.)
+
+## Testing Strategy
+1. Unit test: Procedural placeholder meshes render
+2. Integration test: Terrain colors display correctly
+3. Unit test: glTF loading (once assets exist)
+4. Performance test: Asset loading < 100ms per asset
 
 ## Timeline
-- **Phase 1 (MVP):** 1 day (procedural placeholders)
-- **Phase 2:** 3-5 days (low-poly assets)
-- **Phase 3:** 2-3 days (animations, VFX)
+- **Phase 1:** Already partially done (procedural.rs exists)
+- **Phase 2:** 2-3 days (asset creation + import)
+- **Phase 3:** 3-5 days (animations + VFX)
+
+## Ponytail Note
+ponytail: Skipping low-poly asset creation (external Blender work). Focus on procedural placeholders that work for MVP.

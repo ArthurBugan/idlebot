@@ -4,46 +4,50 @@
 
 ## Architecture
 
-### Currency Definitions
-- Gold: Earned via idle gains, harvesting. Spent on planting, vehicles, cosmetics, teleport.
-- USDT: Premium currency for marketplace purchases.
-- Eco Points: Earned by cleaning pollution, planting trees. Affects eco rating.
+### Currency System
+- Gold: Primary currency (idle gains, harvesting, actions)
+- USDT: Premium currency (marketplace purchases)
+- Eco Points: Environmental currency (cleaning, planting)
+- Server-authoritative all calculations
+
+### Economy Ledger
+- Transaction table for audit trail
+- Player economy state in database
+- No negative balance enforcement
 
 ### Economy Actions
-- Plant: cost 10G, gain 5 XP
-- Harvest: free, gain 15G + 10 XP
-- Clean: cost 20G, gain 20G + 15 XP + 10 EP
-- Teleport: cost 100G
-- Publish template: cost 50G
-
-### Transaction Ledger
-- Server-authoritative transaction log
-- Tracks gold changes, eco point changes per action
+- Plant: spend 10G, gain 5XP
+- Harvest: earn 15G + 10XP
+- Clean: spend 20G, earn 15G + 15XP + 10EcoPoints
+- Teleport: spend 100G
+- Purchase vehicle/cosmetic: spend gold or USDT
 
 ## Files to Create/Modify
 
 ### Core (idlecore-core)
-- `src/economy.rs` — PlayerEconomy struct, currency management, action execution
+- `src/economy.rs` — Full rewrite: PlayerEconomy struct, EconomyAction enum, execute_action, EconomyLedger
 
 ### Server (idlecore-server)
-- `src/progression.rs` — Wire economy to progression (level unlocks based on gold spent)
-- `src/scheduler/idle.rs` — Gold earned via idle gains
+- Modify `src/types.rs` — Add CurrencyType enum, EconomyAction
+- Modify `src/main.rs` — Wire economy actions to reducers
 
 ### Client (idlecore-client)
-- `src/economy_ui.rs` — Display gold, USDT, eco points in UI
-- `src/main.rs` — Wire economy UI systems
-
-## Testing Strategy
-1. Unit test: Gold earned/spent correctly on all actions
-2. Unit test: Eco points calculated correctly
-3. Unit test: No negative balances
-4. Integration test: Full economy flow (plant → idle → harvest)
+- Modify `src/player.rs` — Display all three currencies
 
 ## Dependencies
-- Depends on 001-idle-gains (idle gold earning)
-- Depends on 004-interactions (action costs)
-- Depends on 006-vehicles (vehicle costs)
+- Requires 001-idle-gains (gold earning)
+- Requires 004-interactions (action gold costs)
+- Requires 014-player-identity (player state)
+
+## Testing Strategy
+1. Unit test: Gold add/spend correctly
+2. Unit test: No negative balance allowed
+3. Integration test: All action types cost/earn correctly
+4. Edge case: Insufficient funds handled gracefully
 
 ## Timeline
 - **Estimate:** 2-3 days
-- **Phase:** MVP Core Loop
+- **Phase:** Core loop (FR1 is blocked until 004)
+
+## Blocked Until
+- 004-interactions must be complete first (actions need economy validation)
