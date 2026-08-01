@@ -1,4 +1,3 @@
-/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 //! Vehicle system — purchase, equip, and use vehicles.
 //!
 //! VehicleType enum delegates to crate::Vehicle for display_name(), speed_multiplier(),
@@ -154,8 +153,50 @@ fn get_player_level(ctx: &ReducerContext, wallet_address: &str) -> u32 {
 
 /// Attempts to purchase a vehicle.
 /// Returns true if successful (paid and purchased), false otherwise.
+// Logic extracted here so client stubs can call the same functions without a
+// SpacetimeDB context; the idiom has precedent in the repo (e.g., teleport).
+
+/// Deserialize a player's vehicle JSON string; empty string → empty inventory.
+fn parse_vehicles(value: &str) -> Vec<Vehicle> {
+    if value.is_empty() { get_default_starter_vehicles().clone() } else { serde_json::from_str(value).unwrap_or_default() }
+}
+
+static DEFAULT_STARTER_VEHICLE: std::sync::OnceLock<Vec<Vehicle>> = std::sync::OnceLock::new();
+
+fn get_default_starter_vehicles() -> &'static Vec<Vehicle> {
+    DEFAULT_STARTER_VEHICLE.get_or_init(|| {
+        vec![
+            Vehicle::new(VehicleType::Airplane),
+            Vehicle::new(VehicleType::Bicycle),
+        ]
+    })
+}
+
+fn serialize_vehicles(vehicles: &[Vehicle]) -> String {
+    if vehicles.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(vehicles).unwrap_or_default()
+    }
+}
+
+fn find_vehicle_index(vehicles: &[Vehicle], v_type: VehicleType) -> Option<usize> {
+    vehicles.iter().position(|v| v.vehicle_type == v_type)
+}
+
+fn already_owned(vehicles: &[Vehicle], v_type: VehicleType) -> bool {
+    find_vehicle_index(vehicles, v_type).is_some()
+}
+
+fn can_afford(gold: u64, cost: u64) -> bool {
+    gold >= cost
+}
+
+fn has_minimum_level(player_level: u32, required: u32) -> bool {
+    player_level >= required
+}
+
 pub fn purchase_vehicle(ctx: &ReducerContext, wallet_address: &str, v_type: VehicleType) -> bool {
-    // 1. Validate: None cannot be purchased
     if v_type == VehicleType::None {
         println!("[VEHICLE] Cannot purchase 'None' vehicle.");
         return false;

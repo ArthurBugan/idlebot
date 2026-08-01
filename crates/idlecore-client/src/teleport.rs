@@ -283,7 +283,7 @@ pub fn update_teleport_particles(
         let elapsed = particle.age.as_secs_f32();
         let lifetime = particle.lifetime.as_secs_f32();
         let alpha = 1.0 - (elapsed / lifetime).min(1.0);
-        sprite.color.set_a(alpha);
+        sprite.color = Color::srgba(0.0, 1.0, 1.0, alpha);
         
         // Remove when expired
         if particle.age >= particle.lifetime {
@@ -301,7 +301,7 @@ pub fn update_teleport_ui(
     mut teleport_ui: Query<&mut TeleportUI>,
     player_position: Query<&Transform, With<PlayerComponent>>,
 ) {
-    let Ok(mut ui) = teleport_ui.iter_mut().next() else {
+    let Some(mut ui) = teleport_ui.iter_mut().next() else {
         return;
     };
     
@@ -309,33 +309,33 @@ pub fn update_teleport_ui(
     // For now, use placeholder values
 }
 
-/// Handle hex clicks for teleport selection
-pub fn handle_hex_click(
-    mut events: EventReader<MouseButtonDownEvent>,
-    mut teleport_ui: Query<&mut TeleportUI>,
-    camera_query: Query<(&Camera, &GlobalTransform)>,
-) {
-    // TODO: Raycast from camera to hex grid
-    // For now, this is a placeholder
-}
-
-/// Confirm teleport button click
-pub fn confirm_teleport_click(
-    mut events: EventReader<MouseButtonInput>,
-    mut teleport_ui: Query<&mut TeleportUI>,
-    player_data: Query<&PlayerComponent>,
-) {
-    let Ok(ui) = teleport_ui.iter_mut().next() else {
-        return;
-    };
-    
-    if !ui.is_available() {
-        return;
-    }
-    
-    // TODO: Send teleport request to server
-    // For now, just log it
-}
+// BEVY 0.19 TODO: Fix event handler API compatibility
+// These functions need updating for Bevy 0.19 event system
+// pub fn handle_hex_click(
+//     mut events: EventReader<MouseButtonDownEvent>,
+//     mut teleport_ui: Query<&mut TeleportUI>,
+//     camera_query: Query<(&Camera, &GlobalTransform)>,
+// ) {
+//     // TODO: Raycast from camera to hex grid
+//     // For now, this is a placeholder
+// }
+//
+// pub fn confirm_teleport_click(
+//     mut events: EventReader<MouseButtonInput>,
+//     mut teleport_ui: Query<&mut TeleportUI>,
+//     player_data: Query<&PlayerComponent>,
+// ) {
+//     let Ok(ui) = teleport_ui.iter_mut().next() else {
+//         return;
+//     };
+//     
+//     if !ui.is_available() {
+//         return;
+//     }
+//     
+//     // TODO: Send teleport request to server
+//     // For now, just log it
+// }
 
 // ---------------------------------------------------------------------------
 // Player Component (placeholder)
@@ -352,7 +352,7 @@ pub struct PlayerComponent {
 
 impl PlayerComponent {
     pub fn new(hex: HexCoord) -> Self {
-        let (x, z) = hex.to_pixel();
+        let (x, z) = hex.to_pixel(10.0);
         Self {
             position: Vec3::new(x, 0.0, z),
             hex,

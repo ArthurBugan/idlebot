@@ -1,25 +1,25 @@
 //! Vehicle visual representation system.
 //!
 //! Provides rendering hooks for vehicle display and visual updates.
+//! Bevy-specific rendering is in idlecore-client.
 
 use crate::Vehicle;
-use bevy::prelude::*;
 
-/// Visual representation of a vehicle on a player entity
-#[derive(Component)]
+/// Visual representation of a vehicle on a player entity.
+#[derive(Debug, Clone, PartialEq)]
 pub struct VehicleVisual {
     pub vehicle_type: Vehicle,
 }
 
 impl VehicleVisual {
-    /// Create a new vehicle visual component
+    /// Create a new vehicle visual component.
     pub fn new(vehicle_type: Vehicle) -> Self {
         Self {
             vehicle_type,
         }
     }
 
-    /// Get the display name for UI
+    /// Get the display name for UI.
     pub fn display_name(&self) -> &'static str {
         match self.vehicle_type {
             Vehicle::None => "None",
@@ -31,63 +31,51 @@ impl VehicleVisual {
         }
     }
 
-    /// Get the speed multiplier for this vehicle
+    /// Get the speed multiplier for this vehicle.
     pub fn speed_multiplier(&self) -> f32 {
         self.vehicle_type.speed_multiplier()
     }
 
-    /// Get the indicator color (for UI highlights)
-    pub fn indicator_color(&self) -> Color {
-        Color::srgb(
-            match self.vehicle_type {
-                Vehicle::None => 0.5,
-                Vehicle::Bicycle => 0.0,
-                Vehicle::Scooter => 1.0,
-                Vehicle::Motorcycle => 1.0,
-                Vehicle::Boat => 0.0,
-                Vehicle::Airplane => 1.0,
-            },
-            match self.vehicle_type {
-                Vehicle::None => 0.5,
-                Vehicle::Bicycle => 1.0,
-                Vehicle::Scooter => 1.0,
-                Vehicle::Motorcycle => 0.0,
-                Vehicle::Boat => 0.5,
-                Vehicle::Airplane => 0.0,
-            },
-            match self.vehicle_type {
-                Vehicle::None => 0.5,
-                Vehicle::Bicycle => 0.0,
-                Vehicle::Scooter => 0.0,
-                Vehicle::Motorcycle => 0.0,
-                Vehicle::Boat => 1.0,
-                Vehicle::Airplane => 1.0,
-            },
-        )
+    /// Get the indicator color (for UI highlights) as (r, g, b).
+    pub fn indicator_color(&self) -> (f32, f32, f32) {
+        match self.vehicle_type {
+            Vehicle::None => (0.5, 0.5, 0.5),
+            Vehicle::Bicycle => (0.0, 1.0, 0.0),
+            Vehicle::Scooter => (1.0, 1.0, 0.0),
+            Vehicle::Motorcycle => (1.0, 0.0, 0.0),
+            Vehicle::Boat => (0.0, 0.5, 1.0),
+            Vehicle::Airplane => (1.0, 0.0, 1.0),
+        }
     }
 }
 
-/// System to update vehicle visual when player's vehicle changes
-pub fn update_vehicle_visual(
-    mut query: Query<(&VehicleVisual, &Transform)>,
-) {
-    for (vehicle_visual, transform) in query.iter_mut() {
-        log::info!(
-            "Updated vehicle visual: {} at position ({}, {})",
-            vehicle_visual.display_name(),
-            transform.translation.x,
-            transform.translation.y
-        );
-    }
+/// Check if a vehicle visual is valid (owned and equipped).
+pub fn is_valid_visual(vehicle_type: Vehicle) -> bool {
+    vehicle_type != Vehicle::None
 }
 
-/// System to spawn vehicle visual when a player equips a vehicle
-pub fn spawn_vehicle_visual(
-    mut commands: Commands,
-    query: Query<(Entity, &Vehicle), Without<VehicleVisual>>,
-) {
-    for (entity, vehicle) in query.iter() {
-        let visual = VehicleVisual::new(*vehicle);
-        commands.entity(entity).insert(visual);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vehicle_visual_display_names() {
+        assert_eq!(VehicleVisual::new(Vehicle::None).display_name(), "None");
+        assert_eq!(VehicleVisual::new(Vehicle::Bicycle).display_name(), "Electric Bicycle");
+        assert_eq!(VehicleVisual::new(Vehicle::Airplane).display_name(), "Electric Airplane");
+    }
+
+    #[test]
+    fn test_vehicle_visual_speed_multiplier() {
+        assert_eq!(VehicleVisual::new(Vehicle::None).speed_multiplier(), 1.0);
+        assert_eq!(VehicleVisual::new(Vehicle::Bicycle).speed_multiplier(), 2.0);
+        assert_eq!(VehicleVisual::new(Vehicle::Airplane).speed_multiplier(), 10.0);
+    }
+
+    #[test]
+    fn test_is_valid_visual() {
+        assert!(!is_valid_visual(Vehicle::None));
+        assert!(is_valid_visual(Vehicle::Bicycle));
+        assert!(is_valid_visual(Vehicle::Airplane));
     }
 }

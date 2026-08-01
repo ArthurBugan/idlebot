@@ -1,17 +1,24 @@
-/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
- LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 //! Player data structures with spawn and movement helpers.
 //!
 //! Bevy-free -- pure Rust types only.
 
 use crate::Position;
 use crate::Vehicle;
+use serde::{Deserialize, Serialize};
+
+/// Player inventory item for UI display.
+#[derive(Debug, Clone)]
+pub struct InventoryItem {
+    pub vehicle_type: Vehicle,
+    pub purchased: bool,
+    pub equipped: bool,
+}
 
 /// Player with vehicle inventory
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorePlayer {
     pub address: String,
-    pub position: Vec3,
+    pub position: Position,
     pub hex_id: u64,
     pub vehicle: Option<Vehicle>,
     pub cosmetics: Vec<String>,
@@ -37,8 +44,8 @@ impl CorePlayer {
         match &self.vehicle {
             Some(v) => {
                 vec![InventoryItem {
-                    vehicle_type: v.vehicle_type,
-                    purchased: v.purchased,
+                    vehicle_type: *v,
+                    purchased: true,
                     equipped: true, // Only one vehicle at a time for simplicity
                 }]
             }
@@ -56,7 +63,8 @@ impl CorePlayer {
             address,
             position: spawn_position,
             hex_id,
-            vehicle: Vehicle::None,
+            vehicle: None,
+            is_admin: false,
             xp: 0,
             gold: 100,
             level: 1,
@@ -77,11 +85,7 @@ impl CorePlayer {
         self.last_seen = seconds;
     }
 
-    /// Get the current speed multiplier based on the owned vehicle.
-    /// Returns 1.0 if no vehicle is owned.
-    pub fn speed_multiplier(&self) -> f32 {
-        self.vehicle.speed_multiplier()
-    }
+
 
     /// Find the nearest grass hex to the given position, within a radius.
     /// Returns the hex_id of the chosen spawn hex, or 0 (center) as fallback.
@@ -126,7 +130,7 @@ mod tests {
         assert_eq!(p.gold, 100);
         assert_eq!(p.level, 1);
         assert!(!p.is_online);
-        assert_eq!(p.vehicle, Vehicle::None);
+        assert_eq!(p.vehicle, None);
     }
 
     #[test]
@@ -153,10 +157,10 @@ mod tests {
     #[test]
     fn player_speed_multiplier_vehicle() {
         let mut p = CorePlayer::new("0x1234".into(), Position::new(0.0, 0.0));
-        p.vehicle = Vehicle::Bicycle;
+        p.vehicle = Some(Vehicle::Bicycle);
         assert_eq!(p.speed_multiplier(), 2.0);
 
-        p.vehicle = Vehicle::Airplane;
+        p.vehicle = Some(Vehicle::Airplane);
         assert_eq!(p.speed_multiplier(), 10.0);
     }
 

@@ -7,15 +7,15 @@ use idlecore_core::hex::HexCoord;
 pub fn spawn_minimap_overlay(
     mut commands: Commands,
     cameras: Query<&Camera>,
-    window: Res<Window>,
+    windows: Query<&Window>,
 ) {
     let cam = cameras.single();
     if !cam.is_active {
         return;
     }
 
-    let win_w = window.width();
-    let win_h = window.height();
+    let win_w = windows.iter().next().map(|w| w.width() as f32).unwrap_or(1920.0);
+    let win_h = windows.iter().next().map(|w| w.height() as f32).unwrap_or(1080.0);
     let minimap_size = 180.0;
     let screen_offset_x = win_w - minimap_size - 10.0;
     let screen_offset_y = 10.0;

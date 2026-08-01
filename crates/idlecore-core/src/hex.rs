@@ -2,8 +2,10 @@
 //! Uses axial coordinates (q, r, s) where q + r + s = 0.
 //! Flat-top hex geometry, hex radius 10.0 meters.
 
+use serde::{Deserialize, Serialize};
+
 /// Hexagon defined by axial coordinates (q, r, s) where q + r + s = 0.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct HexCoord {
     pub q: i32,
     pub r: i32,

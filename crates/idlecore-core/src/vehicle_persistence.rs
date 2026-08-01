@@ -42,33 +42,22 @@ impl PlayerVehicleData {
         }
     }
 
-    /// Equip a vehicle by index
+    /// Equip a vehicle by index.
+    /// Sets equipped_vehicle_index; does not modify purchased flag.
     pub fn equip_vehicle(&mut self, index: usize) -> bool {
         if index >= self.vehicles.len() {
             return false;
         }
-
-        // Unequip all vehicles first
-        if let Some(old_idx) = self.equipped_vehicle_index {
-            if old_idx < self.vehicles.len() {
-                self.vehicles[old_idx].purchased = false;
-            }
-        }
-
-        // Mark the new vehicle as equipped
-        self.vehicles[index].purchased = true;
         self.equipped_vehicle_index = Some(index);
         true
     }
 
-    /// Unequip the currently equipped vehicle
+    /// Unequip the currently equipped vehicle.
+    /// Clears equipped_vehicle_index; does not modify purchased flag.
     pub fn unequip_vehicle(&mut self) -> bool {
-        if let Some(index) = self.equipped_vehicle_index {
-            if index < self.vehicles.len() {
-                self.vehicles[index].purchased = false;
-                self.equipped_vehicle_index = None;
-                return true;
-            }
+        if self.equipped_vehicle_index.is_some() {
+            self.equipped_vehicle_index = None;
+            return true;
         }
         false
     }
@@ -105,7 +94,7 @@ impl VehicleDatabase {
     /// Get or create player vehicle data
     pub fn get_or_create_player(&mut self, wallet_address: String) -> &mut PlayerVehicleData {
         self.players
-            .entry(wallet_address)
+            .entry(wallet_address.clone())
             .or_insert_with(|| PlayerVehicleData::new(wallet_address))
     }
 
@@ -133,8 +122,9 @@ impl VehicleDatabase {
 
     /// Save all player data
     pub fn save_all(&mut self) -> Result<(), String> {
-        for wallet_address in self.players.keys() {
-            self.save_player(wallet_address)?;
+        let keys: Vec<String> = self.players.keys().cloned().collect();
+        for wallet_address in keys {
+            self.save_player(&wallet_address)?;
         }
         Ok(())
     }
@@ -198,7 +188,8 @@ mod tests {
 
         assert!(data.equip_vehicle(1));
         assert_eq!(data.equipped_vehicle_index, Some(1));
-        assert!(!data.vehicles[0].purchased);
+        // purchased flag is unchanged — it tracks ownership, not equipment
+        assert!(data.vehicles[0].purchased);
         assert!(data.vehicles[1].purchased);
     }
 
@@ -221,7 +212,8 @@ mod tests {
 
         assert!(data.unequip_vehicle());
         assert_eq!(data.equipped_vehicle_index, None);
-        assert!(!data.vehicles[0].purchased);
+        // purchased flag is unchanged — ownership persists
+        assert!(data.vehicles[0].purchased);
     }
 
     #[test]

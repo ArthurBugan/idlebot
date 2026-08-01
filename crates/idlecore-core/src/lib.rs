@@ -8,6 +8,7 @@ pub mod actions;
 pub mod economy;
 pub mod grid;
 pub mod hex;
+pub mod world;
 pub mod hex_tile;
 pub mod marketplace;
 pub mod plant;
@@ -18,6 +19,8 @@ pub mod teleport;
 pub mod terrain;
 pub mod ui;
 pub mod vehicle;
+pub mod vehicle_persistence;
+pub mod vehicle_visual;
 pub mod voice;
 pub mod idle_config;
 

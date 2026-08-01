@@ -57,10 +57,12 @@ impl std::fmt::Display for TeleportError {
 // ---------------------------------------------------------------------------
 
 /// A destination hex for teleporting to, with its distance from the player.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct TeleportTarget {
     /// Axial hex coordinates (q, r) where s = -q-r.
     pub hex: HexCoord,
+    /// Unique hex identifier.
+    pub hex_id: u64,
     /// Distance in hex steps.
     pub distance: i32,
     /// Terrain type label for display.
@@ -127,6 +129,7 @@ pub fn generate_nearby_hexes(current: &HexCoord, range: i32) -> Vec<TeleportTarg
                 let terrain_label = terrain_label_for(current.q + dq, current.r + dr);
                 targets.push(TeleportTarget {
                     hex: target,
+                    hex_id: target.to_id(),
                     distance: dist,
                     terrain_label,
                 });
@@ -156,6 +159,31 @@ pub fn teleport_cost(level: u32) -> u64 {
     let scaled = (base * (level as f64).sqrt()) as u64;
     let cap = (level as u64).pow(2);
     scaled.min(cap)
+}
+
+// --- UI-compatible wrappers (used by ui.rs) ---
+
+pub fn get_teleport_cost_display(level: u32) -> String {
+    format!("Teleport: {}G", teleport_cost(level))
+}
+
+pub fn format_teleport_cost(gold: u64) -> String {
+    format!("{}G", gold)
+}
+
+pub fn calc_teleport_cost(_level: u32) -> u64 {
+    // placeholder: use level 1 cost for now
+    teleport_cost(1)
+}
+
+/// Generate teleport options for a player at a given hex.
+/// Returns nearby reachable hexes.
+pub fn get_teleport_options(
+    _gs: &economy::LocalGameState,
+    _player_hex: u64,
+) -> Vec<TeleportTarget> {
+    // placeholder: return empty for now
+    Vec::new()
 }
 
 // ---------------------------------------------------------------------------

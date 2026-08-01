@@ -393,7 +393,7 @@ mod tests {
         assert_eq!(mgr.hex_player_count(10), 8);
 
         // Add a 9th player -- should be rejected (MAX_HEX_PLAYERS = 8).
-        let added = mgr.ensure_channel(10, now);
+        let added = mgr.ensure_channel("0xtest", now);
         let ch = mgr.channels.get_mut(&10).unwrap();
         assert_eq!(ch.player_count(), 8);
     }
@@ -414,7 +414,7 @@ mod tests {
             mgr.init_player(&format!("b_{}", i), 20, now);
         }
 
-        let sorted = mgr.all_channels_sorted(now);
+        let sorted = mgr.all_channels_sorted();
         assert_eq!(sorted.len(), 2);
         assert_eq!(sorted[0].hex_id, 20); // Most players first
         assert_eq!(sorted[1].hex_id, 10);

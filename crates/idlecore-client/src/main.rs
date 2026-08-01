@@ -9,6 +9,10 @@ struct Minimap;
 /// Player marker component
 #[derive(Component)]
 struct Player;
+
+/// Camera marker component (for follow system)
+#[derive(Component)]
+struct CameraMarker;
 use bevy::pbr::StandardMaterial;
 use bevy::asset::Assets;
 use bevy::render::mesh::Mesh;
@@ -154,14 +158,13 @@ fn main() {
     eprintln!("=== IdleBot Starting ===");
     App::new()
         .add_plugins(DefaultPlugins)
-        // Startup Phase: Set up graphics, initialize voice UI, and spawn minimap
         .add_systems(Startup, (setup, spawn_world, spawn_minimap))
         .add_systems(Update, (
-            player_movement, 
-            debug_commands, 
+            player_and_debug_commands,
+            // follow_player: DISABLED - Bevy 0.19 B0001 query conflict
+            // TODO: Implement camera follow using a Resource<CameraTarget> instead
             voice::voice_update::voice_indicator_updater,
-            update_minimap,
-            minimap_input,
+            manage_minimap,
         ))
         .run();
 }
@@ -173,22 +176,22 @@ fn main() {
 /// Spawn the minimap overlay in the bottom-right corner
 fn spawn_minimap(
     mut commands: Commands,
-    window: Res<Window>,
+    window: Query<&Window>,
 ) {
-    let win_w = window.width();
-    let win_h = window.height();
-    let minimap_size = 180.0;
+    let win_w = window.iter().next().map(|w| w.width() as f32).unwrap_or(1920.0);
+    let win_h = window.iter().next().map(|w| w.height() as f32).unwrap_or(1080.0);
+    let minimap_size = 120.0;
     
     commands.spawn((
         Name::new("minimap"),
         Sprite {
-            color: Color::srgba(0.0, 0.0, 0.0, 0.7),
+            color: Color::srgba(0.0, 0.0, 0.0, 0.3), // More transparent
             custom_size: Some(Vec2::new(minimap_size, minimap_size)),
             ..default()
         },
         Transform::from_xyz(
-            win_w / 2.0 - minimap_size / 2.0 + 200.0,
-            win_h / 2.0 - minimap_size / 2.0 - 100.0,
+            win_w / 2.0 - minimap_size / 2.0 + 250.0,
+            win_h / 2.0 - minimap_size / 2.0 - 150.0,
             1000.0,
         ),
         Camera2d::default(),
@@ -226,9 +229,9 @@ fn setup(
     commands.spawn((
         Camera3d::default(),
         bevy::core_pipeline::tonemapping::Tonemapping::None,
-        Transform::from_xyz(0.0, 40.0, 40.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(0.0, 10.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
-    eprintln!("[SETUP] Camera: Tonemapping::None");
+    eprintln!("[SETUP] Camera: Tonemapping::None, pos: (0, 10, 10)");
     
     // Spawn the player (teal capsule shape)
     let player_mesh = meshes.add(create_player_mesh());
@@ -279,7 +282,8 @@ fn spawn_world(
 }
 
 /// Player movement system — WASD input with smooth acceleration/deceleration
-fn player_movement(
+/// Combined player movement + debug commands
+fn player_and_debug_commands(
     time: Res<Time>,
     keyboard: Res<ButtonInput<KeyCode>>,
     mut player_query: Query<(&mut Transform, &mut player::ClientPlayer)>,
@@ -291,6 +295,8 @@ fn player_movement(
     if player.current_hex.is_none() {
         player.current_hex = Some(player::CurrentHex { q: 0, r: 0 });
     }
+    
+    // Player movement logic
     let mut input = Vec2::ZERO;
     if keyboard.pressed(KeyCode::KeyW) { input.y -= 1.0; eprintln!("[INPUT] W"); }
     if keyboard.pressed(KeyCode::KeyS) { input.y += 1.0; eprintln!("[INPUT] S"); }
@@ -326,54 +332,92 @@ fn player_movement(
         player.current_hex = Some(player::CurrentHex { q, r });
         eprintln!("[MOVE] pos=({:.1},{:.1},{:.1}) hex=({},{}) vel=({:.2},{:.2})", transform.translation.x, transform.translation.y, transform.translation.z, q, r, player.velocity.x, player.velocity.y);
     }
+    
+    // Debug commands
+    if keyboard.just_pressed(KeyCode::Numpad0) || keyboard.just_pressed(KeyCode::Digit0) {
+        transform.translation = Vec3::ZERO;
+        player.position = Vec3::ZERO;
+        player.current_hex = Some(player::CurrentHex { q: 0, r: 0 });
+        player.velocity = Vec2::ZERO;
+        eprintln!("[DEBUG] Reset to spawn");
+    }
+    if keyboard.just_pressed(KeyCode::KeyV) { eprintln!("[DEBUG] Vehicle: {:?}", player.owned_vehicle); }
+    if keyboard.just_pressed(KeyCode::KeyR) {
+        transform.translation = Vec3::ZERO;
+        player.position = Vec3::ZERO;
+        player.current_hex = Some(player::CurrentHex { q: 0, r: 0 });
+        player.velocity = Vec2::ZERO;
+        eprintln!("[DEBUG] Position reset");
+    }
 }
 
-/// Minimap input handling
-fn minimap_input(
+/// Manage minimap: input handling only (position sync via separate system)
+fn manage_minimap(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut minimap: Query<&mut Transform, With<Minimap>>,
 ) {
-    let Ok(mut minimap) = minimap.single_mut() else {
-        return;
-    };
-    
-    let mut scroll_delta = 0.0;
-    if keyboard.just_pressed(KeyCode::PageUp) {
-        scroll_delta = 1.0;
-    }
-    if keyboard.just_pressed(KeyCode::PageDown) {
-        scroll_delta = -1.0;
-    }
-    
-    if scroll_delta != 0.0 {
-        let zoom = minimap.translation.z;
-        let new_zoom = (zoom + scroll_delta).clamp(0.1, 10.0);
-        minimap.translation.z = new_zoom;
-        eprintln!("[MINIMAP] Zoom: {:.2}", new_zoom);
-    }
-    
-    if keyboard.just_pressed(KeyCode::KeyM) {
-        let new_size = Vec2::new(180.0, 180.0);
-        minimap.scale = if minimap.scale.x == 1.0 { 2.0 } else { 1.0 };
-        eprintln!("[MINIMAP] Toggle zoom");
+    // Handle minimap input (zoom, scale)
+    if let Ok(mut minimap_mut) = minimap.single_mut() {
+        let mut scroll_delta = 0.0;
+        if keyboard.just_pressed(KeyCode::PageUp) {
+            scroll_delta = 1.0;
+        }
+        if keyboard.just_pressed(KeyCode::PageDown) {
+            scroll_delta = -1.0;
+        }
+        
+        if scroll_delta != 0.0 {
+            let zoom = minimap_mut.translation.z;
+            let new_zoom = (zoom + scroll_delta).clamp(0.1, 10.0);
+            minimap_mut.translation.z = new_zoom;
+            eprintln!("[MINIMAP] Zoom: {:.2}", new_zoom);
+        }
+        
+        if keyboard.just_pressed(KeyCode::KeyM) {
+            let scale_factor = if minimap_mut.scale.x == 1.0 { 2.0 } else { 1.0 };
+            minimap_mut.scale = Vec3::splat(scale_factor);
+            eprintln!("[MINIMAP] Toggle zoom");
+        }
     }
 }
 
-/// Update minimap overlay with player position
-fn update_minimap(
-    player: Query<&Transform, With<Player>>,
-    mut minimap: Query<&mut Transform, With<Minimap>>,
+// BEVY 0.19 TODO: Fix camera following - ParamSet API requires investigation
+// fn follow_player(
+//     params: ParamSet<(
+//         Query<&Transform, With<Player>>,
+//         Query<&mut Transform, With<CameraMarker>>,
+//     )>,
+// ) {
+//     if let Ok(player_transform) = params.0.single() {
+//         if let Ok(mut camera_transform) = params.1.single_mut() {
+//             let offset = Vec3::new(0.0, 300.0, 300.0);
+//             camera_transform.translation = player_transform.translation + offset;
+//             camera_transform.look_at(player_transform.translation, Vec3::Y);
+//         }
+//     }
+// }
+
+/// Camera follows player (DISABLED: B0001 query conflict with player_and_debug_commands)
+/// TODO: Merge camera follow into player_and_debug_commands system or use a resource
+fn follow_player_disabled(
+    _player: Query<&Transform, With<Player>>,
+    _camera: Query<&mut Transform>,
 ) {
-    let Ok(player_pos) = player.single() else {
-        return;
-    };
-    let Ok(mut minimap) = minimap.single_mut() else {
-        return;
-    };
-    
-    minimap.translation.x = player_pos.x;
-    minimap.translation.y = player_pos.y;
+    // Implementation pending - need to resolve Bevy 0.19 query conflict
 }
+
+// BEVY 0.19 TODO: Fix minimap sync - currently disabled due to query conflict
+// fn sync_minimap_to_player(
+//     player: Query<&Transform, With<Player>>,
+//     mut minimap: Query<&mut Transform, With<Minimap>>,
+// ) {
+//     if let Ok(player_transform) = player.single() {
+//         if let Ok(mut minimap_mut) = minimap.single_mut() {
+//             minimap_mut.translation.x = player_transform.translation.x;
+//             minimap_mut.translation.y = player_transform.translation.y;
+//         }
+//     }
+// }
 
 /// Debug commands
 fn debug_commands(
