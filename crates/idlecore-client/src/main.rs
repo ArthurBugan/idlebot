@@ -363,32 +363,20 @@ fn player_and_debug_commands(
     player_transform.translation = transform.translation;
 }
 
-/// Manage minimap: input handling only (position sync via separate system)
+/// Manage minimap: toggle visibility with M key
 fn manage_minimap(
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut minimap: Query<&mut Transform, With<Minimap>>,
+    mut minimap: Query<(&mut Transform, &mut Sprite)>,
 ) {
-    // Handle minimap input (zoom, scale)
-    if let Ok(mut minimap_mut) = minimap.single_mut() {
-        let mut scroll_delta = 0.0;
-        if keyboard.just_pressed(KeyCode::PageUp) {
-            scroll_delta = 1.0;
-        }
-        if keyboard.just_pressed(KeyCode::PageDown) {
-            scroll_delta = -1.0;
-        }
-        
-        if scroll_delta != 0.0 {
-            let zoom = minimap_mut.translation.z;
-            let new_zoom = (zoom + scroll_delta).clamp(0.1, 10.0);
-            minimap_mut.translation.z = new_zoom;
-            eprintln!("[MINIMAP] Zoom: {:.2}", new_zoom);
-        }
-        
-        if keyboard.just_pressed(KeyCode::KeyM) {
-            let scale_factor = if minimap_mut.scale.x == 1.0 { 2.0 } else { 1.0 };
-            minimap_mut.scale = Vec3::splat(scale_factor);
-            eprintln!("[MINIMAP] Toggle zoom");
+    if keyboard.just_pressed(KeyCode::KeyM) {
+        if let Ok((mut _transform, mut sprite)) = minimap.single_mut() {
+            // Toggle visibility by changing color to fully transparent or semi-transparent
+            sprite.color = if sprite.color == Color::srgba(0.0, 0.0, 0.0, 0.3) {
+                Color::srgba(0.0, 0.0, 0.0, 0.0)
+            } else {
+                Color::srgba(0.0, 0.0, 0.0, 0.3)
+            };
+            eprintln!("[MINIMAP] Toggle");
         }
     }
 }
