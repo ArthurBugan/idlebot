@@ -1,4 +1,4 @@
-/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
+ LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 //! Player data structures with spawn and movement helpers.
 //!
 //! Bevy-free -- pure Rust types only.
