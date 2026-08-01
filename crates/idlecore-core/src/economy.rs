@@ -1,3 +1,5 @@
+/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
+/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 //! Economy system -- Gold, XP, level progression, costs, rewards.
 //!
 //! Local single-player: tracks player gold/XP, validates action costs,
@@ -413,6 +415,8 @@ pub struct LocalGameState {
     pub current_terrain: String,
     /// Current hex's pollution status
     pub is_polluted: bool,
+    /// Teleport state (cooldown tracking + persistence)
+    pub teleport_state: crate::teleport::TeleportState,
 }
 
 impl LocalGameState {
@@ -431,6 +435,7 @@ impl LocalGameState {
             actions_history: Vec::new(),
             current_terrain: "Grass".to_string(),
             is_polluted: false,
+            teleport_state: crate::teleport::TeleportState::new(),
         }
     }
 

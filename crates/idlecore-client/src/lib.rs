@@ -18,6 +18,9 @@ pub mod procedural;
 pub mod player;
 
 #[path = "vehicle.rs"]
+#[path = "teleport.rs"]
+pub mod teleport;
+
 pub mod vehicle;
 
 #[path = "idle.rs"]
