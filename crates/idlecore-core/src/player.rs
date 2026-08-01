@@ -2,13 +2,9 @@
 //! Player data structures with spawn and movement helpers.
 //!
 //! Bevy-free -- pure Rust types only.
-//!
-//! Core player data with spawn_at_hex, speed_multiplier, set_last_seen,
-//! and find_nearest_empty_hex helpers for 003-player-spawn spec.
 
 use crate::Position;
 use crate::Vehicle;
-use crate::hex::HexCoord;
 
 /// Core player data with spawn and speed helper methods.
 #[derive(Debug, Clone)]

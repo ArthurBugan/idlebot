@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use crate::terrain::TerrainType;
+use crate::cosmetic::CosmeticCategory;
 
 pub mod actions;
 pub mod economy;
@@ -10,6 +11,7 @@ pub mod hex;
 pub mod hex_tile;
 pub mod marketplace;
 pub mod plant;
+pub mod cosmetic;
 pub mod player;
 pub mod progression;
 pub mod teleport;
@@ -120,7 +122,7 @@ impl Vehicle {
             Vehicle::Scooter => 1000,
             Vehicle::Motorcycle => 2500,
             Vehicle::Boat => 2000,
-            Vehicle::Airplane => 10000,  // matches server VehicleType::Airplane purchase_cost
+            Vehicle::Airplane => 10000,
         }
     }
 
@@ -166,14 +168,6 @@ pub struct Cosmetic {
     pub name: String,
     pub category: CosmeticCategory,
     pub cost_gold: u64,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum CosmeticCategory {
-    Hat,
-    Aura,
-    Trail,
-    VehicleSkin,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
