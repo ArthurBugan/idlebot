@@ -116,11 +116,11 @@ impl Vehicle {
     pub fn purchase_cost(&self) -> u64 {
         match self {
             Vehicle::None => 0,
-            Vehicle::Bicycle => 100,
-            Vehicle::Scooter => 500,
-            Vehicle::Motorcycle => 2000,
-            Vehicle::Boat => 5000,
-            Vehicle::Airplane => 20000,
+            Vehicle::Bicycle => 500,
+            Vehicle::Scooter => 1000,
+            Vehicle::Motorcycle => 2500,
+            Vehicle::Boat => 2000,
+            Vehicle::Airplane => 10000,  // matches server VehicleType::Airplane purchase_cost
         }
     }
 

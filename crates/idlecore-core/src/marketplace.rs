@@ -1,4 +1,4 @@
-//! Mock marketplace — console-based mock for listing/selling items.
+//! Mock marketplace -- console-based mock for listing/selling items.
 //!
 //! In production, this integrates with the Polygon blockchain via
 //! idlebot-chain. For local single-player testing, it simulates
@@ -139,7 +139,7 @@ impl MarketplaceManager {
         output
     }
 
-    /// Sell a listing (mock — no blockchain)
+    /// Sell a listing (mock -- no blockchain)
     pub fn sell_listing(
         &mut self,
         listing_id: u64,
@@ -162,7 +162,7 @@ impl MarketplaceManager {
                 l.sold = true;
                 l.is_active = false;
 
-                println!("[MARKET] SOLD listing #{} — buyer: {}", listing_id, buyer_address);
+                println!("[MARKET] SOLD listing #{} -- buyer: {}", listing_id, buyer_address);
                 println!("[MARKET] Platform fee: {}G, Net to seller: {}G",
                     platform_fee, net);
                 println!("[MARKET] Listing marked as sold.\n");

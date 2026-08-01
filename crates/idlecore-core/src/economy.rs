@@ -1,4 +1,4 @@
-//! Economy system — Gold, XP, level progression, costs, rewards.
+//! Economy system -- Gold, XP, level progression, costs, rewards.
 //!
 //! Local single-player: tracks player gold/XP, validates action costs,
 //! applies vehicle maintenance, and calculates teleport/level costs.

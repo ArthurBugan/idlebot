@@ -266,7 +266,7 @@ pub fn get_hexes_with_plants(ctx: &ReducerContext) -> Vec<(u64, PlantGrowthState
         .collect()
 }
 
-/// Update plant growth — called periodically via scheduler.
+/// Update plant growth -- called periodically via scheduler.
 /// Marks mature plants so they can be harvested.
 pub fn update_plants(_ctx: &ReducerContext) {
     // In SpacetimeDB, we can't easily iterate and update in one call.

@@ -1,4 +1,4 @@
-//! Hex tile data structures — core types (no Bevy dependency here).
+//! Hex tile data structures -- core types (no Bevy dependency here).
 //!
 //! `HexTileComponent` is a Bevy component for rendering.
 //! `HexTileData` is the core data shared with the server.

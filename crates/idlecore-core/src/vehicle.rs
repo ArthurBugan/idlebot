@@ -7,28 +7,28 @@ use std::time::SystemTime;
 use crate::Vehicle;
 
 /// Purchase a vehicle. Returns success status and deducted cost.
-pub fn purchase_vehicle(econ: &mut crate::economy::PlayerEconomy, vehicle: &Vehicle) -> bool {
+pub fn purchase_vehicle(econ: &mut crate::economy::PlayerEconomy, vehicle_type: crate::Vehicle) -> bool {
     if !econ.vehicle.is_empty() {
         // Already has a vehicle
         return false;
     }
 
-    let cost = vehicle.purchase_cost();
+    let cost = vehicle_type.purchase_cost();
     let had_enough = crate::economy::spend_gold(econ, cost);
 
     if had_enough {
-        econ.vehicle = vehicle.display_name().to_string();
+        econ.vehicle = vehicle_type.display_name().to_string();
         println!(
             "[VEHICLE] Purchased {} for {}G (speed: {}x)",
-            vehicle.display_name(),
+            vehicle_type.display_name(),
             cost,
-            vehicle.speed_multiplier()
+            vehicle_type.speed_multiplier()
         );
         true
     } else {
         println!(
             "[VEHICLE] Cannot purchase {}: need {}G, have {}G",
-            vehicle.display_name(),
+            vehicle_type.display_name(),
             cost,
             econ.gold
         );
@@ -112,5 +112,5 @@ pub fn apply_vehicle_maintenance(econ: &mut crate::economy::PlayerEconomy) -> Op
 
 /// Get all available vehicles as a list
 pub fn available_vehicles() -> Vec<Vehicle> {
-    Vehicle::all_vehicles().to_vec()
+    crate::Vehicle::all_vehicles().to_vec()
 }

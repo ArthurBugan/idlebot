@@ -1,4 +1,4 @@
-//! Plant system — types, config, and growth logic.
+//! Plant system -- types, config, and growth logic.
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -80,7 +80,7 @@ impl PlantType {
     }
 }
 
-/// Plant struct — lives on a Hex, tracks when planted and growth duration.
+/// Plant struct -- lives on a Hex, tracks when planted and growth duration.
 /// Serialized as JSON in the DB for durability.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Plant {
@@ -191,7 +191,7 @@ impl PlantTracker {
                 PlantType::Tree => PlantType::Tree,
                 PlantType::RareHerb => PlantType::RareHerb,
             };
-            // For now all stages are the same — maturity is checked by time
+            // For now all stages are the same -- maturity is checked by time
             self.plant.plant_type = prev_stage;
             // Actually, we track stage properly
         }

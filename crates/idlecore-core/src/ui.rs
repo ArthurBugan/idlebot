@@ -1,4 +1,4 @@
-//! UI system — HUD overlay, interaction buttons, vehicle menu, teleport UI.
+//! UI system -- HUD overlay, interaction buttons, vehicle menu, teleport UI.
 //!
 //! Uses console-based output for local single-player testing.
 //! In production, would use Bevy UI (Button, Text, Image nodes).
@@ -371,7 +371,7 @@ pub fn render_console(gs: &economy::LocalGameState) {
 
     // Header
     out.push_str(&format!(
-        "\n\x1b[1;42m╔══════════════════════════════════════════════╗\x1b[0m\n║          IDLEBOT — Local Testing Mode       ║\n╚══════════════════════════════════════════════╝\n"
+        "\n\x1b[1;42m╔══════════════════════════════════════════════╗\x1b[0m\n║          IDLEBOT -- Local Testing Mode       ║\n╚══════════════════════════════════════════════╝\n"
     ));
 
     // Player status
@@ -435,7 +435,7 @@ pub fn render_console(gs: &economy::LocalGameState) {
 
     // Debug commands
     out.push_str(&format!(
-        "\n\x1b[1;31m[ DEBUG COMMANDS ]\x1b[0m\n  /add_gold <amount>  — Add gold\n  /teleport <hex_id>  — Teleport to hex\n  /teleport          — Show nearby hexes\n  /menu              — Show all options\n  /reset             — Reset game state\n"
+        "\n\x1b[1;31m[ DEBUG COMMANDS ]\x1b[0m\n  /add_gold <amount>  -- Add gold\n  /teleport <hex_id>  -- Teleport to hex\n  /teleport          -- Show nearby hexes\n  /menu              -- Show all options\n  /reset             -- Reset game state\n"
     ));
 
     out.push_str(&format!(

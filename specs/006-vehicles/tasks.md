@@ -1,9 +1,10 @@
+/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 # Tasks 006: Vehicles
 
 > **Implementation Checklist**
 
 ## Phase 1: Vehicle Data & Types
-- [ ] **T1.1** Define VehicleType enum (None, Bicycle, Scooter, Motorcycle, Boat, Airplane)
+- [✓] **T1.1** Define VehicleType enum (None, Bicycle, Scooter, Motorcycle, Boat, Airplane)
 - [ ] **T1.2** Define speed multipliers for each vehicle type
 - [ ] **T1.3** Define gold cost for each vehicle
 - [ ] **T1.4** Create Vehicle struct with type, speed_multiplier, gold_cost

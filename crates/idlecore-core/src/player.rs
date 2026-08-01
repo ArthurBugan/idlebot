@@ -1,6 +1,7 @@
+/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 //! Player data structures with spawn and movement helpers.
 //!
-//! Bevy-free — pure Rust types only.
+//! Bevy-free -- pure Rust types only.
 //!
 //! Core player data with spawn_at_hex, speed_multiplier, set_last_seen,
 //! and find_nearest_empty_hex helpers for 003-player-spawn spec.
@@ -12,17 +13,18 @@ use crate::hex::HexCoord;
 /// Core player data with spawn and speed helper methods.
 #[derive(Debug, Clone)]
 pub struct CorePlayer {
-    pub address: String,
-    pub position: Position,
-    pub hex_id: u64,
-    pub vehicle: Vehicle,
-    pub xp: u64,
-    pub gold: u64,
-    pub level: u32,
-    pub eco_points: u64,
-    pub last_seen: u64,
-    pub is_online: bool,
-    pub cosmetics: Vec<String>,
+    address: WalletAddress,
+    position: Position,
+    hex_id: u64,
+    vehicle: crate::Vehicle,
+    cosmetics: Vec<crate::Cosmetic>,
+    gold: u64,
+    xp: u64,
+    level: u32,
+    eco_points: u64,
+    last_seen: u64,
+    is_online: bool,
+    is_admin: bool,
     pub templates: Vec<String>,
     pub templates_limit: u32,
 }

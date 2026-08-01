@@ -1,4 +1,4 @@
-//! Idle gains scheduler — server-side periodic calculation.
+//! Idle gains scheduler -- server-side periodic calculation.
 //! Called via SpacetimeDB `calculate_idle` reducer every 5 minutes.
 
 use crate::types::IdleGainsEntry;

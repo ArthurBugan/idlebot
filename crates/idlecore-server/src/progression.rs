@@ -1,10 +1,10 @@
-//! Sistema de Progressão — Níveis & Unlocks
+//! Sistema de Progressão -- Níveis & Unlocks
 
 use super::types::PlayerDbEntry;
 use spacetimedb::ReducerContext;
 use crate::types::player;
 
-/// Level up system — quando XP acumulado >= xp_for_next_level(level), sobe de nível
+/// Level up system -- quando XP acumulado >= xp_for_next_level(level), sobe de nível
 pub fn check_level_up(ctx: &ReducerContext, player_address: &str) -> Option<u32> {
     let player = ctx.db.player().iter()
         .find(|p| p.address == player_address)?;

@@ -1,4 +1,4 @@
-//! Idle gains configuration — shared between server and client
+//! Idle gains configuration -- shared between server and client
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -69,7 +69,7 @@ pub fn is_idle_eligible(elapsed: Duration) -> bool {
 /// Returns `Ok(Duration)` if valid, or `Err(String)` with a descriptive error.
 pub fn validate_idle_duration(elapsed: Duration) -> Result<Duration, String> {
     if elapsed.is_zero() {
-        return Err("elapsed time is zero — player was just logged in".to_string());
+        return Err("elapsed time is zero -- player was just logged in".to_string());
     }
     if elapsed.as_secs() > MAX_IDLE_SECONDS {
         return Err(format!(
@@ -79,7 +79,7 @@ pub fn validate_idle_duration(elapsed: Duration) -> Result<Duration, String> {
         ));
     }
     if elapsed.as_secs() < MIN_IDLE_SECONDS {
-        // This is still valid but will return zero gains — documented behavior
+        // This is still valid but will return zero gains -- documented behavior
         return Ok(elapsed);
     }
     Ok(elapsed)

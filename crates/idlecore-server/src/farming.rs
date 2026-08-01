@@ -1,4 +1,4 @@
-//! Sistema de Farming — Plantar/Colher (Stardew Valley style)
+//! Sistema de Farming -- Plantar/Colher (Stardew Valley style)
 //!
 //! Thin wrappers around world::interact_hex for convenience.
 
