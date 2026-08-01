@@ -18,10 +18,17 @@ pub mod procedural;
 pub mod player;
 
 #[path = "vehicle.rs"]
+pub mod vehicle;
+
 #[path = "teleport.rs"]
 pub mod teleport;
 
-pub mod vehicle;
+#[path = "minimap.rs"]
+pub mod minimap;
+
+#[cfg(test)]
+#[path = "minimap_tests.rs"]
+mod minimap_tests;
 
 #[path = "idle.rs"]
 pub mod idle;

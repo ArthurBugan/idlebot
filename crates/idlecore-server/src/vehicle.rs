@@ -1,3 +1,4 @@
+/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 //! Vehicle system — purchase, equip, and use vehicles.
 //!
 //! VehicleType enum delegates to crate::Vehicle for display_name(), speed_multiplier(),
@@ -66,7 +67,29 @@ impl VehicleType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Maximum speed multiplier cap to prevent excessive speed.
+pub const MAX_SPEED_MULTIPLIER: f32 = 10.0;
+
+impl VehicleType {
+    /// Get the effective speed multiplier capped at MAX_SPEED_MULTIPLIER.
+    pub fn effective_speed_multiplier(&self) -> f32 {
+        self.speed_multiplier().min(MAX_SPEED_MULTIPLIER)
+    }
+
+    /// Get the visual indicator color for this vehicle type (RGB).
+    pub fn indicator_color(&self) -> (f32, f32, f32) {
+        match self {
+            VehicleType::None => (0.5, 0.5, 0.5),
+            VehicleType::Bicycle => (0.0, 1.0, 0.0),
+            VehicleType::Scooter => (1.0, 1.0, 0.0),
+            VehicleType::Motorcycle => (1.0, 0.0, 0.0),
+            VehicleType::Boat => (0.0, 0.5, 1.0),
+            VehicleType::Airplane => (1.0, 0.0, 1.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Vehicle {
     pub vehicle_type: VehicleType,
     pub equipped: bool,

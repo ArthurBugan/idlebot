@@ -1,6 +1,14 @@
 //! IdleBot — Bevy 0.19 hex grid single-player client.
 
 use bevy::prelude::*;
+
+/// Minimap component for the overlay
+#[derive(Component)]
+struct Minimap;
+
+/// Player marker component
+#[derive(Component)]
+struct Player;
 use bevy::pbr::StandardMaterial;
 use bevy::asset::Assets;
 use bevy::render::mesh::Mesh;
@@ -139,20 +147,53 @@ mod vehicle;
 
 mod voice;
 
+mod minimap;
+
 // --- Main Entry ---
 fn main() {
     eprintln!("=== IdleBot Starting ===");
     App::new()
         .add_plugins(DefaultPlugins)
-        // Startup Phase: Set up graphics and initialize voice UI
-        .add_systems(Startup, (setup, spawn_world))
-        .add_systems(Update, (player_movement, debug_commands, voice::voice_update::voice_indicator_updater))
+        // Startup Phase: Set up graphics, initialize voice UI, and spawn minimap
+        .add_systems(Startup, (setup, spawn_world, spawn_minimap))
+        .add_systems(Update, (
+            player_movement, 
+            debug_commands, 
+            voice::voice_update::voice_indicator_updater,
+            update_minimap,
+            minimap_input,
+        ))
         .run();
 }
 
 // ... (rest of main.rs content unchanged)
 
 // ... rest of file unchanged
+
+/// Spawn the minimap overlay in the bottom-right corner
+fn spawn_minimap(
+    mut commands: Commands,
+    window: Res<Window>,
+) {
+    let win_w = window.width();
+    let win_h = window.height();
+    let minimap_size = 180.0;
+    
+    commands.spawn((
+        Name::new("minimap"),
+        Sprite {
+            color: Color::srgba(0.0, 0.0, 0.0, 0.7),
+            custom_size: Some(Vec2::new(minimap_size, minimap_size)),
+            ..default()
+        },
+        Transform::from_xyz(
+            win_w / 2.0 - minimap_size / 2.0 + 200.0,
+            win_h / 2.0 - minimap_size / 2.0 - 100.0,
+            1000.0,
+        ),
+        Camera2d::default(),
+    ));
+}
 
 fn setup(
     mut commands: Commands,
@@ -285,6 +326,53 @@ fn player_movement(
         player.current_hex = Some(player::CurrentHex { q, r });
         eprintln!("[MOVE] pos=({:.1},{:.1},{:.1}) hex=({},{}) vel=({:.2},{:.2})", transform.translation.x, transform.translation.y, transform.translation.z, q, r, player.velocity.x, player.velocity.y);
     }
+}
+
+/// Minimap input handling
+fn minimap_input(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut minimap: Query<&mut Transform, With<Minimap>>,
+) {
+    let Ok(mut minimap) = minimap.single_mut() else {
+        return;
+    };
+    
+    let mut scroll_delta = 0.0;
+    if keyboard.just_pressed(KeyCode::PageUp) {
+        scroll_delta = 1.0;
+    }
+    if keyboard.just_pressed(KeyCode::PageDown) {
+        scroll_delta = -1.0;
+    }
+    
+    if scroll_delta != 0.0 {
+        let zoom = minimap.translation.z;
+        let new_zoom = (zoom + scroll_delta).clamp(0.1, 10.0);
+        minimap.translation.z = new_zoom;
+        eprintln!("[MINIMAP] Zoom: {:.2}", new_zoom);
+    }
+    
+    if keyboard.just_pressed(KeyCode::KeyM) {
+        let new_size = Vec2::new(180.0, 180.0);
+        minimap.scale = if minimap.scale.x == 1.0 { 2.0 } else { 1.0 };
+        eprintln!("[MINIMAP] Toggle zoom");
+    }
+}
+
+/// Update minimap overlay with player position
+fn update_minimap(
+    player: Query<&Transform, With<Player>>,
+    mut minimap: Query<&mut Transform, With<Minimap>>,
+) {
+    let Ok(player_pos) = player.single() else {
+        return;
+    };
+    let Ok(mut minimap) = minimap.single_mut() else {
+        return;
+    };
+    
+    minimap.translation.x = player_pos.x;
+    minimap.translation.y = player_pos.y;
 }
 
 /// Debug commands

@@ -1,3 +1,4 @@
+/usr/bin/bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
  LC_ALL: cannot change locale (en_US.UTF-8): No such file or directory
 //! Player data structures with spawn and movement helpers.
 //!
@@ -6,23 +7,44 @@
 use crate::Position;
 use crate::Vehicle;
 
-/// Core player data with spawn and speed helper methods.
-#[derive(Debug, Clone)]
+/// Player with vehicle inventory
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorePlayer {
-    address: WalletAddress,
-    position: Position,
-    hex_id: u64,
-    vehicle: crate::Vehicle,
-    cosmetics: Vec<crate::Cosmetic>,
-    gold: u64,
-    xp: u64,
-    level: u32,
-    eco_points: u64,
-    last_seen: u64,
-    is_online: bool,
-    is_admin: bool,
+    pub address: String,
+    pub position: Vec3,
+    pub hex_id: u64,
+    pub vehicle: Option<Vehicle>,
+    pub cosmetics: Vec<String>,
+    pub gold: u64,
+    pub xp: u64,
+    pub level: u32,
+    pub eco_points: u64,
+    pub last_seen: u64,
+    pub is_online: bool,
+    pub is_admin: bool,
     pub templates: Vec<String>,
     pub templates_limit: u32,
+}
+
+impl CorePlayer {
+    /// Get speed multiplier based on owned vehicle.
+    pub fn speed_multiplier(&self) -> f32 {
+        self.vehicle.as_ref().map_or(1.0, |v| v.speed_multiplier())
+    }
+
+    /// Get vehicle inventory for UI display.
+    pub fn display_inventory(&self) -> Vec<InventoryItem> {
+        match &self.vehicle {
+            Some(v) => {
+                vec![InventoryItem {
+                    vehicle_type: v.vehicle_type,
+                    purchased: v.purchased,
+                    equipped: true, // Only one vehicle at a time for simplicity
+                }]
+            }
+            None => Vec::new(),
+        }
+    }
 }
 
 impl CorePlayer {
