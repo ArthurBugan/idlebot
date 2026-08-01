@@ -13,6 +13,12 @@ struct Player;
 /// Camera marker component (for follow system)
 #[derive(Component)]
 struct CameraMarker;
+
+/// Player transform resource for camera/minimap follow
+#[derive(Resource, Default)]
+struct PlayerTransform {
+    translation: Vec3,
+}
 use bevy::pbr::StandardMaterial;
 use bevy::asset::Assets;
 use bevy::render::mesh::Mesh;
@@ -158,11 +164,12 @@ fn main() {
     eprintln!("=== IdleBot Starting ===");
     App::new()
         .add_plugins(DefaultPlugins)
+        .insert_resource(PlayerTransform::default())
         .add_systems(Startup, (setup, spawn_world, spawn_minimap))
         .add_systems(Update, (
             player_and_debug_commands,
-            // follow_player: DISABLED - Bevy 0.19 B0001 query conflict
-            // TODO: Implement camera follow using a Resource<CameraTarget> instead
+            follow_camera,
+            sync_minimap,
             voice::voice_update::voice_indicator_updater,
             manage_minimap,
         ))
@@ -287,11 +294,13 @@ fn player_and_debug_commands(
     time: Res<Time>,
     keyboard: Res<ButtonInput<KeyCode>>,
     mut player_query: Query<(&mut Transform, &mut player::ClientPlayer)>,
+    mut player_transform: ResMut<PlayerTransform>,
 ) {
     let Ok((mut transform, mut player)) = player_query.single_mut() else {
         eprintln!("[ERROR] No player found!");
         return;
     };
+    
     if player.current_hex.is_none() {
         player.current_hex = Some(player::CurrentHex { q: 0, r: 0 });
     }
@@ -349,6 +358,9 @@ fn player_and_debug_commands(
         player.velocity = Vec2::ZERO;
         eprintln!("[DEBUG] Position reset");
     }
+    
+    // Update player position resource
+    player_transform.translation = transform.translation;
 }
 
 /// Manage minimap: input handling only (position sync via separate system)
@@ -418,6 +430,29 @@ fn follow_player_disabled(
 //         }
 //     }
 // }
+
+/// Camera follows player
+fn follow_camera(
+    player_transform: Res<PlayerTransform>,
+    mut camera: Query<&mut Transform, With<Camera3d>>,
+) {
+    let Ok(mut camera_transform) = camera.single_mut() else { return };
+    
+    let offset = Vec3::new(0.0, 10.0, 10.0);
+    camera_transform.translation = player_transform.translation + offset;
+    camera_transform.look_at(player_transform.translation, Vec3::Y);
+}
+
+/// Sync minimap position to player
+fn sync_minimap(
+    player_transform: Res<PlayerTransform>,
+    mut minimap: Query<&mut Transform, With<Minimap>>,
+) {
+    let Ok(mut minimap_transform) = minimap.single_mut() else { return };
+    
+    minimap_transform.translation.x = player_transform.translation.x;
+    minimap_transform.translation.y = player_transform.translation.z;
+}
 
 /// Debug commands
 fn debug_commands(
