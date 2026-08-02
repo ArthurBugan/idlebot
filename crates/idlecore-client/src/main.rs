@@ -117,7 +117,7 @@ fn spawn_minimap(
 fn create_player_mesh() -> Mesh {
     use bevy::render::mesh::{Indices, VertexAttributeValues};
     let radius = 0.6;
-    let height = 2.4;
+    let height = 5.0;
     let segments = 16;
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
