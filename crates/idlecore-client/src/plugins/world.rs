@@ -1,5 +1,4 @@
 //! World rendering plugin
-//! Uses idlecore_core::hex_grid for proper hex coordinate conversion
 
 use bevy::prelude::*;
 use bevy::pbr::StandardMaterial;
@@ -7,9 +6,6 @@ use bevy::asset::Assets;
 use bevy::render::mesh::Mesh;
 use idlecore_core::hex_grid::HexGrid;
 use idlecore_core::world::EarthWorld;
-
-/// Scale factor for hex tiles (0.95 = 5% gap between tiles)
-const HEX_SCALE: f32 = 0.95;
 
 pub struct WorldPlugin;
 
@@ -27,7 +23,8 @@ fn spawn_world(
     eprintln!("[WORLD] Spawning Earth world...");
     
     let world = EarthWorld::generate(42, 50);
-    let hex_mesh = create_hex_mesh(HEX_SCALE * 100.0, 10.0);
+    // Hex radius = grid size for perfect fit in flat-top grid
+    let hex_mesh = create_flat_hex_mesh(100.0, 10.0);
     let hex_mesh_handle = meshes.add(hex_mesh);
     
     for tile in world.tiles.values() {
@@ -40,7 +37,6 @@ fn spawn_world(
             ..default()
         });
         
-        // Use proper hex grid coordinate conversion
         let (x, z) = HexGrid::axial_to_world(tile.coord.q, tile.coord.r, 100.0);
         
         commands.spawn((
@@ -53,60 +49,77 @@ fn spawn_world(
     eprintln!("[WORLD] Spawned {} tiles", world.tiles.len());
 }
 
-/// Create a hexagonal prism lying flat on the ground (XZ plane)
-/// Y axis is up (height)
-fn create_hex_mesh(radius: f32, height: f32) -> Mesh {
-    use bevy::render::mesh::{Indices, VertexAttributeValues};
+/// Create flat-top hex mesh (lying on ground, XZ plane)
+/// Flat-top means flat sides at top and bottom, corners at left and right
+fn create_flat_hex_mesh(radius: f32, height: f32) -> Mesh {
+    use bevy::render::mesh::{Indices, VertexAttributeValues, PrimitiveTopology};
     
-    // Hexagon in XZ plane (flat on ground)
-    let corners: Vec<[f32; 2]> = (0..6)
-        .map(|i| {
-            let angle = std::f32::consts::PI / 3.0 * i as f32;
-            // [x, z] for flat-top hex
-            [radius * angle.cos(), radius * angle.sin()]
-        })
-        .collect();
+    let mut positions = Vec::new();
+    let mut indices = Vec::new();
     
-    let mut positions: Vec<[f32; 3]> = Vec::new();
-    let mut indices: Vec<u32> = Vec::new();
+    // Flat-top hex: corners at 30°, 90°, 150°, 210°, 270°, 330°
+    // This gives flat sides at top (90°) and bottom (270°)
     
-    // Bottom face (ground level, Y=0)
-    for &c in &corners {
-        positions.push([c[0], 0.0, c[1]]);  // X, Y=0, Z
+    // Bottom face (Y=0)
+    positions.push([0.0, 0.0, 0.0]);
+    let bot_center = 0u32;
+    
+    for i in 0..6 {
+        let angle = std::f32::consts::PI / 6.0 + std::f32::consts::TAU * i as f32 / 6.0;
+        positions.push([radius * angle.cos(), 0.0, radius * angle.sin()]);
     }
-    let bot_start = positions.len() as u32;
-    let bot_center = bot_start + 6;
-    positions.push([0.0, 0.0, 0.0]);  // Center bottom
+    let bot_start = 1u32;
     
-    // Bottom face triangles
+    // Bottom triangles (clockwise from below)
     for i in 0..6u32 {
-        indices.extend_from_slice(&[bot_center, bot_center + ((i + 1) % 6), bot_center + i]);
+        let next = (i + 1) % 6;
+        indices.push(bot_center);
+        indices.push(bot_start + next);
+        indices.push(bot_start + i);
     }
     
     // Top face (Y=height)
-    for &c in &corners {
-        positions.push([c[0], height, c[1]]);  // X, Y=height, Z
+    positions.push([0.0, height, 0.0]);
+    let top_center = positions.len() as u32 - 1;
+    
+    for i in 0..6 {
+        let angle = std::f32::consts::PI / 6.0 + std::f32::consts::TAU * i as f32 / 6.0;
+        positions.push([radius * angle.cos(), height, radius * angle.sin()]);
     }
     let top_start = positions.len() as u32;
-    let top_center = top_start + 6;
-    positions.push([0.0, height, 0.0]);  // Center top
     
-    // Top face triangles
+    // Top triangles (counter-clockwise from above)
     for i in 0..6u32 {
-        indices.extend_from_slice(&[top_center, top_center + i, top_center + ((i + 1) % 6)]);
+        let next = (i + 1) % 6;
+        indices.push(top_center);
+        indices.push(top_start + i);
+        indices.push(top_start + next);
     }
     
     // Side faces
     for i in 0..6u32 {
-        let i_next = (i + 1) % 6;
-        let b0 = bot_start + i; let b1 = bot_start + i_next;
-        let t1 = top_start + i; let t0 = top_start + i_next;
-        indices.extend_from_slice(&[b0, b1, t0, b0, t0, t1]);
+        let next = (i + 1) % 6;
+        let b0 = bot_start + i;
+        let b1 = bot_start + next;
+        let t0 = top_start + i;
+        let t1 = top_start + next;
+        
+        indices.push(b0);
+        indices.push(t0);
+        indices.push(b1);
+        
+        indices.push(b1);
+        indices.push(t0);
+        indices.push(t1);
     }
     
-    let mut mesh = Mesh::new(bevy::render::mesh::PrimitiveTopology::TriangleList, default());
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, default());
     mesh.insert_attribute(
-        bevy::render::mesh::MeshVertexAttribute::new("Vertex_Position", 0, bevy::render::mesh::VertexFormat::Float32x3),
+        bevy::render::mesh::MeshVertexAttribute::new(
+            "Vertex_Position",
+            0,
+            bevy::render::mesh::VertexFormat::Float32x3,
+        ),
         VertexAttributeValues::Float32x3(positions),
     );
     mesh.insert_indices(Indices::U32(indices));
