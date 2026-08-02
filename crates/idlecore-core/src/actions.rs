@@ -124,6 +124,11 @@ pub fn validate_clean(player: &crate::Player, hex: &HexTileState) -> Result<(), 
 
 /// Execute plant action: spend 10G, give 5 XP, plant seed on hex.
 pub fn execute_plant(player: &mut crate::Player, hex: &mut HexTileState, plant_type: PlantType, now: u64) -> ActionResult {
+    // Check for sufficient gold
+    if player.gold < PLANT_COST {
+        return ActionResult::Failed { reason: format!("Insufficient gold: need {}, have {}", PLANT_COST, player.gold) };
+    }
+    
     // Deduct gold
     player.gold = player.gold.saturating_sub(PLANT_COST);
     player.xp += 5;
@@ -373,8 +378,8 @@ mod tests {
         // Make it mature
         let result = execute_harvest(&mut player, &mut hex, now + 3600);
 
-        assert_eq!(player.gold, 115);
-        assert_eq!(player.xp, 10);
+        assert_eq!(player.gold, 115);  // 100 + 15 gold reward
+        assert_eq!(player.xp, 5);      // 0 + 5 xp reward
         assert!(hex.plant.is_none());
         match result {
             ActionResult::Success { message, xp_change, gold_change } => {

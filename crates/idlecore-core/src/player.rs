@@ -135,10 +135,11 @@ mod tests {
 
     #[test]
     fn player_new_spawn_position() {
-        let p = CorePlayer::new("0x5678".into(), Position::new(10.0, 20.0));
-        assert_eq!(p.position.x, 10.0);
-        assert_eq!(p.position.y, 20.0);
-        assert!(p.hex_id > 0);
+        // Use a position that maps to a non-zero hex
+        let p = CorePlayer::new("0x5678".into(), Position::new(17.32, 15.0));
+        assert_eq!(p.position.x, 17.32);
+        assert_eq!(p.position.y, 15.0);
+        assert!(p.hex_id > 0, "hex_id should be non-zero for offset position");
     }
 
     #[test]

@@ -426,14 +426,16 @@ pub fn fetch_all_players() -> Vec<PlayerDbEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::PlantTypeString;
 
     #[test]
     fn test_plant_json_mature() {
         let plant = PlantJson::new("Wheat", 1000);
-        assert!(!plant.is_mature(1000));
-        assert!(!plant.is_mature(3599));
-        assert!(plant.is_mature(3600));
-        assert!(plant.is_mature(3601));
+        // target = 1000 + 3600 = 4600
+        assert!(!plant.is_mature(1000));   // 1000 < 4600
+        assert!(!plant.is_mature(4599));   // 4599 < 4600
+        assert!(plant.is_mature(4600));    // 4600 >= 4600
+        assert!(plant.is_mature(4601));    // 4601 >= 4600
     }
 
     #[test]
@@ -445,9 +447,11 @@ mod tests {
     #[test]
     fn test_plant_json_time_remaining() {
         let plant = PlantJson::new("Wheat", 1000);
-        assert_eq!(plant.time_remaining(1000), 3600);
-        assert_eq!(plant.time_remaining(1800), 1800);
-        assert_eq!(plant.time_remaining(3600), 0);
+        // target = 1000 + 3600 = 4600
+        assert_eq!(plant.time_remaining(1000), 3600);  // 4600 - 1000
+        assert_eq!(plant.time_remaining(1800), 2800);  // 4600 - 1800
+        assert_eq!(plant.time_remaining(3600), 1000);  // 4600 - 3600
+        assert_eq!(plant.time_remaining(4600), 0);     // 4600 >= 4600
     }
 
     #[test]

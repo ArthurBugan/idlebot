@@ -59,17 +59,18 @@ impl HexGrid {
     pub fn distance(q1: i32, r1: i32, q2: i32, r2: i32) -> i32 {
         let s1 = -q1 - r1;
         let s2 = -q2 - r2;
-        (q1 - q2).unsigned_abs() as i32
+        let d = (q1 - q2).unsigned_abs() as i32
             + (r1 - r2).unsigned_abs() as i32
-            + (s1 - s2).unsigned_abs() as i32
+            + (s1 - s2).unsigned_abs() as i32;
+        d / 2
     }
 
     /// Get all hexes in a radius around a center hex.
     pub fn hexes_in_radius(center_q: i32, center_r: i32, radius: i32) -> Vec<HexCoord> {
         let mut result = Vec::new();
         for q in -radius..=radius {
-            let r_start = (-radius - q).max(-radius);
-            let r_end = (-radius - q).min(radius);
+            let r_start = (-radius).max(-q - radius);
+            let r_end = radius.min(-q + radius);
             for r in r_start..=r_end {
                 result.push(HexCoord::new(center_q + q, center_r + r));
             }

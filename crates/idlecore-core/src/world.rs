@@ -205,7 +205,7 @@ impl EarthWorld {
 
         // Ocean determined by elevation (low elevation = ocean)
         // Earth is ~71% ocean, so threshold is around 0.35
-        if elevation < 0.35 {
+        if elevation < 0.45 {
             return Biome::Ocean;
         }
 

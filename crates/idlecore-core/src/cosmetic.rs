@@ -300,9 +300,10 @@ mod tests {
             purchased: false,
             equipped: false,
         };
-        assert!(can_purchase_gold(&item, 300));
-        assert!(!can_purchase_gold(&item, 100));
-        assert!(!can_purchase_gold(&item, 200)); // Exact amount
+        assert!(can_purchase_gold(&item, 300));  // More than enough
+        assert!(can_purchase_gold(&item, 200));  // Exact amount
+        assert!(!can_purchase_gold(&item, 199)); // Insufficient
+        assert!(!can_purchase_gold(&item, 100)); // Insufficient
     }
 
     #[test]

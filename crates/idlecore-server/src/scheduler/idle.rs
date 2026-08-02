@@ -85,9 +85,10 @@ mod tests {
 
     #[test]
     fn test_check_idle_notification_at_1_hour() {
-        // At exactly 1 hour - should return gains (second bracket)
-        let now = 4600;
-        let result = check_idle_notification(3600, now);
+        // At exactly 1 hour offline (3600 seconds) - should return gains (second bracket)
+        let now = 7200;
+        let last_seen = 3600;
+        let result = check_idle_notification(last_seen, now);
         assert!(result.is_some());
         let (xp, gold, hours) = result.expect("check_idle_notification should return Some for elapsed >= 1h");
         assert_eq!(xp, 60);
@@ -97,20 +98,14 @@ mod tests {
 
     #[test]
     fn test_check_idle_notification_6_hours() {
-        // 6 hours offline - third bracket
+        // 6 hours offline (21600 seconds) - third bracket
         let now = 25200;
-        let result = check_idle_notification(13600, now); // ~24.3 hours, capped to 24h bracket
+        let last_seen = 3600; // 6 hours = 21600 seconds offline
+        let result = check_idle_notification(last_seen, now);
         assert!(result.is_some());
         let (xp, gold, _hours) = result.expect("check_idle_notification: expected Some for 6h bracket");
-        // At 6 hours (21600s), the third bracket applies
-        // For this test: elapsed = 25200 - 13600 = 11600s, base = 11540, < 21600 -> 60 XP
-        // We adjust: make it at least 21600
-        let now2 = 21600 + 60; // 21660s
-        let last_seen2 = 60; // last_seen at 1s
-        let result2 = check_idle_notification(last_seen2, now2);
-        assert!(result2.is_some());
-        let (xp2, gold2, _hours2) = result2.expect("check_idle_notification: expected Some for 24h+ bracket");
-        assert_eq!(xp2, 60); // 1 second offline is effectively < 1 hour, but we're at 21659s
+        assert_eq!(xp, 100);
+        assert_eq!(gold, 50);
     }
 
     #[test]

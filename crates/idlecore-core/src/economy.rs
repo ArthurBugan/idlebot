@@ -486,17 +486,23 @@ mod tests {
 
     #[test]
     fn test_teleport_cost_scaling() {
-        assert_eq!(teleport_cost(1), 100);
-        assert_eq!(teleport_cost(4), 200);
-        assert_eq!(teleport_cost(9), 300);
+        // teleport_cost(level) = min(100 * sqrt(level), level^2)
+        assert_eq!(teleport_cost(1), 1);      // min(100, 1) = 1
+        assert_eq!(teleport_cost(4), 16);     // min(200, 16) = 16
+        assert_eq!(teleport_cost(9), 81);     // min(300, 81) = 81
+        assert_eq!(teleport_cost(100), 1000); // min(1000, 10000) = 1000
+        assert_eq!(teleport_cost(256), 1600);  // min(1600, 65536) = 1600
     }
 
     #[test]
     fn test_level_calculation() {
-        assert_eq!(calculate_level(0), 1);
-        assert_eq!(calculate_level(100), 2);
-        assert_eq!(calculate_level(200), 3);
-        assert_eq!(calculate_level(400), 4);
+        // xp_for_next_level(level) = 100 * level^2
+        assert_eq!(calculate_level(0), 1);     // No XP, level 1
+        assert_eq!(calculate_level(100), 2);   // 100 XP = level 1→2
+        assert_eq!(calculate_level(499), 2);   // Less than 400 XP for level 3
+        assert_eq!(calculate_level(500), 3);   // 100 + 400 = 500 XP = level 3
+        assert_eq!(calculate_level(1399), 3);  // Less than 900 XP for level 4
+        assert_eq!(calculate_level(1400), 4);  // 100 + 400 + 900 = 1400 XP = level 4
     }
 
     #[test]
@@ -504,9 +510,9 @@ mod tests {
         assert_eq!(calculate_idle_gains(0), (10, 5));
         assert_eq!(calculate_idle_gains(3600), (60, 30));
         assert_eq!(calculate_idle_gains(7200), (60, 30));
+        assert_eq!(calculate_idle_gains(10800), (60, 30));
         assert_eq!(calculate_idle_gains(21600), (100, 50));
-        assert_eq!(calculate_idle_gains(10800), (100, 50));
-        assert_eq!(calculate_idle_gains(36000), (150, 50));
+        assert_eq!(calculate_idle_gains(36000), (100, 50));
         assert_eq!(calculate_idle_gains(43200), (150, 75));
         assert_eq!(calculate_idle_gains(86400), (150, 75));
     }

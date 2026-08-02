@@ -231,7 +231,10 @@ mod tests {
         assert_eq!(plant.plant_type, PlantType::Wheat);
         assert_eq!(plant.growth_time_seconds, 3600);
         assert!(plant.planted_at <= now);
-        assert!(plant.is_mature(now));
+        // Just planted, should not be mature yet
+        assert!(!plant.is_mature(now));
+        // After growth time, should be mature
+        assert!(plant.is_mature(now + 3600));
     }
 
     #[test]
@@ -244,9 +247,9 @@ mod tests {
         };
         assert!(!plant.is_mature(1000)); // Just planted
         assert!(!plant.is_mature(1001)); // 1 second
-        assert!(!plant.is_mature(3599)); // Almost there
-        assert!(plant.is_mature(3600)); // Exactly mature
-        assert!(plant.is_mature(3601)); // Past maturity
+        assert!(!plant.is_mature(4599)); // Almost there (4599 < 4600)
+        assert!(plant.is_mature(4600)); // Exactly mature (4600 >= 4600)
+        assert!(plant.is_mature(4601)); // Past maturity
     }
 
     #[test]
@@ -257,10 +260,12 @@ mod tests {
             planted_at: 1000,
             growth_time_seconds: 3600,
         };
-        assert_eq!(plant.time_to_maturity(1000), 3600);
-        assert_eq!(plant.time_to_maturity(1800), 1800);
-        assert_eq!(plant.time_to_maturity(3600), 0);
-        assert_eq!(plant.time_to_maturity(3601), 0);
+        // target = 1000 + 3600 = 4600
+        assert_eq!(plant.time_to_maturity(1000), 3600);  // 4600 - 1000
+        assert_eq!(plant.time_to_maturity(1800), 2800);  // 4600 - 1800
+        assert_eq!(plant.time_to_maturity(3600), 1000);  // 4600 - 3600
+        assert_eq!(plant.time_to_maturity(4600), 0);     // 4600 >= 4600
+        assert_eq!(plant.time_to_maturity(5000), 0);     // 5000 >= 4600
     }
 
     #[test]

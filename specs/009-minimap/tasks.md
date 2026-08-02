@@ -3,16 +3,16 @@
 > **Implementation Checklist**
 
 ## Phase 1: Minimap Data Model
-- [ ] **T1.1** Define ZoomLevel enum (Local, Mid, Global) with radius values
-- [ ] **T1.2** Define Minimap struct (zoom, offset, viewport_hexes, player_position)
-- [ ] **T1.3** Define ObjectMarker struct (hex, object_type, label)
-- [ ] **T1.4** Define MinimapData struct combining position, viewport, objects
+- [x] **T1.1** Define ZoomLevel enum (Local, Mid, Global) with radius values
+- [x] **T1.2** Define Minimap struct (zoom, offset, viewport_hexes, player_position)
+- [x] **T1.3** Define ObjectMarker struct (hex, object_type, label)
+- [x] **T1.4** Define MinimapData struct combining position, viewport, objects
 
 ## Phase 2: Minimap Rendering
-- [ ] **T1.5** Create minimap rendering function (draw hexes, player dot, objects)
-- [ ] **T1.6** Implement hex_to_pixel conversion for minimap scale
-- [ ] **T1.7** Render terrain colors on minimap hexes
-- [ ] **T1.8** Draw player position as blue circle (5px radius)
+- [x] **T1.5** Create minimap rendering function (draw hexes, player dot, objects) in minimap_render.rs
+- [x] **T1.6** Implement hex_to_pixel conversion for minimap scale
+- [x] **T1.7** Render terrain colors on minimap hexes
+- [x] **T1.8** Draw player position as blue circle (5px radius)
 
 ## Phase 3: Zoom System
 - [ ] **T1.9** Implement zoom_in() — cycle Local→Mid→Global
@@ -24,7 +24,7 @@
 - [ ] **T2.1** Subscribe to hex occupancy events on client
 - [ ] **T2.2** Update minimap when player position changes
 - [ ] **T2.3** Update minimap when other players enter/leave view
-- [ ] **T2.4** Render minimap overlay in bottom-right corner
+- [x] **T2.4** Render minimap overlay in bottom-right corner (minimap_render.rs)
 
 ## Phase 5: Global Map
 - [ ] **T2.5** Implement global map toggle (full grid view)
@@ -45,6 +45,6 @@
 - [ ] **T4.6** Global map shows full grid
 
 ## Verification
-- [✓] Zoom levels defined correctly (5, 20, 64 hex radii)
-- [✓] Minimap rendering function exists
-- [✓] Zoom cycle works without infinite loop
+- [x] Zoom levels defined correctly (5, 20, 64 hex radii)
+- [x] Minimap rendering function exists
+- [x] Zoom cycle works without infinite loop

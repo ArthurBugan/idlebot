@@ -66,7 +66,9 @@ impl Position {
 
     /// Convert world 2D position to axial hex coordinates.
     pub fn to_hex(&self, hex_radius: f32) -> u64 {
-        hex::world_pos_to_hex(self.x, self.y, hex_radius).0 as u64
+        let (q, r) = hex::world_pos_to_hex(self.x, self.y, hex_radius);
+        // Pack q and r into a u64: (q as u32) << 32 | (r as u32)
+        ((q as u32 as u64) << 32) | (r as u32 as u64)
     }
 }
 
@@ -384,8 +386,9 @@ mod tests {
 
     #[test]
     fn position_to_hex_asymmetric() {
-        let a = Position::new(10.0, 0.0);
-        let b = Position::new(-10.0, 0.0);
+        // Use positions that map to different hexes
+        let a = Position::new(17.32, 0.0);   // Should map to q=1, r=0
+        let b = Position::new(0.0, 15.0);    // Should map to q=0, r=1
         assert_ne!(a.to_hex(10.0), b.to_hex(10.0));
     }
 

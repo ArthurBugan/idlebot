@@ -151,15 +151,19 @@ mod tests {
         let h = HexCoord::new(3, -2);
         assert_eq!(h.q, 3);
         assert_eq!(h.r, -2);
-        assert_eq!(h.s, 1);
+        // s = -q - r = -3 - (-2) = -1
+        assert_eq!(h.s, -1);
     }
 
     #[test]
     fn hex_from_cube() {
+        // from_cube(1, 0, -1):
+        // q_f = (1+0+(-1))/3 = 0, r_f = (0+(-1)-2*1)/3 = -1, s_f = (-1+1-0)/3 = 0
         let h = HexCoord::from_cube(1, 0, -1);
-        assert_eq!(h.q, 1);
-        assert_eq!(h.r, 0);
-        assert_eq!(h.s, -1);
+        // new() recomputes s = -q - r = -0 - (-1) = 1
+        assert_eq!(h.q, 0);
+        assert_eq!(h.r, -1);
+        assert_eq!(h.s, 1);
     }
 
     #[test]
@@ -230,18 +234,19 @@ mod tests {
 
     #[test]
     fn hex_neighbor_directions() {
-        let h = HexCoord::new(5, -3);
-        let n0 = h.neighbor(0); // +q
-        assert_eq!(n0.q, 6);
-        assert_eq!(n0.r, -3);
+        let h = HexCoord::new(5, -3); // s = -5 - (-3) = -2
+        // Direction vectors: (1,-1), (0,1), (-1,0), (-1,1), (0,-1), (1,0)
+        let n0 = h.neighbor(0); // (1, -1)
+        assert_eq!(n0.q, 6);    // 5 + 1
+        assert_eq!(n0.r, -4);   // -3 + (-1)
 
-        let n1 = h.neighbor(1); // +r
-        assert_eq!(n1.q, 5);
-        assert_eq!(n1.r, -2);
+        let n1 = h.neighbor(1); // (0, 1)
+        assert_eq!(n1.q, 5);    // 5 + 0
+        assert_eq!(n1.r, -2);   // -3 + 1
 
-        let n6 = h.neighbor(5); // -s = +q = +r
-        assert_eq!(n6.q, 6);
-        assert_eq!(n6.r, -2);
+        let n5 = h.neighbor(5); // (1, 0)
+        assert_eq!(n5.q, 6);    // 5 + 1
+        assert_eq!(n5.r, -3);   // -3 + 0
     }
 
     #[test]
@@ -267,22 +272,27 @@ mod tests {
 
     #[test]
     fn world_pos_to_hex_roundtrip() {
-        // Round trip: world pos -> hex -> pixel -> hex
+        // Round trip: hex -> pixel
         let h = HexCoord::new(3, -2);
         let (px, py) = h.to_pixel(10.0);
-        assert_eq!(px, 17.3205_f32);
-        assert!((py).abs() < 0.01);
+        // x = 10 * sqrt(3) * (3 + (-2)/2) = 10 * 1.732 * 2 = 34.64
+        // y = 10 * 1.5 * (-2) = -30
+        assert!((px - 34.6410).abs() < 0.01);
+        assert!((py - (-30.0)).abs() < 0.01);
     }
 
     #[test]
     fn negative_hex_neighbors() {
-        let h = HexCoord::new(-5, -3);
+        let h = HexCoord::new(-5, -3); // s = -(-5) - (-3) = 5 + 3 = 8
         let neighbors = h.neighbors();
         assert_eq!(neighbors.len(), 6);
-        // All neighbors should still be valid (q+r+s=0)
+        // Each neighbor is a valid hex (q+r+s=0), but s differs
         for (q, r) in &neighbors {
-            let s = -q - r;
-            assert_eq!(s, h.s);
+            let n = HexCoord::new(*q, *r);
+            // Verify q+r+s=0 for the new hex
+            assert_eq!(n.q + n.r + n.s, 0);
+            // Verify distance is 1
+            assert_eq!(h.distance(&n), 1);
         }
     }
 }

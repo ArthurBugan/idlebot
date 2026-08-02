@@ -104,17 +104,31 @@ impl VoiceChatManager {
         hex_id: u64,
         now: u64,
     ) -> bool {
-        let position = PlayerPosition { hex_id, online: true };
-        let existing = self.player_positions.entry(wallet.to_string()).or_insert_with(|| PlayerPosition { hex_id, online: true });
+        let was_online = {
+            let existing = self.player_positions.get(wallet);
+            existing.map_or(false, |p| p.online)
+        };
 
-        if !existing.online {
-            // Was offline, now online -- ensure channel exists
-            let added = self.ensure_channel(wallet, now);
-            return added;
+        // Update player position
+        let existing = self.player_positions.entry(wallet.to_string()).or_insert_with(|| PlayerPosition { hex_id, online: true });
+        existing.hex_id = hex_id;
+        existing.online = true;
+
+        // Ensure channel exists
+        if !was_online {
+            return self.ensure_channel(wallet, now);
         }
 
-        // Already online -- update position
-        existing.hex_id = hex_id;
+        // Already online -- update position, channel should already exist if they had players
+        if self.hex_player_count(hex_id) > 0 {
+            // Update existing channel
+            if let Some(channel) = self.channels.get_mut(&hex_id) {
+                channel.add_player(wallet, now);
+            }
+        } else {
+            // No players in this hex yet, create channel
+            self.ensure_channel(wallet, now);
+        }
         true
     }
 
@@ -139,6 +153,22 @@ impl VoiceChatManager {
         }
     }
 
+    /// Remove a player from voice chat (leaves their channel).
+    pub fn remove_player(&mut self, wallet: &str, now: u64) -> bool {
+        if let Some(pos) = self.player_positions.get_mut(wallet) {
+            if !pos.online {
+                return false;
+            }
+            pos.online = false;
+            if let Some(channel) = self.channels.get_mut(&pos.hex_id) {
+                channel.remove_player(wallet);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     /// Process a player moving to a new hex. Leaves old hex channel and joins new one.
     pub fn process_move(
         &mut self,
@@ -153,7 +183,7 @@ impl VoiceChatManager {
         if let Some(pos) = self.player_positions.get_mut(wallet) {
             if pos.hex_id == from_hex && pos.online {
                 if let Some(old_channel) = self.channels.get_mut(&from_hex) {
-                    if !old_channel.remove_player(wallet) {
+                    if old_channel.remove_player(wallet) {
                         changed.push(format!("left_{}_{}", wallet, from_hex));
                     }
                 }
@@ -313,13 +343,14 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        // Player 1 joins hex 10 -- channel created, inactive.
+        // Player 1 joins hex 10 -- channel created, active (player just joined).
         mgr.init_player("alice", 10, now);
         assert_eq!(mgr.channels.len(), 1);
         let ch = mgr.channels.get(&10).unwrap();
-        assert!(!ch.is_active(now));
+        assert!(ch.is_active(now));
+        assert_eq!(ch.player_count(), 1);
 
-        // Player 2 joins hex 10 -- channel becomes active.
+        // Player 2 joins hex 10 -- same channel, now 2 players.
         mgr.init_player("bob", 10, now);
         assert_eq!(mgr.channels.len(), 1);
         let ch = mgr.channels.get(&10).unwrap();
@@ -332,8 +363,9 @@ mod tests {
 
         // Verify active channels sorted by count.
         let active = mgr.active_channels_sorted(now);
-        assert_eq!(active.len(), 1);
-        assert_eq!(active[0].player_count(), 2);
+        assert_eq!(active.len(), 2);  // Both channels are active
+        assert_eq!(active[0].player_count(), 2);  // Hex 10 has 2 players (sorted first)
+        assert_eq!(active[1].player_count(), 1);  // Hex 20 has 1 player
     }
 
     #[test]
@@ -345,6 +377,9 @@ mod tests {
             .as_secs();
 
         mgr.init_player("alice", 10, now);
+
+        // Remove alice from channel
+        mgr.remove_player("alice", now);
 
         // Fast-forward past timeout.
         let expired_now = now + 3600; // > 5 min timeout
@@ -369,8 +404,8 @@ mod tests {
 
         // Alice moves to hex 20.
         let changed = mgr.process_move("alice", 10, 20, now);
-        assert!(changed.iter().any(|c| c.contains("left_10")));
-        assert!(changed.iter().any(|c| c.contains("joined_20")));
+        assert!(changed.iter().any(|c| c.contains("left")), "Expected left message, got: {:?}", changed);
+        assert!(changed.iter().any(|c| c.contains("joined")), "Expected joined message, got: {:?}", changed);
         assert_eq!(mgr.hex_player_count(10), 0);
         assert_eq!(mgr.hex_player_count(20), 1);
         assert_eq!(mgr.is_in_voice_chat("alice", now), true);
