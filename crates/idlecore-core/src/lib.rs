@@ -9,6 +9,7 @@ pub mod economy;
 pub mod grid;
 pub mod hex;
 pub mod world;
+pub mod hex_grid;
 pub mod hex_tile;
 pub mod marketplace;
 pub mod plant;

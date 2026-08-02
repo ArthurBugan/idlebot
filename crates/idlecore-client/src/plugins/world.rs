@@ -1,10 +1,11 @@
 //! World rendering plugin
-//! Handles spawning the hex world
+//! Uses idlecore_core::hex_grid for proper hex coordinate conversion
 
 use bevy::prelude::*;
 use bevy::pbr::StandardMaterial;
 use bevy::asset::Assets;
 use bevy::render::mesh::Mesh;
+use idlecore_core::hex_grid::HexGrid;
 use idlecore_core::world::EarthWorld;
 
 /// Scale factor for hex tiles (0.95 = 5% gap between tiles)
@@ -39,9 +40,12 @@ fn spawn_world(
             ..default()
         });
         
+        // Use proper hex grid coordinate conversion
+        let (x, z) = HexGrid::axial_to_world(tile.coord.q, tile.coord.r, 100.0);
+        
         commands.spawn((
             Name::new(format!("hex_{}_{}", tile.coord.q, tile.coord.r)),
-            Transform::from_xyz(tile.center_x, 0.0, tile.center_y),
+            Transform::from_xyz(x, 0.0, z),
             Mesh3d(hex_mesh_handle.clone()),
             MeshMaterial3d(material),
         ));
