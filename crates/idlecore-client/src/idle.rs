@@ -57,10 +57,10 @@ pub fn spawn_idle_panel(mut commands: Commands, asset_server: Res<AssetServer>) 
             },
         ))
         .with_children(|parent| {
-            // ---- XP line (single Text with one TextSpan child) ----
+            // ---- XP line ----
             parent
                 .spawn((
-                    Text::new("XP: 0"),
+                    Text::default(),
                     TextFont {
                         font: font.clone(),
                         font_size: FontSize::Px(16.0),
@@ -73,7 +73,7 @@ pub fn spawn_idle_panel(mut commands: Commands, asset_server: Res<AssetServer>) 
                     },
                 ))
                 .with_child((
-                    TextSpan::default(),
+                    TextSpan::new("XP: 0"),
                     TextColor(Color::srgb(0.45, 0.82, 1.0)), // sky blue
                     XpText,
                 ));
@@ -81,7 +81,7 @@ pub fn spawn_idle_panel(mut commands: Commands, asset_server: Res<AssetServer>) 
             // ---- Gold line ----
             parent
                 .spawn((
-                    Text::new("Gold: 0"),
+                    Text::default(),
                     TextFont {
                         font: font.clone(),
                         font_size: FontSize::Px(16.0),
@@ -94,7 +94,7 @@ pub fn spawn_idle_panel(mut commands: Commands, asset_server: Res<AssetServer>) 
                     },
                 ))
                 .with_child((
-                    TextSpan::default(),
+                    TextSpan::new("Gold: 0"),
                     TextColor(Color::srgb(1.0, 0.84, 0.0)), // gold
                     GoldText,
                 ));
