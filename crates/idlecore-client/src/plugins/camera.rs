@@ -21,7 +21,7 @@ fn follow_camera(
         return;
     };
 
-    let offset = Vec3::new(0.0, 500.0, 500.0);
+    let offset = Vec3::new(0.0, 100.0, 100.0);
     camera_transform.translation = player_transform.translation + offset;
     camera_transform.look_at(player_transform.translation, Vec3::Y);
 }
