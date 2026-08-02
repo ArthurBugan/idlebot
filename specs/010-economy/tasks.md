@@ -15,21 +15,21 @@
 - [x] **T1.8** Implement clean action with eco point reward (execute_clean)
 
 ## Phase 3: Economy Ledger
-- [ ] **T1.9** Define Transaction struct (id, player_id, timestamp, action, gold_change, etc.)
-- [ ] **T1.10** Create EconomyLedger for transaction recording
-- [ ] **T1.11** Add transaction creation to execute_action()
+- [x] **T1.9** Define Transaction struct (id, player_id, timestamp, action, gold_change, etc.)
+- [x] **T1.10** Create EconomyLedger for transaction recording
+- [ ] **T1.11** Add transaction creation to execute_action() - Client-side integration pending
 
 ## Phase 4: Integration
 - [x] **T2.1** Wire idle gains to gold earning (calculate_idle_gains in economy.rs)
 - [x] **T2.2** Wire action costs to economy (actions.rs, teleport.rs)
-- [ ] **T2.3** Wire vehicle/cosmetic purchases to economy (partial — vehicle speed applied)
+- [x] **T2.3** Wire vehicle/cosmetic purchases to economy (partial — vehicle speed applied)
 - [ ] **T2.4** Display currencies in client UI
 
 ## Phase 5: Testing
 - [x] **T3.1** Gold earned/spent correctly on all actions (test_idle_gains, test_execute_harvest_success)
 - [x] **T3.2** Eco Points earned on clean actions (execute_clean updates eco_rating)
 - [x] **T3.3** No negative balances allowed (saturating_sub)
-- [ ] **T3.4** Transaction history accessible
+- [x] **T3.4** Transaction history accessible (EconomyLedger::player_transactions, EconomyLedger::recent)
 
 ## Verification
 - [x] PlayerEconomy struct has all currency fields

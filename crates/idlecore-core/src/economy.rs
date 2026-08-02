@@ -477,6 +477,84 @@ impl LocalGameState {
 }
 
 // ---------------------------------------------------------------------------
+// Transaction Ledger
+// ---------------------------------------------------------------------------
+
+/// A transaction in the economy ledger.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Transaction {
+    /// Unique transaction ID (incrementing counter).
+    pub id: u64,
+    /// Player address.
+    pub player_address: String,
+    /// Timestamp of the transaction.
+    pub timestamp: u64,
+    /// Action type that caused the transaction.
+    pub action: String,
+    /// Gold change (positive for gains, negative for costs).
+    pub gold_change: i64,
+    /// XP change.
+    pub xp_change: i64,
+    /// Eco points change.
+    pub eco_points_change: i64,
+}
+
+/// Economy ledger for recording transactions.
+#[derive(Debug, Clone, Default)]
+pub struct EconomyLedger {
+    /// All transactions.
+    pub transactions: Vec<Transaction>,
+    /// Next transaction ID.
+    next_id: u64,
+}
+
+impl EconomyLedger {
+    /// Create a new empty ledger.
+    pub fn new() -> Self {
+        Self {
+            transactions: Vec::new(),
+            next_id: 1,
+        }
+    }
+
+    /// Record a transaction.
+    pub fn record(&mut self, player_address: String, action: String, gold_change: i64, xp_change: i64, eco_points_change: i64) -> Transaction {
+        let txn = Transaction {
+            id: self.next_id,
+            player_address,
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            action,
+            gold_change,
+            xp_change,
+            eco_points_change,
+        };
+        self.next_id += 1;
+        self.transactions.push(txn.clone());
+        txn
+    }
+
+    /// Get all transactions for a player.
+    pub fn player_transactions(&self, player_address: &str) -> Vec<&Transaction> {
+        self.transactions
+            .iter()
+            .filter(|t| t.player_address == player_address)
+            .collect()
+    }
+
+    /// Get the last N transactions.
+    pub fn recent(&self, n: usize) -> Vec<&Transaction> {
+        self.transactions
+            .iter()
+            .rev()
+            .take(n)
+            .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -515,5 +593,57 @@ mod tests {
         assert_eq!(calculate_idle_gains(36000), (100, 50));
         assert_eq!(calculate_idle_gains(43200), (150, 75));
         assert_eq!(calculate_idle_gains(86400), (150, 75));
+    }
+
+    #[test]
+    fn test_economy_ledger_record() {
+        let mut ledger = EconomyLedger::new();
+        let txn = ledger.record("0x1234".into(), "harvest".into(), 15, 10, 0);
+        assert_eq!(txn.id, 1);
+        assert_eq!(txn.gold_change, 15);
+        assert_eq!(ledger.transactions.len(), 1);
+    }
+
+    #[test]
+    fn test_economy_ledger_player_transactions() {
+        let mut ledger = EconomyLedger::new();
+        ledger.record("0x1234".into(), "harvest".into(), 15, 10, 0);
+        ledger.record("0x5678".into(), "plant".into(), -10, 5, 0);
+        ledger.record("0x1234".into(), "clean".into(), 0, 15, 0);
+        
+        let p1_txns = ledger.player_transactions("0x1234");
+        assert_eq!(p1_txns.len(), 2);
+        
+        let p2_txns = ledger.player_transactions("0x5678");
+        assert_eq!(p2_txns.len(), 1);
+    }
+
+    #[test]
+    fn test_economy_ledger_recent() {
+        let mut ledger = EconomyLedger::new();
+        ledger.record("0x1".into(), "a".into(), 1, 0, 0);
+        ledger.record("0x2".into(), "b".into(), 2, 0, 0);
+        ledger.record("0x3".into(), "c".into(), 3, 0, 0);
+        
+        let recent = ledger.recent(2);
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].id, 3);
+        assert_eq!(recent[1].id, 2);
+    }
+
+    #[test]
+    fn test_spend_gold_no_negative() {
+        let mut econ = PlayerEconomy::default();
+        assert_eq!(econ.gold, 100);
+        
+        // Spend more than we have - should fail and not deduct
+        let success = spend_gold(&mut econ, 200);
+        assert!(!success); // Not enough gold
+        assert_eq!(econ.gold, 100); // Gold unchanged
+        
+        // Spend exact amount - should succeed
+        let success = spend_gold(&mut econ, 100);
+        assert!(success);
+        assert_eq!(econ.gold, 0);
     }
 }

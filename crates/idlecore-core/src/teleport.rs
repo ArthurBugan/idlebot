@@ -609,6 +609,53 @@ mod tests {
     }
 
     #[test]
+    fn test_teleport_animation_full_cycle() {
+        let mut anim = TeleportAnimation::new(0.0, 0.0, 100.0, 50.0);
+        
+        // Start
+        assert!(anim.active);
+        assert!((anim.current_x() - 0.0).abs() < 0.1);
+        assert!((anim.current_z() - 0.0).abs() < 0.1);
+        
+        // Tick to middle (0.4s at 0.8s duration)
+        anim.tick(0.4);
+        assert!(anim.active);
+        let x = anim.current_x();
+        let z = anim.current_z();
+        assert!(x > 0.0 && x < 100.0);
+        assert!(z > 0.0 && z < 50.0);
+        
+        // Tick to end
+        anim.tick(0.5);
+        assert!(!anim.active);
+        assert!((anim.current_x() - 100.0).abs() < 0.1);
+        assert!((anim.current_z() - 50.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_teleport_animation_alpha_bounds() {
+        let mut anim = TeleportAnimation::new(0.0, 0.0, 100.0, 0.0);
+        
+        // At start (progress=0), alpha should be 1.0
+        assert!((anim.alpha() - 1.0).abs() < 0.001);
+        
+        // Tick to 0.3 (fade out start)
+        anim.tick(0.24); // 0.3 of 0.8s
+        let alpha = anim.alpha();
+        assert!(alpha >= 0.0 && alpha <= 1.0);
+        
+        // Tick to middle (0.4-0.7)
+        anim.tick(0.3); // 0.6 of 0.8s
+        let alpha = anim.alpha();
+        assert!(alpha >= 0.0 && alpha <= 1.0);
+        
+        // Tick to end (0.7+)
+        anim.tick(0.3); // 0.9 of 0.8s
+        let alpha = anim.alpha();
+        assert!(alpha >= 0.0 && alpha <= 1.0);
+    }
+
+    #[test]
     fn test_terrain_labels() {
         let targets = generate_nearby_hexes(&HexCoord::new(0, 0), 3);
         // Should have variety of terrain labels

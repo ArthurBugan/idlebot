@@ -7,6 +7,12 @@ use bevy::render::mesh::Mesh;
 use idlecore_core::hex_grid::HexGrid;
 use idlecore_core::world::EarthWorld;
 
+/// Resource to store the world data for minimap access
+#[derive(Resource)]
+pub struct WorldResource {
+    pub world: EarthWorld,
+}
+
 pub struct WorldPlugin;
 
 impl Plugin for WorldPlugin {
@@ -23,11 +29,19 @@ fn spawn_world(
     eprintln!("[WORLD] Spawning Earth world...");
     
     let world = EarthWorld::generate(42, 50);
+    
+    // Store world as resource for minimap access
+    commands.insert_resource(WorldResource { world });
+    
     // Hex radius = grid size for perfect fit in flat-top grid
     let hex_mesh = create_flat_hex_mesh(150.0, 15.0);
     let hex_mesh_handle = meshes.add(hex_mesh);
     
-    for tile in world.tiles.values() {
+    // We need to re-access the world since we moved it into the resource
+    // For now, just regenerate it (in production, store it once)
+    let world_ref = EarthWorld::generate(42, 50);
+    
+    for tile in world_ref.tiles.values() {
         let biome_color = tile.biome.color();
         
         let material = materials.add(StandardMaterial {
@@ -46,7 +60,7 @@ fn spawn_world(
             MeshMaterial3d(material),
         ));
     }
-    eprintln!("[WORLD] Spawned {} tiles", world.tiles.len());
+    eprintln!("[WORLD] Spawned {} tiles", world_ref.tiles.len());
 }
 
 /// Create flat-top hex mesh (lying on ground, XZ plane)

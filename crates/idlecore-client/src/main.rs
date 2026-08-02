@@ -8,13 +8,23 @@ mod progression;
 mod player;
 mod debug_panel;
 mod idle;
+mod minimap;
 mod plugins;
+
+/// Marker component for minimap entity
+#[derive(Component)]
+struct Minimap;
+
+/// Resource to track minimap visibility
+#[derive(Resource)]
+struct MinimapVisible(bool);
 
 // --- Main Entry ---
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .insert_resource(CameraZoom::default())
+        .insert_resource(MinimapVisible(true))
         .add_plugins(plugins::player::PlayerPlugin)
         .add_plugins(plugins::camera::CameraPlugin)
         .add_plugins(plugins::world::WorldPlugin)
@@ -23,13 +33,46 @@ fn main() {
         .insert_resource(idle::IdleGainsState::default())
         .add_systems(Startup, (
             setup,
-            spawn_minimap,
+            minimap::spawn_minimap_ui,
             idle::spawn_idle_panel,
         ))
+        .insert_resource(minimap::MinimapState::default())
         .add_systems(Update, (
+            toggle_minimap,
+            update_minimap_visibility,
+            minimap::sync_minimap_state,
+            minimap::render_hex_tiles,
+            minimap::update_minimap_ui,
             idle::update_idle_gains_panel,
         ))
         .run();
+}
+
+/// Toggle minimap visibility with M key
+fn toggle_minimap(
+    mut minimap_visible: ResMut<MinimapVisible>,
+    keyboard: Res<bevy::input::ButtonInput<bevy::input::keyboard::KeyCode>>,
+) {
+    if keyboard.just_pressed(bevy::input::keyboard::KeyCode::KeyM) {
+        minimap_visible.0 = !minimap_visible.0;
+        println!("[UI] Minimap visibility: {}", minimap_visible.0);
+    }
+}
+
+/// Update minimap entity visibility based on resource
+fn update_minimap_visibility(
+    minimap_visible: Res<MinimapVisible>,
+    mut query: Query<&mut Visibility, With<minimap::MinimapMarker>>,
+) {
+    let visibility = if minimap_visible.0 {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    
+    for mut vis in &mut query {
+        *vis = visibility;
+    }
 }
 
 /// Setup lights, camera, and player
@@ -86,29 +129,7 @@ fn setup(
     ));
 }
 
-/// Spawn the minimap overlay in the bottom-right corner
-fn spawn_minimap(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    // Spawn minimap as a simple blue cube floating above the world
-    commands.spawn((
-        Name::new("minimap"),
-        Transform::from_xyz(
-            500.0,  // X position
-            200.0,  // Y position (height)
-            500.0,  // Z position
-        ),
-        GlobalTransform::default(),
-        Mesh3d(meshes.add(Cuboid::new(50.0, 50.0, 2.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgba(0.0, 0.5, 1.0, 0.7),
-            unlit: true,
-            ..default()
-        })),
-    ));
-}
+
 
 /// Create a capsule-shaped player avatar (cylinder with rounded ends)
 fn create_player_mesh() -> Mesh {

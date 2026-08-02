@@ -24,6 +24,8 @@ pub mod vehicle_persistence;
 pub mod vehicle_visual;
 pub mod voice;
 pub mod idle_config;
+pub mod minimap;
+pub mod protocol;
 
 /// Simple RGBA color (0.0–1.0 per channel)
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
