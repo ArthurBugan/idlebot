@@ -147,7 +147,7 @@ fn spawn_aura_vfx(
 ```toml
 # Cargo.toml
 [dependencies]
-bevy = { version = "0.15", features = ["gltf", "animation", "pbr"] }
+bevy = { version = "0.19" }
 image = "0.25"
 png = "0.17"
 ```

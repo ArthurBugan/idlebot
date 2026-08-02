@@ -7,11 +7,11 @@ use plugins::camera::CameraZoom;
 mod progression;
 mod player;
 mod debug_panel;
+mod idle;
 mod plugins;
 
 // --- Main Entry ---
 fn main() {
-    eprintln!("=== IdleBot Starting ===");
     App::new()
         .add_plugins(DefaultPlugins)
         .insert_resource(CameraZoom::default())
@@ -20,13 +20,14 @@ fn main() {
         .add_plugins(plugins::world::WorldPlugin)
         .insert_resource(PlayerTransform::default())
         .insert_resource(debug_panel::DebugPanelOpen(false))
+        .insert_resource(idle::IdleGainsState::default())
         .add_systems(Startup, (
             setup,
             spawn_minimap,
-            debug_panel::spawn_debug_panel,
+            idle::spawn_idle_panel,
         ))
         .add_systems(Update, (
-            debug_panel::debug_panel_toggle,
+            idle::update_idle_gains_panel,
         ))
         .run();
 }
@@ -37,8 +38,6 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    eprintln!("[SETUP] >>> STARTING SETUP <<<");
-    
     // Directional sun
     commands.spawn((
         Name::new("sun"),
@@ -49,7 +48,6 @@ fn setup(
         },
         Transform::from_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_4)),
     ));
-    eprintln!("[SETUP] Added directional sun");
     
     // Camera
     commands.spawn((
@@ -57,7 +55,6 @@ fn setup(
         bevy::core_pipeline::tonemapping::Tonemapping::None,
         Transform::from_xyz(0.0, 60.0, 60.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
-    eprintln!("[SETUP] Added camera");
     
     // Spawn player
     let player_mesh = meshes.add(create_player_mesh());
@@ -87,31 +84,29 @@ fn setup(
             time_offline: None,
         },
     ));
-    eprintln!("[SETUP] Player spawned at (0, 1.5, 0)");
 }
 
 /// Spawn the minimap overlay in the bottom-right corner
 fn spawn_minimap(
     mut commands: Commands,
-    window: Query<&Window>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let win_w = window.iter().next().map(|w| w.width() as f32).unwrap_or(1920.0);
-    let win_h = window.iter().next().map(|w| w.height() as f32).unwrap_or(1080.0);
-    let minimap_size = 120.0;
-    
+    // Spawn minimap as a simple blue cube floating above the world
     commands.spawn((
         Name::new("minimap"),
-        Sprite {
-            color: Color::srgba(0.0, 0.0, 0.0, 0.3),
-            custom_size: Some(Vec2::new(minimap_size, minimap_size)),
-            ..default()
-        },
         Transform::from_xyz(
-            win_w / 2.0 - minimap_size / 2.0 + 250.0,
-            win_h / 2.0 - minimap_size / 2.0 - 150.0,
-            1000.0,
+            500.0,  // X position
+            200.0,  // Y position (height)
+            500.0,  // Z position
         ),
-        Camera2d::default(),
+        GlobalTransform::default(),
+        Mesh3d(meshes.add(Cuboid::new(50.0, 50.0, 2.0))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgba(0.0, 0.5, 1.0, 0.7),
+            unlit: true,
+            ..default()
+        })),
     ));
 }
 
@@ -169,3 +164,4 @@ fn create_player_mesh() -> Mesh {
 /// Player marker component
 #[derive(Component)]
 struct Player;
+
