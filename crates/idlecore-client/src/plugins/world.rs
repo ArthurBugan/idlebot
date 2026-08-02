@@ -26,7 +26,7 @@ fn spawn_world(
     eprintln!("[WORLD] Spawning Earth world...");
     
     let world = EarthWorld::generate(42, 50);
-    let hex_mesh = create_flat_top_hex_mesh(HEX_SCALE * 100.0);
+    let hex_mesh = create_hex_mesh(HEX_SCALE * 100.0, 10.0);
     let hex_mesh_handle = meshes.add(hex_mesh);
     
     for tile in world.tiles.values() {
@@ -49,44 +49,52 @@ fn spawn_world(
     eprintln!("[WORLD] Spawned {} tiles", world.tiles.len());
 }
 
-/// Create a flat-top hexagonal prism (horizontal, like game hex tiles)
-fn create_flat_top_hex_mesh(radius: f32) -> Mesh {
+/// Create a hexagonal prism sitting flat on the ground (XZ plane)
+fn create_hex_mesh(radius: f32, height: f32) -> Mesh {
     use bevy::render::mesh::{Indices, VertexAttributeValues};
-    let h = 10.0;
+    
     let corners: Vec<[f32; 2]> = (0..6)
         .map(|i| {
             let angle = std::f32::consts::PI / 3.0 * i as f32;
             [radius * angle.cos(), radius * angle.sin()]
         })
         .collect();
-    let top: Vec<[f32; 3]> = corners.iter().map(|c| [c[0], c[1], h]).collect();
-    let bottom: Vec<[f32; 3]> = corners.iter().map(|c| [c[0], c[1], 0.0]).collect();
+    
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     
-    // Top face
-    positions.push([0.0, 0.0, h]);
-    for &c in &top { positions.push(c); }
-    let center_idx = positions.len() as u32 - 7;
-    for i in 0..6u32 {
-        indices.extend_from_slice(&[center_idx, center_idx + i + 1, center_idx + ((i + 1) % 6) + 1]);
+    // Bottom face (ground level, Y=0)
+    for &c in &corners {
+        positions.push([c[0], 0.0, c[1]]);  // X, Y=0, Z
     }
-    
-    // Bottom face
     let bot_start = positions.len() as u32;
-    for &c in &bottom { positions.push(c); }
     let bot_center = bot_start + 6;
-    positions.push([0.0, 0.0, 0.0]);
+    positions.push([0.0, 0.0, 0.0]);  // Center bottom
+    
+    // Bottom face triangles
     for i in 0..6u32 {
         indices.extend_from_slice(&[bot_center, bot_center + ((i + 1) % 6), bot_center + i]);
+    }
+    
+    // Top face (Y=height)
+    for &c in &corners {
+        positions.push([c[0], height, c[1]]);  // X, Y=height, Z
+    }
+    let top_start = positions.len() as u32;
+    let top_center = top_start + 6;
+    positions.push([0.0, height, 0.0]);  // Center top
+    
+    // Top face triangles
+    for i in 0..6u32 {
+        indices.extend_from_slice(&[top_center, top_center + i, top_center + ((i + 1) % 6)]);
     }
     
     // Side faces
     for i in 0..6u32 {
         let i_next = (i + 1) % 6;
         let b0 = bot_start + i; let b1 = bot_start + i_next;
-        let t0 = center_idx + 1 + i; let t1 = center_idx + 1 + i_next;
-        indices.extend_from_slice(&[b0, b1, t1, b0, t1, t0]);
+        let t1 = top_start + i; let t0 = top_start + i_next;
+        indices.extend_from_slice(&[b0, b1, t0, b0, t0, t1]);
     }
     
     let mut mesh = Mesh::new(bevy::render::mesh::PrimitiveTopology::TriangleList, default());
