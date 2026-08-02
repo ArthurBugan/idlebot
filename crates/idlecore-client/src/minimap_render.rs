@@ -90,7 +90,8 @@ pub fn handle_minimap_input(
         mm.zoom_out();
     }
     if keyboard.just_pressed(KeyCode::KeyM) {
-        mm.toggle_global_map();
+        // Minimap toggle handled in main.rs
+        // mm.toggle_global_map();
     }
 
     // Scroll wheel zoom

@@ -151,3 +151,9 @@ pub fn player_mesh() -> Mesh {
 
     mesh
 }
+
+/// Player transform resource for camera/minimap follow
+#[derive(Resource, Default)]
+pub struct PlayerTransform {
+    pub translation: Vec3,
+}

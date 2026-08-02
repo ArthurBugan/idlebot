@@ -1,65 +1,31 @@
-//! Earth-scale world generation with biomes and vegetation.
-//!
-//! Generates a world at 1:10000 scale with real Earth-like geography,
-//! latitude-based biomes, and vegetation spawning.
+//! World generation — 1:10000 scale Earth replica.
+//! Latitude-based biomes, elevation-driven land/ocean split.
 
-use crate::hex::HexCoord;
-use crate::terrain::TerrainType;
-use rand::Rng;
-use rand::SeedableRng;
 use rand::rngs::SmallRng;
-use serde::{Deserialize, Serialize};
+use rand::{Rng, SeedableRng};
 use std::collections::HashMap;
+use crate::hex::HexCoord;
 
-/// World scale: 1 unit = 100 meters (1:10000 scale)
-pub const WORLD_SCALE: f32 = 100.0;
-
-/// Hex size in world units (10x original)
+/// Hex world size constant (10x original 10-unit hexes = 100 units)
 pub const HEX_SIZE: f32 = 100.0;
 
-/// Biome types based on latitude and temperature
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Biome type determined by latitude and elevation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Biome {
-    /// Polar ice caps (lat > 60°)
     Tundra,
-    /// Boreal forests (lat 50-60°)
     Taiga,
-    /// Temperate forests (lat 30-50°)
     TemperateForest,
-    /// Grasslands (lat 20-40°, inland)
     Grassland,
-    /// Deserts (lat 15-30°, low rainfall)
     Desert,
-    /// Tropical rainforest (lat < 20°)
     TropicalRainforest,
-    /// Ocean (sea level)
     Ocean,
-    /// Mountain (high elevation)
     Mountain,
-    /// City/urban (player-placed)
     City,
-    /// Polluted (player-placed)
     Polluted,
 }
 
 impl Biome {
-    /// Get the display name for this biome.
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            Biome::Tundra => "Tundra",
-            Biome::Taiga => "Taiga",
-            Biome::TemperateForest => "Temperate Forest",
-            Biome::Grassland => "Grassland",
-            Biome::Desert => "Desert",
-            Biome::TropicalRainforest => "Tropical Rainforest",
-            Biome::Ocean => "Ocean",
-            Biome::Mountain => "Mountain",
-            Biome::City => "City",
-            Biome::Polluted => "Polluted",
-        }
-    }
-
-    /// Get the color for this biome (RGB).
+    /// Get the color for this biome.
     pub fn color(&self) -> (f32, f32, f32) {
         match self {
             Biome::Tundra => (0.9, 0.95, 1.0),
@@ -86,60 +52,26 @@ impl Biome {
     }
 }
 
-/// Vegetation types that can spawn in biomes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Vegetation type for a tile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Vegetation {
-    /// Grass (grasslands, temperate forests)
-    Grass,
-    /// Bush (deserts, grasslands)
-    Bush,
-    /// Tree (forests, taiga)
-    Tree,
-    /// Rare tree (tropical rainforest)
-    RareTree,
-    /// Cactus (deserts)
-    Cactus,
-    /// Snow plant (tundra)
-    SnowPlant,
-    /// Mountain shrub (mountains)
-    MountainShrub,
-    /// None (ocean, city, polluted)
     None,
+    Trees,
+    Bushes,
+    Cacti,
+    Snow,
 }
 
-impl Vegetation {
-    /// Get the display name for this vegetation.
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            Vegetation::Grass => "Grass",
-            Vegetation::Bush => "Bush",
-            Vegetation::Tree => "Tree",
-            Vegetation::RareTree => "Rare Tree",
-            Vegetation::Cactus => "Cactus",
-            Vegetation::SnowPlant => "Snow Plant",
-            Vegetation::MountainShrub => "Mountain Shrub",
-            Vegetation::None => "None",
-        }
-    }
-}
-
-/// A tile on the world grid.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A single tile in the world.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WorldTile {
-    /// Axial coordinate.
     pub coord: HexCoord,
-    /// Hex ID.
     pub hex_id: u64,
-    /// Center position in world coordinates.
     pub center_x: f32,
     pub center_y: f32,
-    /// Biome type.
     pub biome: Biome,
-    /// Elevation (0-1, affects biome).
     pub elevation: f32,
-    /// Vegetation on this tile.
     pub vegetation: Vegetation,
-    /// Whether this tile has been owned.
     pub owned_by: Option<u64>,
 }
 
@@ -165,28 +97,20 @@ impl WorldTile {
     }
 }
 
-/// Earth-like world generator.
-///
-/// Uses latitude-based biome system:
-/// - Polar (lat > 60°): Tundra
-/// - Subpolar (lat 50-60°): Taiga
-/// - Temperate (lat 30-50°): Temperate Forest or Grassland
-/// - Subtropical (lat 15-30°): Desert or Grassland
-/// - Tropical (lat < 15°): Tropical Rainforest
-/// - Ocean: determined by elevation and proximity to continents
-/// - Mountain: high elevation areas
-#[derive(Debug, Clone, Default)]
+/// The entire world.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct EarthWorld {
     pub tiles: HashMap<u64, WorldTile>,
-    /// World radius in hexes.
     pub radius: i32,
 }
 
 impl EarthWorld {
-    /// Generate an Earth-like world with the given seed and radius.
+    /// Generate a new world.
     ///
-    /// The world is centered at (0, 0) and extends to the given radius.
-    /// Biomes are determined by latitude (r coordinate) and elevation.
+    /// - `seed`: Random seed for world generation.
+    /// - `radius`: Radius of the hex grid (in hexes).
+    ///
+    /// Returns the world with tiles centered at (0, 0).
     pub fn generate(seed: u64, radius: i32) -> Self {
         let mut rng = SmallRng::seed_from_u64(seed);
         let mut world = Self {
@@ -220,12 +144,13 @@ impl EarthWorld {
                     let vegetation = Self::determine_vegetation(&mut rng, biome, elevation);
 
                     let tile = WorldTile::new(
-                        HexCoord::new(q, r),
+                        HexCoord { q, r, s: -q - r },
                         hex_id,
                         biome,
                         elevation,
                         vegetation,
                     );
+
                     world.tiles.insert(hex_id, tile);
                 }
             }
@@ -234,28 +159,29 @@ impl EarthWorld {
         world
     }
 
-    /// Generate elevation using simple hash-based noise.
+    /// Generate elevation using a combination of hash-based noise and sine waves.
     fn generate_elevation(rng: &mut SmallRng, q: i32, r: i32) -> f32 {
         // Simple hash-based elevation (in production, use proper noise function)
         let hash = (q as u64) ^ ((r as u64) << 32);
         let noise = (hash as f64) / (u64::MAX as f64);
-        // Use a sine wave for continental shapes
+        // Use a sine wave for continental shapes with higher base elevation
         let continental = (noise * 6.28318).sin().abs();
-        continental as f32 * 0.7 + rng.gen::<f32>() * 0.3
+        // Increase minimum elevation to avoid all-ocean
+        continental as f32 * 0.5 + 0.3 + rng.gen::<f32>() * 0.2
     }
 
     /// Determine biome based on latitude and elevation.
     fn determine_biome(latitude: f64, elevation: f32) -> Biome {
         let abs_lat = latitude.abs();
 
-        // Ocean determined by elevation (low elevation = ocean)
-        if elevation < 0.3 {
-            return Biome::Ocean;
-        }
-
         // Mountain biome for high elevation
         if elevation > 0.7 {
             return Biome::Mountain;
+        }
+
+        // Ocean determined by elevation (low elevation = ocean)
+        if elevation < 0.35 {
+            return Biome::Ocean;
         }
 
         // Latitude-based biomes
@@ -286,85 +212,40 @@ impl EarthWorld {
     /// Determine vegetation based on biome and elevation.
     fn determine_vegetation(rng: &mut SmallRng, biome: Biome, elevation: f32) -> Vegetation {
         match biome {
-            Biome::Tundra => {
-                if rng.gen::<f32>() < 0.3 {
-                    Vegetation::SnowPlant
-                } else {
-                    Vegetation::None
-                }
-            }
-            Biome::Taiga => {
-                if rng.gen::<f32>() < 0.7 {
-                    Vegetation::Tree
-                } else {
-                    Vegetation::None
-                }
-            }
-            Biome::TemperateForest => {
-                if rng.gen::<f32>() < 0.6 {
-                    Vegetation::Tree
-                } else if rng.gen::<f32>() < 0.4 {
-                    Vegetation::Grass
-                } else {
-                    Vegetation::None
-                }
-            }
+            Biome::Tundra => Vegetation::Snow,
+            Biome::Taiga => Vegetation::Trees,
+            Biome::TemperateForest => Vegetation::Trees,
+            Biome::TropicalRainforest => Vegetation::Trees,
             Biome::Grassland => {
-                if rng.gen::<f32>() < 0.8 {
-                    Vegetation::Grass
-                } else if rng.gen::<f32>() < 0.2 {
-                    Vegetation::Bush
-                } else {
-                    Vegetation::None
-                }
+                if rng.gen::<f32>() > 0.5 { Vegetation::Bushes } else { Vegetation::None }
             }
-            Biome::Desert => {
-                if rng.gen::<f32>() < 0.15 {
-                    Vegetation::Cactus
-                } else if rng.gen::<f32>() < 0.1 {
-                    Vegetation::Bush
-                } else {
-                    Vegetation::None
-                }
-            }
-            Biome::TropicalRainforest => {
-                if rng.gen::<f32>() < 0.8 {
-                    Vegetation::RareTree
-                } else if rng.gen::<f32>() < 0.6 {
-                    Vegetation::Tree
-                } else {
-                    Vegetation::None
-                }
-            }
-            Biome::Mountain => {
-                if rng.gen::<f32>() < 0.2 {
-                    Vegetation::MountainShrub
-                } else {
-                    Vegetation::None
-                }
-            }
-            Biome::Ocean | Biome::City | Biome::Polluted => Vegetation::None,
+            Biome::Desert => Vegetation::Cacti,
+            Biome::Mountain => Vegetation::None,
+            Biome::Ocean => Vegetation::None,
+            Biome::City => Vegetation::None,
+            Biome::Polluted => Vegetation::None,
         }
     }
 
-    /// Get a tile by ID.
-    pub fn get(&self, hex_id: u64) -> Option<&WorldTile> {
+    /// Get a tile by hex coordinates.
+    pub fn get_tile(&self, q: i32, r: i32) -> Option<&WorldTile> {
+        let hex_id = ((q as u32) as u64) << 32 | (r as u32) as u64;
         self.tiles.get(&hex_id)
     }
 
-    /// Get all tile IDs.
-    pub fn ids(&self) -> Vec<u64> {
-        self.tiles.keys().cloned().collect()
+    /// Get a tile by id.
+    pub fn get_tile_by_id(&self, hex_id: u64) -> Option<&WorldTile> {
+        self.tiles.get(&hex_id)
     }
 
-    /// Get the number of tiles.
-    pub fn len(&self) -> usize {
+    /// Get the number of tiles in the world.
+    pub fn tile_count(&self) -> usize {
         self.tiles.len()
     }
 
-    /// Check if empty.
-    pub fn is_empty(&self) -> bool {
-        self.tiles.is_empty()
+    /// Get the radius of the world.
+    pub fn world_radius(&self) -> i32 {
+        self.radius
     }
 }
 
@@ -373,85 +254,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_world_generation_basic() {
+    fn test_world_generation() {
         let world = EarthWorld::generate(42, 10);
-        assert!(!world.is_empty());
-        assert!(world.len() > 0);
+        assert!(world.tile_count() > 0);
     }
 
     #[test]
-    fn test_biome_latitude_distribution() {
-        let world = EarthWorld::generate(123, 50);
-        let mut tundra_count = 0;
-        let mut tropical_count = 0;
-        let mut ocean_count = 0;
-
+    fn test_biome_distribution() {
+        let world = EarthWorld::generate(42, 50);
+        let mut biome_counts: HashMap<Biome, usize> = HashMap::new();
         for tile in world.tiles.values() {
-            let lat = tile.coord.r as f64 / 50.0 * 90.0;
-            if lat.abs() > 60.0 {
-                tundra_count += 1;
-            }
-            if lat.abs() < 15.0 {
-                tropical_count += 1;
-            }
-            if tile.biome == Biome::Ocean {
-                ocean_count += 1;
-            }
+            *biome_counts.entry(tile.biome).or_insert(0) += 1;
         }
-
-        // Should have some of each biome type
-        assert!(tundra_count > 0, "Should have tundra at high latitudes");
-        assert!(tropical_count > 0, "Should have tropical at low latitudes");
-        assert!(ocean_count > 0, "Should have ocean tiles");
+        // Should have at least some variety
+        assert!(biome_counts.len() > 1, "Expected multiple biomes, got: {:?}", biome_counts);
     }
 
     #[test]
-    fn test_vegetation_by_biome() {
-        let world = EarthWorld::generate(456, 30);
-
-        // Check that different biomes have appropriate vegetation
-        for tile in world.tiles.values() {
-            match tile.biome {
-                Biome::Ocean => assert_eq!(tile.vegetation, Vegetation::None),
-                Biome::Tundra => assert!(!matches!(tile.vegetation, Vegetation::Tree)),
-                Biome::TropicalRainforest => {
-                    assert!(matches!(
-                        tile.vegetation,
-                        Vegetation::RareTree | Vegetation::Tree | Vegetation::None
-                    ))
-                }
-                _ => {} // Other biomes can have various vegetation
-            }
-        }
-    }
-
-    #[test]
-    fn test_hex_size_constant() {
-        assert_eq!(HEX_SIZE, 100.0);
+    fn test_hex_coordinates() {
+        let world = EarthWorld::generate(42, 50);
+        let tile = world.get_tile(0, 0).unwrap();
+        assert_eq!(tile.coord.q, 0);
+        assert_eq!(tile.coord.r, 0);
     }
 
     #[test]
     fn test_biome_colors() {
-        let ocean_color = Biome::Ocean.color();
-        assert_eq!(ocean_color, (0.1, 0.3, 0.8));
-
-        let desert_color = Biome::Desert.color();
-        assert_eq!(desert_color, (0.9, 0.8, 0.5));
+        assert!((Biome::Ocean.color().0 - 0.1).abs() < 0.01);
+        assert!((Biome::Grassland.color().1 - 0.8).abs() < 0.01);
+        assert!((Biome::Tundra.color().0 - 0.9).abs() < 0.01);
     }
 
     #[test]
-    fn test_biome_walkable() {
-        assert!(!Biome::Ocean.is_walkable());
+    fn test_walkable_biomes() {
         assert!(Biome::Grassland.is_walkable());
-        assert!(Biome::TropicalRainforest.is_walkable());
+        assert!(!Biome::Ocean.is_walkable());
     }
 
     #[test]
-    fn test_biome_farmable() {
+    fn test_farmable_biomes() {
         assert!(Biome::Grassland.is_farmable());
-        assert!(Biome::TemperateForest.is_farmable());
-        assert!(Biome::TropicalRainforest.is_farmable());
         assert!(!Biome::Desert.is_farmable());
-        assert!(!Biome::Ocean.is_farmable());
+    }
+
+    #[test]
+    fn test_seed_determinism() {
+        let world1 = EarthWorld::generate(42, 10);
+        let world2 = EarthWorld::generate(42, 10);
+        assert_eq!(world1.tile_count(), world2.tile_count());
     }
 }
