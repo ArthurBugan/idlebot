@@ -1,24 +1,12 @@
 //! IdleBot — Bevy 0.19 hex grid single-player client.
 
 use bevy::prelude::*;
-
-mod player;
-mod progression;
-mod vehicle;
-mod voice;
-mod minimap;
-mod debug_panel;
-mod plugins;
-
 use crate::player::PlayerTransform;
 
-/// Player marker component
-#[derive(Component)]
-struct Player;
-
-/// Minimap component
-#[derive(Component)]
-struct Minimap;
+mod progression;
+mod player;
+mod debug_panel;
+mod plugins;
 
 // --- Main Entry ---
 fn main() {
@@ -36,8 +24,6 @@ fn main() {
             debug_panel::spawn_debug_panel,
         ))
         .add_systems(Update, (
-            voice::voice_update::voice_indicator_updater,
-            manage_minimap,
             debug_panel::debug_panel_toggle,
         ))
         .run();
@@ -178,16 +164,6 @@ fn create_player_mesh() -> Mesh {
     mesh
 }
 
-/// Manage minimap: toggle visibility with M key
-fn manage_minimap(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut minimap: Query<&mut Transform>,
-) {
-    if keyboard.just_pressed(KeyCode::KeyM) {
-        if let Ok(mut transform) = minimap.single_mut() {
-            let scale_factor = if transform.scale.x == 1.0 { 2.0 } else { 1.0 };
-            transform.scale = Vec3::splat(scale_factor);
-            eprintln!("[MINIMAP] Toggle zoom");
-        }
-    }
-}
+/// Player marker component
+#[derive(Component)]
+struct Player;
