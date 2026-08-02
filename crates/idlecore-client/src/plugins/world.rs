@@ -24,7 +24,7 @@ fn spawn_world(
     
     let world = EarthWorld::generate(42, 50);
     // Hex radius = grid size for perfect fit in flat-top grid
-    let hex_mesh = create_flat_hex_mesh(100.0, 10.0);
+    let hex_mesh = create_flat_hex_mesh(150.0, 15.0);
     let hex_mesh_handle = meshes.add(hex_mesh);
     
     for tile in world.tiles.values() {
@@ -37,7 +37,7 @@ fn spawn_world(
             ..default()
         });
         
-        let (x, z) = HexGrid::axial_to_world(tile.coord.q, tile.coord.r, 100.0);
+        let (x, z) = HexGrid::axial_to_world(tile.coord.q, tile.coord.r, 150.0);
         
         commands.spawn((
             Name::new(format!("hex_{}_{}", tile.coord.q, tile.coord.r)),

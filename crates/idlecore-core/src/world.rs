@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use crate::hex::HexCoord;
 
 /// Hex world size constant (10x original 10-unit hexes = 100 units)
-pub const HEX_SIZE: f32 = 100.0;
+pub const HEX_SIZE: f32 = 150.0;
 
 /// Biome type determined by latitude and elevation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
