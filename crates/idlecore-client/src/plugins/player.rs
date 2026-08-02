@@ -29,7 +29,7 @@ fn player_movement(
     if keyboard.pressed(KeyCode::KeyA) { input.x -= 1.0; }
     if keyboard.pressed(KeyCode::KeyD) { input.x += 1.0; }
 
-    let speed = 200.0;
+    let speed = 100.0;
     let dt = time.delta_secs();
     let delta = input * speed * dt;
     transform.translation.x += delta.x;

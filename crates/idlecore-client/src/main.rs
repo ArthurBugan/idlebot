@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 use crate::player::PlayerTransform;
+use plugins::camera::CameraZoom;
 
 mod progression;
 mod player;
@@ -13,6 +14,7 @@ fn main() {
     eprintln!("=== IdleBot Starting ===");
     App::new()
         .add_plugins(DefaultPlugins)
+        .insert_resource(CameraZoom::default())
         .add_plugins(plugins::player::PlayerPlugin)
         .add_plugins(plugins::camera::CameraPlugin)
         .add_plugins(plugins::world::WorldPlugin)
