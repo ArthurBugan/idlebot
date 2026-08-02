@@ -53,13 +53,16 @@ fn spawn_world(
     eprintln!("[WORLD] Spawned {} tiles", world.tiles.len());
 }
 
-/// Create a hexagonal prism sitting flat on the ground (XZ plane)
+/// Create a hexagonal prism lying flat on the ground (XZ plane)
+/// Y axis is up (height)
 fn create_hex_mesh(radius: f32, height: f32) -> Mesh {
     use bevy::render::mesh::{Indices, VertexAttributeValues};
     
+    // Hexagon in XZ plane (flat on ground)
     let corners: Vec<[f32; 2]> = (0..6)
         .map(|i| {
             let angle = std::f32::consts::PI / 3.0 * i as f32;
+            // [x, z] for flat-top hex
             [radius * angle.cos(), radius * angle.sin()]
         })
         .collect();
