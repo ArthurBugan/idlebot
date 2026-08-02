@@ -108,5 +108,5 @@ fn confirm_teleport(&mut self, teleport_system: &mut TeleportSystem) {
 - R2: Abuse for griefing (need server validation)
 
 ## Open Questions
-- Q1: Should longer cooldowns apply during combat?
-- Q2: Premium currency discount on teleport cost?
+- Q1: Premium currency discount on teleport cost?
+yes

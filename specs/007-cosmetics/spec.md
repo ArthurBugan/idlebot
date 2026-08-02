@@ -102,4 +102,6 @@ fn equip_cosmetic(player: &mut Player, category: CosmeticCategory, index: usize)
 
 ## Open Questions
 - Q1: Should cosmetics have rare/legendary tiers?
+yes
 - Q2: Can players gift cosmetics to others?
+yes

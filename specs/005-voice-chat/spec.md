@@ -121,5 +121,8 @@ impl VoicePeer {
 
 ## Open Questions
 - Q1: Should there be a mute button?
+yes
 - Q2: How to handle disconnected players?
+just also leave the audio channel
 - Q3: Recording for replay?
+no

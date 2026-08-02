@@ -46,30 +46,6 @@ struct ObjectMarker {
     label: Option<String>,
 }
 ```
-
-### Minimap Rendering
-```rust
-fn render_minimap(&mut self, cam: &Camera, ctx: &mut RenderContext) {
-    let hex_data = self.world.get_visible_hexes(cam.view_radius);
-    
-    for hex in hex_data {
-        let pixel = hex.to_pixel();
-        let screen_x = pixel.0 * self.minimap_scale;
-        let screen_y = pixel.1 * self.minimap_scale;
-        
-        ctx.draw_hex(screen_x, screen_y, hex.terrain.color());
-    }
-    
-    // Draw player dot
-    ctx.draw_circle(
-        self.player_position.x,
-        self.player_position.y,
-        5.0,
-        Color::BLUE,
-    );
-}
-```
-
 ### Zoom System
 ```rust
 enum ZoomLevel {

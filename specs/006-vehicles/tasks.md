@@ -4,7 +4,7 @@
 > **Implementation Checklist**
 
 ## Phase 1: Vehicle Data & Types
-- [✓] **T1.1** Define VehicleType enum (None, Bicycle, Scooter, Motorcycle, Boat, Airplane)
+- [] **T1.1** Define VehicleType enum (None, Bicycle, Scooter, Motorcycle, Boat, Airplane)
 - [ ] **T1.2** Define speed multipliers for each vehicle type
 - [ ] **T1.3** Define gold cost for each vehicle
 - [ ] **T1.4** Create Vehicle struct with type, speed_multiplier, gold_cost

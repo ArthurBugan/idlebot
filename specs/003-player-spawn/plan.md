@@ -17,28 +17,8 @@
 - Boundary validation (don't walk off grid)
 
 ### Data Structures
-```rust
-struct Player {
-    address: WalletAddress,
-    position: Vec3,          // World position
-    hex_id: u64,             // Current hex
-    speed: f32,              // Current speed (base * multiplier)
-    is_online: bool,
-    owned_vehicle: Option<Vehicle>,
-}
-```
 
 ## Files to Create/Modify
-
-### Client (idlecore-client)
-- `src/player/player_system.rs` — Movement system, spawn logic
-- `src/player.rs` — Player data structures, speed calculation
-- `src/input.rs` — WASD input handling
-- `src/main.rs` — Wire up movement system, spawn player at grid center
-
-### Core (idlecore-core)
-- `src/player.rs` — Player struct with position, hex_id, speed
-- `src/lib.rs` — Export player module
 
 ## Testing Strategy
 1. Unit test: player spawns at valid hex
@@ -50,7 +30,3 @@ struct Player {
 ## Dependencies
 - Depends on 002-hex-grid (needs grid for spawn location)
 - Used by 004-interactions (player needs to be at hex to interact)
-
-## Timeline
-- **Estimate:** 1-2 days
-- **Phase:** MVP Core Loop

@@ -134,4 +134,6 @@ enum PlantType {
 
 ## Open Questions
 - Q1: Should plants have animations?
+for now the plants are simple shapes
 - Q2: Different plant types with different rewards?
+yes

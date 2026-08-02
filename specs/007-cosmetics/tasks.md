@@ -4,7 +4,7 @@
 > **Implementation Checklist**
 
 ## Phase 1: Purchase Cosmetic
-- [✓] **T1.1** Define CosmeticItem struct (category, cosmetic_type, purchased, equipped)
+- [] **T1.1** Define CosmeticItem struct (category, cosmetic_type, purchased, equipped)
 - [ ] **T1.2** Define CosmeticCategory enum (Hat, Aura, Trail)
 - [ ] **T1.3** Define CosmeticType enum (Basic, Premium)
 - [ ] **T1.4** Create CosmeticInventory struct (vec of CosmeticItem)

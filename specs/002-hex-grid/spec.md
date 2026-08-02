@@ -30,27 +30,6 @@ Players need a navigable 3D world rendered as a hex grid. The grid must support 
 
 ## Design
 
-### Hex Coordinate System
-```rust
-struct HexCoord {
-    q: i32,
-    r: i32,
-    s: i32, // q + r + s = 0
-}
-
-impl HexCoord {
-    fn to_pixel(&self) -> (f32, f32) {
-        let x = self.hex_radius * f32::sqrt(3.0) * (self.q as f32 + self.r as f32 / 2.0);
-        let y = self.hex_radius * 1.5 * self.r as f32;
-        (x, y)
-    }
-    
-    fn to_id(&self) -> u64 {
-        ((self.q as u64) << 32) | (self.r as u64)
-    }
-}
-```
-
 ### Terrain Types
 | Terrain | Probability | Eco Rating | Color |
 |---------|-------------|------------|-------|
@@ -60,40 +39,6 @@ impl HexCoord {
 | City | 10% | 20 | #808080 |
 | Desert | 7% | 20 | #F4A460 |
 | Polluted | 5% | 10 | #4B0082 |
-
-### Generation Algorithm
-```rust
-fn generate_hex_grid(seed: u64, radius: i32) -> HashMap<u64, HexTile> {
-    let mut grid = HashMap::new();
-    let mut rng = SeedRng::from_seed(seed);
-    
-    for q in -radius..=radius {
-        for r in -radius..=(radius - q.abs()) {
-            let s = -(q + r);
-            if (q as i64).abs() <= radius as i64 && (r as i64).abs() <= radius as i64 {
-                let hex_id = (q as u64) << 32 | (r as u64);
-                let terrain = rng.terrain_distribution();
-                grid.insert(hex_id, HexTile {
-                    coord: HexCoord { q, r, s },
-                    terrain,
-                    elevation: rng.f32_range(0.0, 1.0),
-                    ..Default::default()
-                });
-            }
-        }
-    }
-    
-    grid
-}
-```
-
-## Acceptance Criteria
-- [ ] Grid generates with correct hex count (~12,480)
-- [ ] Terrain distribution matches probabilities
-- [ ] Hexes render as flat-top 3D tiles
-- [ ] Plants and pollution visible on hexes
-- [ ] Grid queries return correct results
-- [ ] Performance meets 60fps target
 
 ## Risks
 - R1: Large grid performance (12k+ meshes)

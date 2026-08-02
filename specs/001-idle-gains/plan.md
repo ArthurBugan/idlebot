@@ -24,19 +24,6 @@ CREATE TABLE idle_gains (
 - "Claim All" button to apply gains
 - Disable claim if gains already applied this session
 
-## Files to Create/Modify
-
-### Server (idlebot-server)
-- `src/scheduler/idle_gains.rs` — Gain calculation logic
-- `src/server/modules.rs` — Register scheduled function
-
-### Client (idlebot-client)
-- `src/ui/idle_gains_panel.rs` — Gain display and claim UI
-- `src/player/player_system.rs` — Handle gain application
-
-### Core (idlebot-core)
-- `src/lib.rs` — Add IdleGains struct and calculation functions
-
 ## Testing Strategy
 1. Unit tests for gain calculation logic
 2. Integration test for scheduled function
