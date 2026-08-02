@@ -26,6 +26,10 @@ pub mod voice;
 pub mod idle_config;
 pub mod minimap;
 pub mod protocol;
+pub mod wallet_auth;
+pub mod player_identity;
+pub mod scheduler;
+pub mod assets;
 
 /// Simple RGBA color (0.0–1.0 per channel)
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
