@@ -60,9 +60,14 @@ pub fn spawn_world_tiles(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    player_query: Query<&Transform, With<crate::player::Player>>,
 ) {
-    // Get player position from default transform
-    let player_pos = (0.0, 0.0); // Center of world initially
+    // Get actual player position from transform
+    let player_transform = match player_query.iter().next() {
+        Some(t) => t,
+        None => return,
+    };
+    let player_pos = (player_transform.translation.x, player_transform.translation.z);
 
     let render_radius = 500.0; // Render tiles within 500 units
 
