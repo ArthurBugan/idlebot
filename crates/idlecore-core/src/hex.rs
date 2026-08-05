@@ -28,7 +28,7 @@ impl HexCoord {
         let r = r_f.round() as i32;
         let s = s_f.round() as i32;
         // Round ties toward the largest magnitude coordinate
-        let (q, r, s) = round_cubic(q, r, s);
+        let (q, r, _s) = round_cubic(q, r, s);
         Self::new(q, r)
     }
 
@@ -48,17 +48,19 @@ impl HexCoord {
     }
 
     /// Serialize hex to a u64 id: (q << 32) | r
-    /// Uses i32 bit-pattern reinterpretation to preserve sign bits.
+    /// Offsets values by i32::MAX to preserve sign in u32 storage.
     pub fn to_id(&self) -> u64 {
-        let q_u32 = self.q as u32;
-        let r_u32 = self.r as u32;
+        const OFFSET: i32 = i32::MAX;
+        let q_u32 = (self.q + OFFSET) as u32;
+        let r_u32 = (self.r + OFFSET) as u32;
         ((q_u32 as u64) << 32) | (r_u32 as u64)
     }
 
     /// Parse a hex id back into a HexCoord.
     pub fn from_id(id: u64) -> Self {
-        let q = ((id >> 32) as i32);
-        let r = (id & 0xFFFFFFFF) as i32;
+        const OFFSET: i32 = i32::MAX;
+        let q = (((id >> 32) as u32) as i32) - OFFSET;
+        let r = ((id & 0xFFFFFFFF) as u32) as i32 - OFFSET;
         Self::new(q, r)
     }
 
@@ -108,7 +110,7 @@ impl HexCoord {
 
 /// Round-cubic coordinates: when rounding produces non-valid cube coords,
 /// round toward the direction that stays most valid.
-fn round_cubic(q: i32, r: i32, s: i32) -> (i32, i32, i32) {
+fn round_cubic(q: i32, r: i32, _s: i32) -> (i32, i32, i32) {
     // Keep q, r as-is, compute s to satisfy q+r+s=0
     let q = q;
     let r = r;

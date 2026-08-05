@@ -154,7 +154,7 @@ impl VoiceChatManager {
     }
 
     /// Remove a player from voice chat (leaves their channel).
-    pub fn remove_player(&mut self, wallet: &str, now: u64) -> bool {
+    pub fn remove_player(&mut self, wallet: &str, _now: u64) -> bool {
         if let Some(pos) = self.player_positions.get_mut(wallet) {
             if !pos.online {
                 return false;

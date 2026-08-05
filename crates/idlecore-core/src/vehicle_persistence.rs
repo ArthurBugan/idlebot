@@ -115,7 +115,7 @@ impl VehicleDatabase {
     }
 
     /// Load player vehicle data (in a real implementation, this would read from disk/DB)
-    pub fn load_player(&mut self, wallet_address: &str) -> Result<(), String> {
+    pub fn load_player(&mut self, _wallet_address: &str) -> Result<(), String> {
         // In a real implementation, deserialize and load from storage
         Ok(())
     }

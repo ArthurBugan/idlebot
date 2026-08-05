@@ -94,28 +94,25 @@ impl CorePlayer {
         &self,
         position: &Position,
         radius: i32,
-        grid: &crate::grid::HexGrid,
+        world: &crate::world::EarthWorld,
     ) -> u64 {
         if position.x == 0.0 && position.y == 0.0 {
             return 0u64; // center of world
         }
 
-        // Check all hexes in the grid within the given radius
-        for id in grid.ids() {
-            if let Some(tile) = grid.get(id) {
-                let hex = tile.coord;
-                let center = hex.center(10.0);
-                let dist = ((center[0] - position.x).powi(2) + (center[1] - position.y).powi(2)).sqrt();
-                let is_grass = matches!(tile.terrain, crate::terrain::TerrainType::Grass);
-                let is_empty = true; // assume empty for initial spawn
+        // Check all hexes in the world within the given radius
+        for tile in world.tiles.values() {
+            let center = tile.center_x;
+            let dist = ((center - position.x).powi(2) + (tile.center_y - position.y).powi(2)).sqrt();
+            let is_grass = matches!(tile.terrain, crate::terrain::TerrainType::Grass);
+            let is_empty = true; // assume empty for initial spawn
 
-                if is_grass && is_empty && dist <= (radius as f32 * 10.0) {
-                    return id;
-                }
+            if is_grass && is_empty && dist <= (radius as f32 * 10.0) {
+                return tile.hex_id;
             }
         }
 
-        // Fallback: return the hex_id at the center of the grid
+        // Fallback: return the hex_id at the center of the world
         0u64
     }
 }
@@ -168,9 +165,11 @@ mod tests {
     #[test]
     fn player_spawn_at_hex_center() {
         let mut player = CorePlayer::new("0x9999".into(), Position::new(50.0, 50.0));
-        player.find_nearest_empty_hex(&Position::new(50.0, 50.0), 32, &crate::grid::HexGrid::generate(42, 32));
+        let world = crate::world::EarthWorld::generate(42, 32);
+        player.find_nearest_empty_hex(&Position::new(50.0, 50.0), 32, &world);
         // Should return 0 (center hex) as default
-        assert_eq!(player.find_nearest_empty_hex(&Position::new(0.0, 0.0), 32, &crate::grid::HexGrid::generate(42, 32)), 0);
+        let world = crate::world::EarthWorld::generate(42, 32);
+        assert_eq!(player.find_nearest_empty_hex(&Position::new(0.0, 0.0), 32, &world), 0);
     }
 
     #[test]

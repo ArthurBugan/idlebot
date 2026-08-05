@@ -31,7 +31,7 @@ impl HexTileData {
     /// Create a new hex tile with the given terrain.
     pub fn new(hex_id: u64, coord: (i32, i32), terrain: TerrainType) -> Self {
         let (q, r) = coord;
-        let s = -q - r;
+        let _s = -q - r;
         let hex_radius = 10.0f32;
         let sqrt3 = f32::sqrt(3.0);
 
@@ -45,7 +45,7 @@ impl HexTileData {
             center_x: x,
             center_y: y,
             terrain,
-            eco_rating: crate::terrain::eco_rating(&terrain) as u32,
+            eco_rating: terrain.eco_rating() as u32,
             owned_by: None,
             has_plant: false,
             has_pollution: false,

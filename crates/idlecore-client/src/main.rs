@@ -1,5 +1,7 @@
 //! IdleBot — Bevy 0.19 hex grid single-player client.
 
+#![allow(dead_code)]
+
 use bevy::prelude::*;
 use crate::player::PlayerTransform;
 use plugins::camera::CameraZoom;
@@ -9,22 +11,20 @@ mod player;
 mod debug_panel;
 mod idle;
 mod minimap;
+mod discovered_tiles;
 mod plugins;
 
-/// Marker component for minimap entity
-#[derive(Component)]
-struct Minimap;
 
-/// Resource to track minimap visibility
-#[derive(Resource)]
-struct MinimapVisible(bool);
 
 // --- Main Entry ---
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .insert_resource(CameraZoom::default())
-        .insert_resource(MinimapVisible(true))
+        .insert_resource(discovered_tiles::DiscoveredTiles::default())
+        .insert_resource(plugins::world::WorldResource::default())
+        .insert_resource(minimap::MinimapState::default())
+        .insert_resource(minimap::HexEntityMap::default())
         .add_plugins(plugins::player::PlayerPlugin)
         .add_plugins(plugins::camera::CameraPlugin)
         .add_plugins(plugins::world::WorldPlugin)
@@ -33,46 +33,19 @@ fn main() {
         .insert_resource(idle::IdleGainsState::default())
         .add_systems(Startup, (
             setup,
+            minimap::spawn_world_tiles,
             minimap::spawn_minimap_ui,
             idle::spawn_idle_panel,
         ))
-        .insert_resource(minimap::MinimapState::default())
         .add_systems(Update, (
-            toggle_minimap,
-            update_minimap_visibility,
-            minimap::sync_minimap_state,
-            minimap::render_hex_tiles,
+            minimap::update_player_pos_system,
+            minimap::discover_nearby_tiles_system,
+            minimap::chunk_spawn_hex_system,
+            minimap::build_minimap_atlas,
             minimap::update_minimap_ui,
             idle::update_idle_gains_panel,
         ))
         .run();
-}
-
-/// Toggle minimap visibility with M key
-fn toggle_minimap(
-    mut minimap_visible: ResMut<MinimapVisible>,
-    keyboard: Res<bevy::input::ButtonInput<bevy::input::keyboard::KeyCode>>,
-) {
-    if keyboard.just_pressed(bevy::input::keyboard::KeyCode::KeyM) {
-        minimap_visible.0 = !minimap_visible.0;
-        println!("[UI] Minimap visibility: {}", minimap_visible.0);
-    }
-}
-
-/// Update minimap entity visibility based on resource
-fn update_minimap_visibility(
-    minimap_visible: Res<MinimapVisible>,
-    mut query: Query<&mut Visibility, With<minimap::MinimapMarker>>,
-) {
-    let visibility = if minimap_visible.0 {
-        Visibility::Visible
-    } else {
-        Visibility::Hidden
-    };
-    
-    for mut vis in &mut query {
-        *vis = visibility;
-    }
 }
 
 /// Setup lights, camera, and player

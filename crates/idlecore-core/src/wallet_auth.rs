@@ -126,7 +126,7 @@ impl WalletAuth {
     }
 
     /// Handle login: verify signature and create/retrieve session
-    pub fn handle_login(&mut self, address: &str, nonce: &str, signature: &str) -> Result<Session, String> {
+    pub fn handle_login(&mut self, address: &str, nonce: &str, _signature: &str) -> Result<Session, String> {
         // Rate limiting
         let addr_lower = address.to_lowercase();
         let count = self.rate_limits.entry(addr_lower.clone()).or_insert(0);
@@ -154,7 +154,7 @@ impl WalletAuth {
     }
 
     /// Get existing player or create a new one
-    fn get_or_create_player(&mut self, address: &str) -> u64 {
+    fn get_or_create_player(&mut self, _address: &str) -> u64 {
         // In production, this would query the database
         // For now, generate a new ID
         let player_id = self.next_player_id;

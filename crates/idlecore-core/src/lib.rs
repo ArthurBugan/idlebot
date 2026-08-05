@@ -1,12 +1,12 @@
 //! Core types shared between client, server, and blockchain.
 
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
-use crate::terrain::TerrainType;
 use crate::cosmetic::CosmeticCategory;
 
 pub mod actions;
 pub mod economy;
-pub mod grid;
 pub mod hex;
 pub mod world;
 pub mod hex_grid;
@@ -157,20 +157,6 @@ impl Vehicle {
             Vehicle::Boat,
             Vehicle::Airplane,
         ]
-    }
-}
-
-impl TerrainType {
-    /// Get the Bevy Color for this terrain.
-    pub fn color(&self) -> Color {
-        match self {
-            TerrainType::Grass => Color::srgb(0.496, 0.792, 0.322),
-            TerrainType::Forest => Color::srgb(0.133, 0.545, 0.133),
-            TerrainType::Water => Color::srgb(0.255, 0.404, 0.882),
-            TerrainType::City => Color::srgb(0.502, 0.502, 0.502),
-            TerrainType::Desert => Color::srgb(0.953, 0.643, 0.376),
-            TerrainType::Polluted => Color::srgb(0.294, 0.000, 0.514),
-        }
     }
 }
 

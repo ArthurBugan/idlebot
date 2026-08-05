@@ -2,6 +2,8 @@
 //!
 //! Entry points for the SpacetimeDB IdleBot module
 
+#![allow(dead_code)]
+
 pub mod types;
 pub mod world;
 pub mod market;

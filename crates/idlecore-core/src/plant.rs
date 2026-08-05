@@ -1,7 +1,6 @@
 //! Plant system -- types, config, and growth logic.
 
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 /// Plant type enum (used in client/server wire protocol).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
@@ -137,7 +136,7 @@ pub struct HexTileState {
 }
 
 impl HexTileState {
-    pub fn new(hex_id: u64, terrain: String, owner_address: &str) -> Self {
+    pub fn new(hex_id: u64, terrain: String, _owner_address: &str) -> Self {
         let is_polluted = terrain == "Polluted";
         let eco_rating = if terrain == "Forest" || terrain == "Grass" { 50 } else { 20 };
         Self {
@@ -173,7 +172,7 @@ pub struct PlantTracker {
 }
 
 impl PlantTracker {
-    pub fn new(plant_type: PlantType, planted_at: u64) -> Self {
+    pub fn new(plant_type: PlantType, _planted_at: u64) -> Self {
         Self {
             plant: Plant::new(plant_type),
         }

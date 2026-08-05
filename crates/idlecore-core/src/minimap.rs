@@ -60,6 +60,109 @@ impl ZoomLevel {
 }
 
 // ---------------------------------------------------------------------------
+// Chunk System
+// ---------------------------------------------------------------------------
+
+/// A chunk of the world (group of hex tiles) for the minimap.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MinimapChunk {
+    /// Chunk center coordinates.
+    pub center: HexCoord,
+    /// Generated texture data (if available).
+    pub texture: Option<MinimapTexture>,
+    /// Whether the chunk has been generated.
+    pub generated: bool,
+    /// Whether the chunk is dirty (needs regeneration).
+    pub dirty: bool,
+    /// The tiles in this chunk (used for texture generation).
+    pub tiles: Vec<crate::world::WorldTile>,
+}
+
+/// A cached texture for a chunk's minimap.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MinimapTexture {
+    /// Width of the texture in pixels.
+    pub width: u32,
+    /// Height of the texture in pixels.
+    pub height: u32,
+    /// Pixel data (RGBA).
+    pub data: Vec<u8>,
+}
+
+impl MinimapChunk {
+    /// Create a new empty chunk.
+    pub fn new(center: HexCoord) -> Self {
+        Self {
+            center,
+            texture: None,
+            generated: false,
+            dirty: false,
+            tiles: Vec::new(),
+        }
+    }
+
+    /// Create a new chunk with tiles.
+    pub fn new_with_tiles(center: HexCoord, tiles: Vec<crate::world::WorldTile>) -> Self {
+        Self {
+            center,
+            texture: None,
+            generated: false,
+            dirty: false,
+            tiles,
+        }
+    }
+
+    /// Mark the chunk as dirty (needs regeneration).
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Mark the chunk as clean (fully regenerated).
+    pub fn mark_clean(&mut self) {
+        self.dirty = false;
+        self.generated = true;
+    }
+
+    /// Generate a new texture for this chunk from the tiles.
+    pub fn generate_texture(&mut self) {
+        if self.tiles.is_empty() {
+            return;
+        }
+
+        // Calculate bounds for the texture
+        let min_x = self.tiles.iter().map(|t| t.center_x).fold(f32::INFINITY, f32::min);
+        let max_x = self.tiles.iter().map(|t| t.center_x).fold(f32::NEG_INFINITY, f32::max);
+        let min_y = self.tiles.iter().map(|t| t.center_y).fold(f32::INFINITY, f32::min);
+        let max_y = self.tiles.iter().map(|t| t.center_y).fold(f32::NEG_INFINITY, f32::max);
+
+        let width = (max_x - min_x) as u32 + 1;
+        let height = (max_y - min_y) as u32 + 1;
+
+        let size = (width * height * 4) as usize;
+        let mut data = vec![0u8; size];
+
+        // Fill texture with terrain colors
+        for tile in &self.tiles {
+            let color = tile.terrain.minimap_color();
+            let x = (tile.center_x - min_x) as usize;
+            let y = (tile.center_y - min_y) as usize;
+
+            if x < width as usize && y < height as usize {
+                let idx = (y * width as usize + x) * 4;
+                data[idx] = (color[0] * 255.0) as u8;     // R
+                data[idx + 1] = (color[1] * 255.0) as u8; // G
+                data[idx + 2] = (color[2] * 255.0) as u8; // B
+                data[idx + 3] = 255;                       // A
+            }
+        }
+
+        self.texture = Some(MinimapTexture { width, height, data });
+        self.generated = true;
+        self.dirty = false;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Minimap Data Structures
 // ---------------------------------------------------------------------------
 
@@ -99,14 +202,8 @@ impl ObjectType {
 
 /// Terrain color for minimap rendering.
 pub fn terrain_color(terrain: &TerrainType) -> (f32, f32, f32) {
-    match terrain {
-        TerrainType::Grass => (0.496, 0.792, 0.322),
-        TerrainType::Forest => (0.133, 0.545, 0.133),
-        TerrainType::Water => (0.255, 0.404, 0.882),
-        TerrainType::City => (0.502, 0.502, 0.502),
-        TerrainType::Desert => (0.953, 0.643, 0.376),
-        TerrainType::Polluted => (0.294, 0.000, 0.514),
-    }
+    let [r, g, b] = terrain.minimap_color();
+    (r, g, b)
 }
 
 /// The minimap itself.
@@ -300,5 +397,20 @@ mod tests {
         minimap.add_object(ObjectMarker { hex: HexCoord::new(100, 100), object_type: ObjectType::Player, label: None }); // Out of viewport
         let viewport_objs = minimap.viewport_objects();
         assert_eq!(viewport_objs.len(), 1);
+    }
+
+    #[test]
+    fn test_minimap_chunk_generation() {
+        let center = HexCoord::new(0, 0);
+        let mut chunk = MinimapChunk::new(center);
+        assert!(!chunk.generated);
+        assert!(chunk.texture.is_none());
+        chunk.generate_texture(100, 100);
+        assert!(chunk.generated);
+        assert!(chunk.texture.is_some());
+        let texture = chunk.texture.unwrap();
+        assert_eq!(texture.width, 100);
+        assert_eq!(texture.height, 100);
+        assert_eq!(texture.data.len(), 100 * 100 * 4);
     }
 }

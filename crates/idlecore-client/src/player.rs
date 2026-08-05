@@ -3,7 +3,6 @@
 //! Reuses types from idlecore-core where possible.
 
 use bevy::prelude::*;
-use idlecore_core::hex::HexCoord;
 
 /// Player marker component
 #[derive(Component)]

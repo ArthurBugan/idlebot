@@ -4,9 +4,7 @@
 //! In production, would use Bevy UI (Button, Text, Image nodes).
 
 use crate::economy;
-use crate::actions;
 use crate::teleport;
-use crate::voice;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------
@@ -40,7 +38,7 @@ impl HuddData {
         ));
 
         // Status line
-        let vehicle_tag = if self.vehicle.is_empty() {
+        let _vehicle_tag = if self.vehicle.is_empty() {
             "(no vehicle)"
         } else {
             &format!("({})", self.vehicle)
@@ -182,7 +180,7 @@ impl InteractionUi {
     /// Check if action is available (5s cooldown)
     pub fn update_available(gs: &economy::LocalGameState) -> Self {
         let can_act = gs.can_act();
-        let cooldown_secs = if can_act { 0 } else { 5 };
+        let _cooldown_secs = if can_act { 0 } else { 5 };
         let cooldown_active = !can_act;
 
         Self {
@@ -375,7 +373,7 @@ pub fn render_console(gs: &economy::LocalGameState) {
     ));
 
     // Player status
-    let hud = HuddData {
+    let _hud = HuddData {
         gold: gs.gold,
         xp: gs.xp,
         level: gs.level,
@@ -408,7 +406,7 @@ pub fn render_console(gs: &economy::LocalGameState) {
     let cooldown_remaining = if cooldown_secs >= 5 { 0 } else { 5 - cooldown_secs };
 
     if cooldown_remaining > 0 {
-        let mut remaining = cooldown_remaining;
+        let remaining = cooldown_remaining;
         let mins = remaining / 60;
         let secs = remaining % 60;
         if mins > 0 {
@@ -426,8 +424,8 @@ pub fn render_console(gs: &economy::LocalGameState) {
 
     // Teleport UI
     let player_hex = gs.current_hex_id;
-    let teleport_ui = TeleportUi::populate(gs, player_hex);
-    let teleport_str = teleport::get_teleport_cost_display(gs.level);
+    let _teleport_ui = TeleportUi::populate(gs, player_hex);
+    let _teleport_str = teleport::get_teleport_cost_display(gs.level);
     out.push_str(&format!(
         "\n\x1b[1;35m{}\x1b[0m\n",
         teleport::format_teleport_cost(gs.economy.gold),

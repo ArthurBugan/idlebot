@@ -29,7 +29,7 @@ pub struct GoldText;
 pub fn debug_panel_size(
     panel_query: Query<(&Name, &ComputedNode), With<XpText>>,
 ) {
-    for (name, node) in &panel_query {
+    for (_name, node) in &panel_query {
         eprintln!("[IDLE DEBUG] Panel size: {:?}", node.size());
         eprintln!("[IDLE DEBUG] Panel content_size: {:?}", node.content_size());
     }

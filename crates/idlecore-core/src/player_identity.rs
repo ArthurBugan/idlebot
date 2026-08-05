@@ -1,6 +1,5 @@
 //! Player Identity Management — Avatar, display name, bio, and player stats.
 
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};

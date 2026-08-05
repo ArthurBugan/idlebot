@@ -4,11 +4,11 @@ members = [
     "crates/idlecore-core",
     "crates/idlecore-server",
     "crates/idlecore-client",
-    # "crates/idlecore-chain",  # excluded: alloy WASM compilation issues (non-critical)
+    "crates/idlecore-chain",
 ]
 
 [workspace.dependencies]
-bevy = { git = "https://github.com/bevyengine/bevy", default-features = true }
+bevy = { version = "0.19", default-features = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 spacetimedb = "2.7"

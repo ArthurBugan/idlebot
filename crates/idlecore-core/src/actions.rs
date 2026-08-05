@@ -1,12 +1,10 @@
 //! Action validation and execution.
 //! Validates gold, plant state, pollution, and executes actions.
 
-use crate::economy;
-use crate::plant::{Plant, PlantActionResult, PlantType, HexTileState};
+use crate::plant::{Plant, PlantType, HexTileState};
 use crate::Vehicle;
 use crate::Player;
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
 
 // ---------------------------------------------------------------------------
 // ActionResult (refined for client/server wire)
@@ -211,7 +209,7 @@ pub fn validate_clean(player: &crate::Player, hex: &HexTileState) -> Result<(), 
 // ---------------------------------------------------------------------------
 
 /// Execute plant action: spend 10G, give 5 XP, plant seed on hex.
-pub fn execute_plant(player: &mut crate::Player, hex: &mut HexTileState, plant_type: PlantType, now: u64) -> ActionResult {
+pub fn execute_plant(player: &mut crate::Player, hex: &mut HexTileState, plant_type: PlantType, _now: u64) -> ActionResult {
     // Check for sufficient gold
     if player.gold < PLANT_COST {
         return ActionResult::Failed { reason: format!("Insufficient gold: need {}, have {}", PLANT_COST, player.gold) };
@@ -240,7 +238,7 @@ pub fn execute_plant(player: &mut crate::Player, hex: &mut HexTileState, plant_t
 }
 
 /// Execute harvest action: collect gold + XP, remove plant.
-pub fn execute_harvest(player: &mut crate::Player, hex: &mut HexTileState, now: u64) -> ActionResult {
+pub fn execute_harvest(player: &mut crate::Player, hex: &mut HexTileState, _now: u64) -> ActionResult {
     // The plant must be mature (validated beforehand)
     let plant_type = hex.plant.as_ref().unwrap().plant_type; // safe: validated by caller
     let config = plant_type.config();
