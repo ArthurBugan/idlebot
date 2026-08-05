@@ -33,7 +33,6 @@ fn main() {
         .insert_resource(idle::IdleGainsState::default())
         .add_systems(Startup, (
             setup,
-            minimap::spawn_world_tiles,
             minimap::spawn_minimap_ui,
             idle::spawn_idle_panel,
         ))
@@ -43,6 +42,7 @@ fn main() {
             minimap::chunk_spawn_hex_system,
             minimap::build_minimap_atlas,
             minimap::update_minimap_ui,
+            minimap::spawn_world_tiles,
             idle::update_idle_gains_panel,
         ))
         .run();

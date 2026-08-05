@@ -137,31 +137,6 @@ fn create_hex_mesh(radius: f32) -> bevy::render::mesh::Mesh {
         indices.extend_from_slice(&[0u32, (0 + i + 1) as u32, (0 + i) as u32]);
     }
 
-    // Side faces (quads split into triangles)
-    for i in 0..6 {
-        let next = (i + 1) % 6;
-        // Normal for this side (pointing outward)
-        let angle = (i as f32 + 0.5) * std::f32::consts::TAU / 6.0;
-        let nx = angle.cos();
-        let nz = angle.sin();
-        let side_normal = [nx, 0.0, nz];
-
-        // Bottom-left, bottom-right, top-right, top-left
-        let bl = i as u32;
-        let br = next as u32;
-        let tr = (next + 6) as u32;
-        let tl = (i + 6) as u32;
-
-        normals.push(side_normal);
-        normals.push(side_normal);
-        normals.push(side_normal);
-        normals.push(side_normal);
-
-        // Two triangles for each quad side
-        indices.extend_from_slice(&[bl, br, tr]);
-        indices.extend_from_slice(&[bl, tr, tl]);
-    }
-
     let mut mesh = bevy::render::mesh::Mesh::new(
         bevy::render::mesh::PrimitiveTopology::TriangleList,
         default(),

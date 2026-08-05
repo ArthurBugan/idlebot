@@ -78,7 +78,7 @@ impl Default for DiscoveredTiles {
         Self {
             tiles: std::collections::HashSet::new(),
             chunks: HashMap::new(),
-            discovery_radius: 200.0,
+            discovery_radius: 3000.0,
         }
     }
 }
