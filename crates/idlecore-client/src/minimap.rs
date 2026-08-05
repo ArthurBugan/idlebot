@@ -54,12 +54,13 @@ pub struct MinimapAtlasSprite;
 #[derive(Component)]
 pub struct WorldTileMarker;
 
-/// Spawn 3D hex tiles for the world floor near the player
+/// Spawn 3D hex tiles for the world floor near the player (with despawning)
 pub fn spawn_world_tiles(
     world_resource: Res<crate::plugins::world::WorldResource>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut tile_map: ResMut<WorldTileEntityMap>,
     player_query: Query<&Transform, With<crate::player::Player>>,
 ) {
     // Get actual player position from transform
@@ -69,17 +70,28 @@ pub fn spawn_world_tiles(
     };
     let player_pos = (player_transform.translation.x, player_transform.translation.z);
 
-    let render_radius = 500.0; // Render tiles within 500 units
+    let render_radius = 500.0;
+    let render_radius_sq = render_radius * render_radius;
 
     // Create a shared hex mesh (avoid creating per-tile)
     let hex_mesh = meshes.add(create_hex_mesh(150.0));
 
+    // Track which tiles should be visible this frame
+    let mut visible_ids = std::collections::HashSet::new();
+
     for tile in world_resource.world.tiles.values() {
         let dx = tile.center_x - player_pos.0;
         let dy = tile.center_y - player_pos.1;
-        let dist = (dx * dx + dy * dy).sqrt();
+        let dist_sq = dx * dx + dy * dy;
 
-        if dist <= render_radius {
+        if dist_sq <= render_radius_sq {
+            visible_ids.insert(tile.hex_id);
+
+            if tile_map.tile_entities.contains_key(&tile.hex_id) {
+                // Tile already exists — skip (don't respawn)
+                continue;
+            }
+
             let terrain_color = tile.terrain.color();
             let material = materials.add(StandardMaterial {
                 base_color: Color::srgba(
@@ -92,14 +104,30 @@ pub fn spawn_world_tiles(
                 ..default()
             });
 
-            commands.spawn((
+            let entity = commands.spawn((
                 Name::new(format!("hex-{}", tile.hex_id)),
                 WorldTileMarker,
                 Transform::from_xyz(tile.center_x, tile.elevation * 0.5, tile.center_y),
                 GlobalTransform::default(),
                 Mesh3d(hex_mesh.clone()),
                 MeshMaterial3d(material),
-            ));
+            )).id();
+
+            tile_map.tile_entities.insert(tile.hex_id, entity);
+        }
+    }
+
+    // Despawn tiles no longer visible (outside render radius)
+    let to_remove: Vec<u64> = tile_map
+        .tile_entities
+        .iter()
+        .filter(|(&id, _)| !visible_ids.contains(&id))
+        .map(|(&id, _)| id)
+        .collect();
+
+    for id in to_remove {
+        if let Some(entity) = tile_map.tile_entities.remove(&id) {
+            commands.entity(entity).despawn();
         }
     }
 }
@@ -303,6 +331,12 @@ pub fn discover_nearby_tiles_system(
 #[derive(Resource, Default)]
 pub struct HexEntityMap {
     pub hex_entities: HashMap<u64, Entity>,
+}
+
+/// Track 3D world tile entities for proper despawning
+#[derive(Resource, Default)]
+pub struct WorldTileEntityMap {
+    pub tile_entities: HashMap<u64, Entity>,
 }
 
 /// Spawn/update despawn hex entities for discovered tiles (proper lifecycle management)
