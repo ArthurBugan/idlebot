@@ -87,7 +87,7 @@ pub fn spawn_world_tiles(
     };
     let player_pos = (player_transform.translation.x, player_transform.translation.z);
 
-    let render_radius = 500.0;
+    let render_radius = 800.0;
     let render_radius_sq = render_radius * render_radius;
 
     // Create shared hex mesh once on first run

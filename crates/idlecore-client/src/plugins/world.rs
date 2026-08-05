@@ -60,8 +60,8 @@ impl Default for WorldResource {
 // ---------------------------------------------------------------------------
 
 /// Set up the initial world state.
-fn setup_world(_commands: Commands) {
-    // WorldResource is already inserted in main.rs to avoid duplicate insertion panic
+fn setup_world(mut world_resource: ResMut<WorldResource>) {
+    world_resource.world = EarthWorld::generate(42, 100);
 }
 
 // ---------------------------------------------------------------------------
