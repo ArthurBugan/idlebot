@@ -54,13 +54,30 @@ pub struct MinimapAtlasSprite;
 #[derive(Component)]
 pub struct WorldTileMarker;
 
+/// Track hex mesh handles to avoid recreating every frame
+#[derive(Resource, Default)]
+pub struct HexMeshCache {
+    pub hex_150: Option<Handle<Mesh>>,
+}
+
+impl HexMeshCache {
+    pub fn get_or_create(&mut self, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
+        if self.hex_150.is_none() {
+            self.hex_150 = Some(meshes.add(create_hex_mesh(150.0)));
+        }
+        self.hex_150.clone().unwrap()
+    }
+}
+
 /// Spawn 3D hex tiles for the world floor near the player (with despawning)
 pub fn spawn_world_tiles(
     world_resource: Res<crate::plugins::world::WorldResource>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut hex_cache: ResMut<HexMeshCache>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut tile_map: ResMut<WorldTileEntityMap>,
+    mut material_cache: ResMut<MaterialCache>,
     player_query: Query<&Transform, With<crate::player::Player>>,
 ) {
     // Get actual player position from transform
@@ -73,8 +90,8 @@ pub fn spawn_world_tiles(
     let render_radius = 500.0;
     let render_radius_sq = render_radius * render_radius;
 
-    // Create a shared hex mesh (avoid creating per-tile)
-    let hex_mesh = meshes.add(create_hex_mesh(150.0));
+    // Create shared hex mesh once on first run
+    let hex_mesh_handle = hex_cache.get_or_create(&mut meshes);
 
     // Track which tiles should be visible this frame
     let mut visible_ids = std::collections::HashSet::new();
@@ -92,25 +109,34 @@ pub fn spawn_world_tiles(
                 continue;
             }
 
+            // Get terrain color and create/cached material
             let terrain_color = tile.terrain.color();
-            let material = materials.add(StandardMaterial {
-                base_color: Color::srgba(
-                    terrain_color.r,
-                    terrain_color.g,
-                    terrain_color.b,
-                    1.0,
-                ),
-                unlit: true,
-                ..default()
-            });
+            let color_bytes = [
+                (terrain_color.r * 255.0) as u8,
+                (terrain_color.g * 255.0) as u8,
+                (terrain_color.b * 255.0) as u8,
+            ];
+
+            let material_handle = material_cache.cache.entry(color_bytes).or_insert_with(|| {
+                materials.add(StandardMaterial {
+                    base_color: Color::srgba(
+                        terrain_color.r,
+                        terrain_color.g,
+                        terrain_color.b,
+                        1.0,
+                    ),
+                    unlit: true,
+                    ..default()
+                })
+            }).clone();
 
             let entity = commands.spawn((
                 Name::new(format!("hex-{}", tile.hex_id)),
                 WorldTileMarker,
                 Transform::from_xyz(tile.center_x, tile.elevation * 0.5, tile.center_y),
                 GlobalTransform::default(),
-                Mesh3d(hex_mesh.clone()),
-                MeshMaterial3d(material),
+                Mesh3d(hex_mesh_handle.clone()),
+                MeshMaterial3d(material_handle),
             )).id();
 
             tile_map.tile_entities.insert(tile.hex_id, entity);
@@ -337,6 +363,12 @@ pub struct HexEntityMap {
 #[derive(Resource, Default)]
 pub struct WorldTileEntityMap {
     pub tile_entities: HashMap<u64, Entity>,
+}
+
+/// Cache of materials by terrain color to avoid recreating every frame
+#[derive(Resource, Default)]
+pub struct MaterialCache {
+    pub cache: HashMap<[u8; 3], Handle<StandardMaterial>>,
 }
 
 /// Spawn/update despawn hex entities for discovered tiles (proper lifecycle management)
