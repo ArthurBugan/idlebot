@@ -69,8 +69,7 @@ fn main() {
 /// Setup lights, camera, and player
 fn setup(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
 ) {
     // Directional sun
     commands.spawn((
@@ -90,20 +89,20 @@ fn setup(
         Transform::from_xyz(0.0, 60.0, 60.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
     
-    // Spawn player
-    let player_mesh = meshes.add(create_player_mesh());
-    let player_material = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.2, 0.6, 1.0, 1.0),
-        unlit: true,
-        ..default()
-    });
+    // Spawn player using the glTF character model.
+    let player_scene: Handle<bevy::world_serialization::WorldAsset> =
+        asset_server.load("models/characterLargeMale.glb#Scene0");
+
     commands.spawn((
         Name::new("Player"),
         Player,
-        Transform::from_xyz(0.0, 30.0, 0.0),
+        Transform {
+            translation: Vec3::new(0.0, 0.35, 0.0),
+            scale: Vec3::splat(13.0),
+            ..default()
+        },
         GlobalTransform::default(),
-        Mesh3d(player_mesh),
-        MeshMaterial3d(player_material),
+        bevy::world_serialization::WorldAssetRoot(player_scene),
         player::ClientPlayer {
             position: Vec3::ZERO,
             velocity: Vec2::ZERO,
@@ -118,58 +117,5 @@ fn setup(
             time_offline: None,
         },
     ));
-}
-
-
-
-/// Create a capsule-shaped player avatar (cylinder with rounded ends)
-fn create_player_mesh() -> Mesh {
-    use bevy::render::mesh::{Indices, VertexAttributeValues};
-    let radius = 8.0;
-    let height = 40.0;
-    let segments = 16;
-    let mut positions: Vec<[f32; 3]> = Vec::new();
-    let mut indices: Vec<u32> = Vec::new();
-
-    // Body (cylinder)
-    for y in 0..=segments {
-        let angle = std::f32::consts::TAU * y as f32 / segments as f32;
-        let x = radius * angle.cos();
-        let z = radius * angle.sin();
-        positions.push([x, -height / 2.0, z]);
-        positions.push([x, height / 2.0, z]);
-    }
-
-    // Top cap
-    let top_center = positions.len();
-    positions.push([0.0, height / 2.0 + radius, 0.0]);
-    for i in 0..segments {
-        let idx = i * 2 + 1;
-        indices.extend_from_slice(&[top_center as u32, idx as u32, (idx + 1) as u32]);
-    }
-
-    // Bottom cap
-    let bot_center = positions.len();
-    positions.push([0.0, -height / 2.0 - radius, 0.0]);
-    for i in 0..segments {
-        let idx = i * 2;
-        indices.extend_from_slice(&[bot_center as u32, (idx + 1) as u32, idx as u32]);
-    }
-
-    // Side faces
-    for i in 0..segments {
-        let i2 = i * 2;
-        let i2n = (i + 1) * 2;
-        indices.extend_from_slice(&[i2 as u32, i2n as u32, (i2 + 1) as u32]);
-        indices.extend_from_slice(&[i2n as u32, (i2 + 1) as u32, (i2n + 1) as u32]);
-    }
-
-    let mut mesh = Mesh::new(bevy::render::mesh::PrimitiveTopology::TriangleList, default());
-    mesh.insert_attribute(
-        bevy::render::mesh::MeshVertexAttribute::new("Vertex_Position", 0, bevy::render::mesh::VertexFormat::Float32x3),
-        VertexAttributeValues::Float32x3(positions),
-    );
-    mesh.insert_indices(Indices::U32(indices));
-    mesh
 }
 
