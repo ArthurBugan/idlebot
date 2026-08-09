@@ -14,6 +14,7 @@ mod debug_panel;
 mod idle;
 mod minimap;
 mod plugins;
+mod skins;
 mod world_floor;
 
 
@@ -42,6 +43,7 @@ fn main() {
         .add_plugins(plugins::player::PlayerPlugin)
         .add_plugins(plugins::camera::CameraPlugin)
         .add_plugins(plugins::world::WorldPlugin)
+        .add_plugins(skins::SkinsPlugin)
         .insert_resource(PlayerTransform::default())
         .insert_resource(debug_panel::DebugPanelOpen(false))
         .insert_resource(idle::IdleGainsState::default())
