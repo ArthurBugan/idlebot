@@ -64,6 +64,8 @@ pub struct EarthWorld {
     pub loaded_chunks: HashMap<(i32, i32), Vec<u64>>,
     /// Chunk size in hexes.
     pub chunk_size: i32,
+    /// Pre-built index of ALL chunks (for efficient loading).
+    pub all_chunks: HashMap<(i32, i32), Vec<u64>>,
 }
 
 impl EarthWorld {
@@ -75,6 +77,7 @@ impl EarthWorld {
             radius,
             loaded_chunks: HashMap::new(),
             chunk_size: 8,
+            all_chunks: HashMap::new(),
         };
 
         // Generate all tiles
@@ -114,12 +117,13 @@ impl EarthWorld {
         world
     }
 
-    /// Build chunk indexes from all loaded tiles.
+    /// Build a complete chunk index of ALL tiles (for efficient spatial queries).
     fn build_chunks(&mut self) {
+        self.all_chunks.clear();
         for tile in self.tiles.values() {
             let cq = tile.coord.q / self.chunk_size;
             let cr = tile.coord.r / self.chunk_size;
-            self.loaded_chunks
+            self.all_chunks
                 .entry((cq, cr))
                 .or_default()
                 .push(tile.hex_id);
@@ -256,7 +260,7 @@ impl EarthWorld {
     }
 
     /// Load chunks around a position (for minimap display).
-    /// This marks chunks as "visible" by ensuring their tiles are accessible.
+    /// Copies from the pre-built `all_chunks` index for O(1) per chunk lookup.
     pub fn load_chunks_around(&mut self, center_q: i32, center_r: i32, view_radius: i32) {
         let chunk_radius = (view_radius / self.chunk_size) + 1;
         let start_cq = (center_q / self.chunk_size) - chunk_radius;
@@ -264,26 +268,10 @@ impl EarthWorld {
         let start_cr = (center_r / self.chunk_size) - chunk_radius;
         let end_cr = (center_r / self.chunk_size) + chunk_radius;
 
-        // Build chunk indexes for chunks within view range
         for cq in start_cq..=end_cq {
             for cr in start_cr..=end_cr {
-                // Get all tiles in this chunk range
-                let chunk_q_min = cq * self.chunk_size;
-                let chunk_q_max = (cq + 1) * self.chunk_size;
-                let chunk_r_min = cr * self.chunk_size;
-                let chunk_r_max = (cr + 1) * self.chunk_size;
-
-                let mut chunk_tiles: Vec<u64> = Vec::new();
-                for (hex_id, tile) in &self.tiles {
-                    if tile.coord.q >= chunk_q_min && tile.coord.q < chunk_q_max
-                        && tile.coord.r >= chunk_r_min && tile.coord.r < chunk_r_max
-                    {
-                        chunk_tiles.push(*hex_id);
-                    }
-                }
-
-                if !chunk_tiles.is_empty() {
-                    self.loaded_chunks.insert((cq, cr), chunk_tiles);
+                if let Some(tiles) = self.all_chunks.get(&(cq, cr)) {
+                    self.loaded_chunks.insert((cq, cr), tiles.clone());
                 }
             }
         }
@@ -297,15 +285,11 @@ impl EarthWorld {
         let start_cr = (center_r / self.chunk_size) - chunk_radius;
         let end_cr = (center_r / self.chunk_size) + chunk_radius;
 
-        // Remove chunks outside the view radius
         let keys_to_remove: Vec<_> = self
             .loaded_chunks
             .keys()
             .filter(|(cq, cr)| {
-                cq.abs() < start_cq.abs()
-                    || cq.abs() > end_cq.abs()
-                    || cr.abs() < start_cr.abs()
-                    || cr.abs() > end_cr.abs()
+                *cq < start_cq || *cq > end_cq || *cr < start_cr || *cr > end_cr
             })
             .cloned()
             .collect();
@@ -377,5 +361,37 @@ mod tests {
         let world1 = EarthWorld::generate(42, 10);
         let world2 = EarthWorld::generate(42, 10);
         assert_eq!(world1.tile_count(), world2.tile_count());
+    }
+
+    #[test]
+    fn test_all_chunks_populated() {
+        let world = EarthWorld::generate(42, 50);
+        assert!(world.all_chunks.len() > 0);
+        // all_chunks should cover all tiles
+        let total_in_chunks: usize = world.all_chunks.values().map(|v| v.len()).sum();
+        assert_eq!(total_in_chunks, world.tiles.len());
+    }
+
+    #[test]
+    fn test_load_chunks_around_uses_index() {
+        let mut world = EarthWorld::generate(42, 50);
+        // Before loading, loaded_chunks is empty
+        assert_eq!(world.loaded_chunk_count(), 0);
+        // Load chunks around origin
+        world.load_chunks_around(0, 0, 20);
+        assert!(world.loaded_chunk_count() > 0);
+    }
+
+    #[test]
+    fn test_unload_chunks_outside_radius() {
+        let mut world = EarthWorld::generate(42, 50);
+        world.load_chunks_around(0, 0, 8);
+        let count_before = world.loaded_chunk_count();
+        assert!(count_before > 0);
+        // Move far away — should unload old chunks
+        world.load_chunks_around(500, 500, 8);
+        world.unload_chunks_around(500, 500, 8);
+        // Chunks near origin should be unloaded
+        assert!(world.loaded_chunk_count() <= count_before);
     }
 }

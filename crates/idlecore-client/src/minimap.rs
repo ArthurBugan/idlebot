@@ -1,280 +1,593 @@
-//! Minimap rendering — Minecraft-style persistent map with texture atlas
+//! Minimap system — Minecraft-style fog-of-war exploration map.
+//!
+//! Features:
+//! - Player-centered camera (player marker stays fixed at center)
+//! - Current-vision fog of war (terrain hides when player moves away)
+//! - Zoom levels via mouse wheel (Local, Area, World)
+//! - Rotation modes via N key (NorthUp, PlayerUp)
+//! - Waypoints via right-click on minimap
+//! - Navigation markers (POI, objectives)
+//! - Toggle expanded/compact with M key
+//! - Toggle visibility with M key (when not expanded)
 
 use bevy::prelude::*;
+use bevy::asset::RenderAssetUsages;
+use bevy::input::mouse::MouseWheel;
+use bevy::math::Rot2;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use std::collections::HashMap;
+use bevy::ui::widget::ImageNode;
+use idlecore_core::hex::world_pos_to_hex;
+use idlecore_core::minimap::{map_pixel_to_world, world_to_map_pixel, RotationMode};
+use idlecore_core::world_gen::{HexCell, WorldGenConfig};
+use std::collections::{HashMap, HashSet};
 
+use crate::plugins::world::StreamingWorldResource;
+use crate::player::Player;
 
-/// Resource tracking minimap state
-#[derive(Resource, Debug)]
+// ============================================================================
+// Constants
+// ============================================================================
+
+const COMPACT_SIZE: f32 = 200.0;
+const EXPANDED_SIZE: f32 = 400.0;
+const MINIMAP_PADDING: f32 = 10.0;
+const HEX_SIZE: f32 = WorldGenConfig::HEX_SIZE;
+
+// ============================================================================
+// Zoom
+// ============================================================================
+
+/// Zoom level controlling pixel density on the minimap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MinimapZoom {
+    #[default]
+    Local,
+    Area,
+    World,
+}
+
+impl MinimapZoom {
+    pub fn pixel_scale(&self) -> f32 {
+        match self {
+            MinimapZoom::Local => 0.005,
+            MinimapZoom::Area => 0.0025,
+            MinimapZoom::World => 0.00125,
+        }
+    }
+
+    pub fn zoom_in(&self) -> Option<Self> {
+        match self {
+            MinimapZoom::Local => None,
+            MinimapZoom::Area => Some(MinimapZoom::Local),
+            MinimapZoom::World => Some(MinimapZoom::Area),
+        }
+    }
+
+    pub fn zoom_out(&self) -> Option<Self> {
+        match self {
+            MinimapZoom::Local => Some(MinimapZoom::Area),
+            MinimapZoom::Area => Some(MinimapZoom::World),
+            MinimapZoom::World => None,
+        }
+    }
+}
+
+const SQRT_3: f32 = 1.7320508075688772;
+
+// ============================================================================
+// Configuration & State Resources
+// ============================================================================
+
+/// Static minimap configuration (set once at startup).
+#[derive(Resource)]
+pub struct MinimapConfig {
+    pub vision_radius: f32,
+    pub border_softness: f32,
+    pub fog_color: Color,
+}
+
+impl Default for MinimapConfig {
+    fn default() -> Self {
+        Self {
+            vision_radius: 1500.0,
+            border_softness: 300.0,
+            fog_color: Color::srgba(0.04, 0.05, 0.065, 0.95),
+        }
+    }
+}
+
+/// Runtime minimap state.
+#[derive(Resource)]
 pub struct MinimapState {
-    pub player_pos: Option<(f32, f32)>,
-    pub world_center: (f32, f32),
-    pub recenter_requested: bool,
-    pub atlas_width: u32,
-    pub atlas_height: u32,
-    pub needs_rebuild: bool,
+    pub zoom: MinimapZoom,
+    pub rotation: RotationMode,
+    pub expanded: bool,
+    pub visible: bool,
+    pub player_pos: Option<Vec2>,
+    pub facing_angle: f32,
 }
 
 impl Default for MinimapState {
     fn default() -> Self {
         Self {
+            zoom: MinimapZoom::Local,
+            rotation: RotationMode::NorthUp,
+            expanded: false,
+            visible: true,
             player_pos: None,
-            world_center: (0.0, 0.0),
-            recenter_requested: false,
-            atlas_width: 1024,
-            atlas_height: 1024,
-            needs_rebuild: true,
+            facing_angle: 0.0,
         }
     }
 }
 
-/// Marker components
-#[derive(Component)]
-pub struct MinimapMarker;
+impl MinimapState {
+    /// Current minimap size in pixels.
+    pub fn mm_size(&self) -> f32 {
+        if self.expanded { EXPANDED_SIZE } else { COMPACT_SIZE }
+    }
 
-#[derive(Component)]
-pub struct MinimapContent;
+    /// Pixels per world unit at current zoom.
+    pub fn pixel_scale(&self) -> f32 {
+        self.zoom.pixel_scale()
+    }
 
-#[derive(Component)]
-pub struct WorldTiles;
+    /// Vision radius in minimap pixels.
+    pub fn vision_radius_px(&self) -> f32 {
+        1500.0 * self.pixel_scale()
+    }
 
-#[derive(Component)]
-pub struct PlayerMarker;
+    /// Soft border width in minimap pixels.
+    pub fn softness_px(&self) -> f32 {
+        300.0 * self.pixel_scale()
+    }
 
-#[derive(Component)]
-pub struct CoordsMarker;
+    /// Render radius (vision + softness) in minimap pixels.
+    pub fn render_radius_px(&self) -> f32 {
+        self.vision_radius_px() + self.softness_px()
+    }
+}
 
-#[derive(Component)]
-pub struct HexTileEntity;
-
-#[derive(Component)]
-pub struct MinimapAtlasSprite;
-
-#[derive(Component)]
-pub struct WorldTileMarker;
-
-/// Track hex mesh handles to avoid recreating every frame
+/// Track of placed waypoints.
 #[derive(Resource, Default)]
-pub struct HexMeshCache {
-    pub hex_150: Option<Handle<Mesh>>,
+pub struct MinimapWaypoints {
+    pub waypoints: Vec<Waypoint>,
+    pub next_id: u64,
 }
 
-impl HexMeshCache {
-    pub fn get_or_create(&mut self, meshes: &mut Assets<Mesh>) -> Handle<Mesh> {
-        if self.hex_150.is_none() {
-            self.hex_150 = Some(meshes.add(create_hex_mesh(150.0)));
+#[derive(Debug, Clone)]
+pub struct Waypoint {
+    pub id: u64,
+    pub position: Vec2,
+    pub label: Option<String>,
+}
+
+/// Navigation POI markers (objectives, landmarks, etc.).
+#[derive(Resource, Default)]
+pub struct MinimapMarkers {
+    pub markers: Vec<NavMarker>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NavMarker {
+    pub position: Vec2,
+    pub label: String,
+    pub color: Color,
+}
+
+/// Cached image handles for minimap textures.
+#[derive(Resource)]
+pub struct MinimapAssets {
+    pub fog_texture: Option<Handle<Image>>,
+    pub fog_last_key: Option<(u32, f32, f32)>,
+    pub arrow_texture: Handle<Image>,
+    /// Cached hexagon tile textures: (width_px, height_px, terrain) → image.
+    pub hex_tiles: HashMap<(u32, u32, idlecore_core::terrain::TerrainType), Handle<Image>>,
+    /// Cached hexagon fog textures: (width_px, height_px) → image.
+    pub hex_fog_tiles: HashMap<(u32, u32), Handle<Image>>,
+}
+
+/// Track tile entities for proper despawn lifecycle.
+#[derive(Resource, Default)]
+pub struct HexEntityMap {
+    pub hex_entities: HashMap<u64, Entity>,
+}
+
+/// Data needed to render an explored minimap tile even after its chunk is unloaded.
+#[derive(Debug, Clone, Copy)]
+pub struct ExploredCell {
+    pub center_x: f32,
+    pub center_y: f32,
+    pub terrain: idlecore_core::terrain::TerrainType,
+}
+
+/// Tracks which hexes have been discovered by the player (persistent fog-of-war).
+#[derive(Resource, Default)]
+pub struct ExploredHexes {
+    pub explored: HashMap<u64, ExploredCell>,
+}
+
+/// Track fog tile entities so discovered fog can be cleared/persisted.
+#[derive(Resource, Default)]
+pub struct HexFogMap {
+    pub fog_entities: HashMap<u64, Entity>,
+}
+
+/// Track waypoint entities for proper despawn lifecycle.
+#[derive(Resource, Default)]
+pub struct WaypointEntityMap {
+    pub entities: HashMap<u64, Entity>,
+}
+
+/// Track which chunk was last loaded (avoid redundant chunk operations).
+#[derive(Resource, Default)]
+pub struct ChunkLoadState {
+    pub last_chunk: Option<(i32, i32)>,
+}
+
+// ============================================================================
+// Components
+// ============================================================================
+
+#[derive(Component)]
+pub struct MinimapRoot;
+
+/// Container for all map elements (tiles, waypoints, markers).
+#[derive(Component)]
+pub struct MapContent;
+
+/// Fog overlay image node (covers entire minimap, centered on player).
+#[derive(Component)]
+pub struct FogOverlayNode;
+
+/// Player direction marker at the center of the minimap.
+#[derive(Component)]
+pub struct PlayerArrow;
+
+/// A single hex tile rendered in the minimap.
+#[derive(Component)]
+pub struct MapTileNode {
+    pub hex_id: u64,
+}
+
+/// A fog-tile covering an undiscovered hex on the minimap.
+#[derive(Component)]
+pub struct HexFogTile {
+    pub hex_id: u64,
+}
+
+/// A waypoint marker node.
+#[derive(Component)]
+pub struct WaypointNode {
+    pub id: u64,
+}
+
+/// A navigation marker node.
+#[derive(Component)]
+pub struct NavMarkerNode;
+
+// ============================================================================
+// Texture Generation
+// ============================================================================
+
+/// Create a fog overlay texture: circular gradient transparent at center,
+/// opaque at edges, with a soft transition at the vision boundary.
+fn create_fog_image(
+    size: u32,
+    vision_radius_px: f32,
+    softness_px: f32,
+    fog_color: Color,
+) -> Image {
+    let mut pixels = vec![0u8; (size * size * 4) as usize];
+    let center = size as f32 / 2.0;
+    let srgba = fog_color.to_srgba();
+    let fog_r = (srgba.red * 255.0) as u8;
+    let fog_g = (srgba.green * 255.0) as u8;
+    let fog_b = (srgba.blue * 255.0) as u8;
+
+    for y in 0..size {
+        for x in 0..size {
+            let dx = x as f32 - center;
+            let dy = y as f32 - center;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let idx = ((y * size + x) * 4) as usize;
+
+            let alpha = if dist < vision_radius_px {
+                0.0
+            } else if dist < vision_radius_px + softness_px {
+                let t = (dist - vision_radius_px) / softness_px;
+                t * srgba.alpha * 0.9
+            } else {
+                srgba.alpha * 0.9
+            };
+
+            pixels[idx] = fog_r;
+            pixels[idx + 1] = fog_g;
+            pixels[idx + 2] = fog_b;
+            pixels[idx + 3] = (alpha * 255.0) as u8;
         }
-        self.hex_150.clone().unwrap()
     }
+
+    Image::new(
+        Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    )
 }
 
-/// Spawn 3D hex tiles for the world floor near the player (with despawning)
-pub fn spawn_world_tiles(
-    world_resource: Res<crate::plugins::world::WorldResource>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut hex_cache: ResMut<HexMeshCache>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut tile_map: ResMut<WorldTileEntityMap>,
-    mut material_cache: ResMut<MaterialCache>,
-    player_query: Query<&Transform, With<crate::player::Player>>,
-) {
-    // Get actual player position from transform
-    let player_transform = match player_query.iter().next() {
-        Some(t) => t,
-        None => return,
-    };
-    let player_pos = (player_transform.translation.x, player_transform.translation.z);
+/// Create a triangle texture pointing upward, for the player marker.
+fn create_arrow_image(size: u32, color: Color) -> Image {
+    let mut pixels = vec![0u8; (size * size * 4) as usize];
+    let s = size as f32;
+    let srgba = color.to_srgba();
+    let c = [
+        (srgba.red * 255.0) as u8,
+        (srgba.green * 255.0) as u8,
+        (srgba.blue * 255.0) as u8,
+        255u8,
+    ];
 
-    let render_radius = 800.0;
-    let render_radius_sq = render_radius * render_radius;
+    // Triangle vertices (pointing up)
+    let ax = s * 0.5;
+    let ay = s * 0.25;
+    let bx = s * 0.2;
+    let by = s * 0.8;
+    let cx = s * 0.8;
+    let cy = s * 0.8;
 
-    // Create shared hex mesh once on first run
-    let hex_mesh_handle = hex_cache.get_or_create(&mut meshes);
+    for y in 0..size {
+        for x in 0..size {
+            let px = x as f32;
+            let py = y as f32;
+            let idx = ((y * size + x) * 4) as usize;
 
-    // Track which tiles should be visible this frame
-    let mut visible_ids = std::collections::HashSet::new();
+            let d1 = (px - cx) * (ay - cy) - (py - cy) * (ax - cx);
+            let d2 = (px - ax) * (by - ay) - (py - ay) * (bx - ax);
+            let d3 = (px - bx) * (cy - by) - (py - by) * (cx - bx);
 
-    for tile in world_resource.world.tiles.values() {
-        let dx = tile.center_x - player_pos.0;
-        let dy = tile.center_y - player_pos.1;
-        let dist_sq = dx * dx + dy * dy;
+            let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+            let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
 
-        if dist_sq <= render_radius_sq {
-            visible_ids.insert(tile.hex_id);
-
-            if tile_map.tile_entities.contains_key(&tile.hex_id) {
-                // Tile already exists — skip (don't respawn)
-                continue;
+            if !(has_neg && has_pos) {
+                pixels[idx] = c[0];
+                pixels[idx + 1] = c[1];
+                pixels[idx + 2] = c[2];
+                pixels[idx + 3] = c[3];
             }
-
-            // Get terrain color and create/cached material
-            let terrain_color = tile.terrain.color();
-            let color_bytes = [
-                (terrain_color.r * 255.0) as u8,
-                (terrain_color.g * 255.0) as u8,
-                (terrain_color.b * 255.0) as u8,
-            ];
-
-            let material_handle = material_cache.cache.entry(color_bytes).or_insert_with(|| {
-                materials.add(StandardMaterial {
-                    base_color: Color::srgba(
-                        terrain_color.r,
-                        terrain_color.g,
-                        terrain_color.b,
-                        1.0,
-                    ),
-                    unlit: true,
-                    ..default()
-                })
-            }).clone();
-
-            let entity = commands.spawn((
-                Name::new(format!("hex-{}", tile.hex_id)),
-                WorldTileMarker,
-                Transform::from_xyz(tile.center_x, tile.elevation * 0.5, tile.center_y),
-                GlobalTransform::default(),
-                Mesh3d(hex_mesh_handle.clone()),
-                MeshMaterial3d(material_handle),
-            )).id();
-
-            tile_map.tile_entities.insert(tile.hex_id, entity);
         }
     }
 
-    // Despawn tiles no longer visible (outside render radius)
-    let to_remove: Vec<u64> = tile_map
-        .tile_entities
-        .iter()
-        .filter(|(&id, _)| !visible_ids.contains(&id))
-        .map(|(&id, _)| id)
-        .collect();
+    Image::new(
+        Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    )
+}
 
-    for id in to_remove {
-        if let Some(entity) = tile_map.tile_entities.remove(&id) {
-            commands.entity(entity).despawn();
+/// Convert a TerrainType to a Bevy Color.
+fn terrain_color(terrain: &idlecore_core::terrain::TerrainType) -> Color {
+    let [r, g, b] = terrain.minimap_color();
+    Color::srgb(r, g, b)
+}
+
+/// Create a filled hexagon texture with a ±2px transparent padding, so
+/// adjacent hex tiles on the minimap fit edge-to-edge with no gaps.
+fn create_hexagon_image(width: u32, height: u32, color: Color) -> Image {
+    let pad = 2u32;
+    let cw = width + pad * 2;
+    let ch = height + pad * 2;
+    let mut pixels = vec![0u8; (cw * ch * 4) as usize];
+    let srgba = color.to_srgba();
+    let px = (srgba.red * 255.0) as u8;
+    let py = (srgba.green * 255.0) as u8;
+    let pz = (srgba.blue * 255.0) as u8;
+    let alpha = (srgba.alpha * 255.0) as u8;
+
+    let cx = cw as f32 / 2.0;
+    let cy = ch as f32 / 2.0;
+    let rpx = height as f32 / 2.0;
+    let kx = width as f32 / (SQRT_3 * rpx);
+
+    // Pointy-top hexagon corners, matching the world mesh corner angles.
+    let mut corners = [(0.0, 0.0); 6];
+    for i in 0..6 {
+        let angle = std::f32::consts::FRAC_PI_6 + std::f32::consts::FRAC_PI_3 * i as f32;
+        corners[i] = (
+            cx + rpx * angle.cos() * kx,
+            cy + rpx * angle.sin(),
+        );
+    }
+
+    for y in 0..ch {
+        for x in 0..cw {
+            let idx = ((y * cw + x) * 4) as usize;
+            if point_in_polygon(x as f32, y as f32, &corners) {
+                pixels[idx] = px;
+                pixels[idx + 1] = py;
+                pixels[idx + 2] = pz;
+                pixels[idx + 3] = alpha;
+            }
         }
     }
+
+    Image::new(
+        Extent3d { width: cw, height: ch, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    )
 }
 
-/// Create a hexagonal mesh for world tiles (flat-top orientation)
-fn create_hex_mesh(radius: f32) -> bevy::render::mesh::Mesh {
-    use bevy::render::mesh::MeshVertexAttribute;
-    use bevy::render::mesh::VertexFormat;
-
-    let height = 0.5; // Tile height
-    let mut positions = Vec::new();
-    let mut normals = Vec::new();
-    let mut indices = Vec::new();
-
-    // Generate 6 corner vertices for bottom face
+/// Ray-cast point-in-polygon test for convex hexagon corners.
+fn point_in_polygon(tx: f32, ty: f32, corners: &[(f32, f32); 6]) -> bool {
+    let mut inside = false;
+    let mut j = 5;
     for i in 0..6 {
-        let angle = (i as f32) * std::f32::consts::TAU / 6.0;
-        let x = radius * angle.cos();
-        let z = radius * angle.sin();
-        positions.push([x, 0.0, z]);
-        normals.push([0.0, -1.0, 0.0]); // Bottom normal
+        let (xi, yi) = corners[i];
+        let (xj, yj) = corners[j];
+        if (yi > ty) != (yj > ty)
+            && tx < (xj - xi) * (ty - yi) / (yj - yi) + xi
+        {
+            inside = !inside;
+        }
+        j = i;
     }
-
-    // Generate 6 corner vertices for top face
-    for i in 0..6 {
-        let angle = (i as f32) * std::f32::consts::TAU / 6.0;
-        let x = radius * angle.cos();
-        let z = radius * angle.sin();
-        positions.push([x, height, z]);
-        normals.push([0.0, 1.0, 0.0]); // Top normal
-    }
-
-    // Top face (fan triangulation from vertex 6)
-    for i in 1..5 {
-        indices.extend_from_slice(&[6u32, (6 + i) as u32, (6 + i + 1) as u32]);
-    }
-
-    // Bottom face (fan triangulation from vertex 0, CW when viewed from below)
-    for i in 1..5 {
-        indices.extend_from_slice(&[0u32, (0 + i + 1) as u32, (0 + i) as u32]);
-    }
-
-    let mut mesh = bevy::render::mesh::Mesh::new(
-        bevy::render::mesh::PrimitiveTopology::TriangleList,
-        default(),
-    );
-
-    mesh.insert_attribute(
-        MeshVertexAttribute::new(
-            "Vertex_Position",
-            0,
-            VertexFormat::Float32x3,
-        ),
-        bevy::render::mesh::VertexAttributeValues::Float32x3(positions),
-    );
-
-    mesh.insert_attribute(
-        MeshVertexAttribute::new(
-            "Vertex_Normal",
-            1,
-            VertexFormat::Float32x3,
-        ),
-        bevy::render::mesh::VertexAttributeValues::Float32x3(normals),
-    );
-
-    mesh.insert_indices(bevy::render::mesh::Indices::U32(indices));
-
-    mesh
+    inside
 }
 
-/// Spawn minimap UI with texture atlas container
-pub fn spawn_minimap_ui(mut commands: Commands) {
+/// Get (or create) a hexagon tile texture matching the current zoom, so tile
+/// node sizes and textures stay consistent when the minimap zooms.
+fn hex_tile_handle(
+    minimap_assets: &mut MinimapAssets,
+    images: &mut Assets<Image>,
+    width: u32,
+    height: u32,
+    terrain: idlecore_core::terrain::TerrainType,
+) -> Handle<Image> {
+    let key = (width, height, terrain);
+    if let Some(handle) = minimap_assets.hex_tiles.get(&key) {
+        return handle.clone();
+    }
+    let handle = images.add(create_hexagon_image(width, height, terrain_color(&terrain)));
+    minimap_assets.hex_tiles.insert(key, handle.clone());
+    handle
+}
+
+/// Get (or create) a fog-colored hexagon tile texture for the current zoom.
+fn hex_fog_handle(
+    minimap_assets: &mut MinimapAssets,
+    images: &mut Assets<Image>,
+    width: u32,
+    height: u32,
+    color: Color,
+) -> Handle<Image> {
+    let key = (width, height);
+    if let Some(handle) = minimap_assets.hex_fog_tiles.get(&key) {
+        return handle.clone();
+    }
+    let handle = images.add(create_hexagon_image(width, height, color));
+    minimap_assets.hex_fog_tiles.insert(key, handle.clone());
+    handle
+}
+
+// ============================================================================
+// Startup / Spawn
+// ============================================================================
+
+/// Spawn the minimap UI at the top-right corner of the screen.
+pub fn spawn_minimap_ui(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let font: Handle<Font> = asset_server.load("fonts/FiraSans-Bold.ttf");
+
+    let arrow_img = create_arrow_image(16, Color::srgba(0.2, 0.9, 1.0, 0.95));
+    let arrow_texture = images.add(arrow_img);
+
+    let transparent_pixels: Vec<u8> = vec![0, 0, 0, 0];
+    let transparent_img = Image::new(
+        Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        transparent_pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    let transparent_handle = images.add(transparent_img);
+
+    commands.insert_resource(MinimapAssets {
+        fog_texture: Some(transparent_handle.clone()),
+        fog_last_key: None,
+        arrow_texture: arrow_texture.clone(),
+        hex_tiles: HashMap::new(),
+        hex_fog_tiles: HashMap::new(),
+    });
+
+    let mm_size = COMPACT_SIZE;
+    let mm_center = mm_size / 2.0;
+
     commands.spawn((
         Name::new("minimap-ui"),
-        MinimapMarker,
+        MinimapRoot,
         Node {
             position_type: PositionType::Absolute,
-            right: Val::Px(10.0),
-            top: Val::Px(10.0),
-            width: Val::Px(200.0),
-            height: Val::Px(200.0),
+            right: Val::Px(MINIMAP_PADDING),
+            top: Val::Px(MINIMAP_PADDING),
+            width: Val::Px(mm_size),
+            height: Val::Px(mm_size),
+            overflow: Overflow::clip(),
+            border_radius: BorderRadius::all(Val::Px(8.0)),
             ..default()
         },
     ))
-    .insert(BackgroundColor(Color::srgba(0.05, 0.08, 0.12, 0.95)))
-    .insert(BorderColor::all(Color::srgba(0.4, 0.6, 0.8, 1.0)))
-    .insert(Visibility::Visible)
     .with_children(|parent| {
-        // Texture atlas container
+        // Background
         parent.spawn((
-            Name::new("minimap-atlas"),
-            MinimapAtlasSprite,
+            Name::new("minimap-bg"),
             Node {
-                width: Val::Px(200.0),
-                height: Val::Px(200.0),
-                position_type: PositionType::Relative,
-                overflow: Overflow::visible(),
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                right: Val::Px(0.0),
+                bottom: Val::Px(0.0),
                 ..default()
             },
+            BackgroundColor(Color::srgba(0.04, 0.05, 0.065, 0.95)),
         ));
 
-        // Player marker — cyan dot
+        // Map content container (parent of tile/waypoint/marker nodes)
+        parent.spawn((
+            Name::new("map-content"),
+            MapContent,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                right: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                ..default()
+            },
+            UiTransform::IDENTITY,
+        ));
+
+        // Fog overlay
+        parent.spawn((
+            Name::new("fog-overlay"),
+            FogOverlayNode,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                width: Val::Px(mm_size),
+                height: Val::Px(mm_size),
+                ..default()
+            },
+            ImageNode::new(transparent_handle),
+        ));
+
+        // Player marker (fixed at center)
         parent.spawn((
             Name::new("player-marker"),
-            PlayerMarker,
+            PlayerArrow,
             Node {
-                width: Val::Px(12.0),
-                height: Val::Px(12.0),
                 position_type: PositionType::Absolute,
-                left: Val::Px(94.0),
-                top: Val::Px(94.0),
+                width: Val::Px(16.0),
+                height: Val::Px(16.0),
+                left: Val::Px(mm_center - 8.0),
+                top: Val::Px(mm_center - 8.0),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.0, 1.0, 1.0, 1.0)),
-            BorderColor::all(Color::WHITE),
+            UiTransform::IDENTITY,
+            ImageNode::new(arrow_texture),
         ));
 
-        // Coords label — bottom-left
+        // Coords label (bottom-left)
         parent.spawn((
             Name::new("coords-label"),
-            CoordsMarker,
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(4.0),
@@ -284,302 +597,574 @@ pub fn spawn_minimap_ui(mut commands: Commands) {
         ))
         .with_child((
             Text::default(),
-            TextFont { font_size: FontSize::Px(9.0), ..default() },
+            TextFont { font: FontSource::Handle(font.clone()), font_size: FontSize::Px(9.0), ..default() },
             TextColor(Color::srgba(0.7, 0.8, 1.0, 1.0)),
         ))
         .with_child(TextSpan::new("0, 0"));
 
-        // World tiles container — holds all hex tile entities
+        // Zoom indicator (top-left)
         parent.spawn((
-            Name::new("world-tiles"),
-            WorldTiles,
+            Name::new("zoom-indicator"),
             Node {
-                position_type: PositionType::Relative,
+                position_type: PositionType::Absolute,
+                left: Val::Px(4.0),
+                top: Val::Px(2.0),
                 ..default()
             },
-        ));
+        ))
+        .with_child((
+            Text::default(),
+            TextFont { font: FontSource::Handle(font), font_size: FontSize::Px(9.0), ..default() },
+            TextColor(Color::srgba(0.7, 0.8, 1.0, 1.0)),
+        ))
+        .with_child(TextSpan::new("Zoom: Local"));
     });
 }
 
-/// Update player position in minimap state
-pub fn update_player_pos_system(
-    player_query: Query<&Transform, With<crate::player::Player>>,
+// ============================================================================
+// Player State Sync
+// ============================================================================
+
+/// Sync player position and facing into MinimapState.
+pub fn sync_player_state(
+    player_query: Query<&Transform, With<Player>>,
+    orientation: Res<crate::player::PlayerOrientation>,
     mut minimap_state: ResMut<MinimapState>,
 ) {
-    let Some(transform) = player_query.iter().next() else {
-        return;
-    };
-    minimap_state.player_pos = Some((transform.translation.x, transform.translation.z));
+    if let Some(transform) = player_query.iter().next() {
+        minimap_state.player_pos = Some(Vec2::new(
+            transform.translation.x,
+            transform.translation.z,
+        ));
+    } else {
+        minimap_state.player_pos = None;
+    }
+    minimap_state.facing_angle = orientation.facing_angle;
 }
 
-/// Discover tiles near the player using chunk indexing
-pub fn discover_nearby_tiles_system(
-    world_resource: Res<crate::plugins::world::WorldResource>,
+// ============================================================================
+// Chunk Loading
+// ============================================================================
+
+/// Load/unload world chunks around the player position.
+pub fn load_nearby_chunks(
+    mut streaming_world: ResMut<StreamingWorldResource>,
     minimap_state: Res<MinimapState>,
-    mut discovered_tiles: ResMut<crate::discovered_tiles::DiscoveredTiles>,
+    mut chunk_state: ResMut<ChunkLoadState>,
 ) {
-    let Some((px, py)) = minimap_state.player_pos else {
+    let Some(player_pos) = minimap_state.player_pos else { return };
+
+    let (q, r) = world_pos_to_hex(player_pos.x, player_pos.y, HEX_SIZE);
+    let chunk_size = WorldGenConfig::CHUNK_SIZE;
+    let current_chunk = (q / chunk_size, r / chunk_size);
+
+    if Some(current_chunk) == chunk_state.last_chunk {
         return;
+    }
+
+    let render_radius_world = minimap_state.render_radius_px() / minimap_state.pixel_scale();
+    let view_radius = ((render_radius_world / HEX_SIZE as f32) as i32 / chunk_size) + 5;
+    let _ = view_radius.max(15);
+
+    let config = streaming_world.config;
+    streaming_world.chunks.stream_around(&config, q, r);
+
+    chunk_state.last_chunk = Some(current_chunk);
+}
+
+// ============================================================================
+// Input Handling
+// ============================================================================
+
+/// Handle minimap input: zoom (mouse wheel), rotation (N), expand (M), waypoints (right-click).
+pub fn handle_input(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut scroll: MessageReader<MouseWheel>,
+    windows: Query<&Window>,
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    mut minimap_state: ResMut<MinimapState>,
+    mut minimap_waypoints: ResMut<MinimapWaypoints>,
+) {
+    if keyboard.just_pressed(KeyCode::KeyN) {
+        minimap_state.rotation = minimap_state.rotation.toggle();
+    }
+
+    if keyboard.just_pressed(KeyCode::KeyM) {
+        minimap_state.expanded = !minimap_state.expanded;
+    }
+
+    for event in scroll.read() {
+        if event.y > 0.0 {
+            if let Some(new_zoom) = minimap_state.zoom.zoom_in() {
+                minimap_state.zoom = new_zoom;
+            }
+        } else if event.y < 0.0 {
+            if let Some(new_zoom) = minimap_state.zoom.zoom_out() {
+                minimap_state.zoom = new_zoom;
+            }
+        }
+    }
+
+    if mouse_buttons.just_pressed(MouseButton::Right) {
+        if let (Some(player_pos), Some(mm_pos)) =
+            (minimap_state.player_pos, get_minimap_mouse_pos(&windows, minimap_state.mm_size()))
+        {
+            let pixel_scale = minimap_state.pixel_scale();
+            let mm_center = minimap_state.mm_size() / 2.0;
+            let rotation = minimap_state.rotation.map_rotation(minimap_state.facing_angle);
+
+            let (world_x, world_y) = map_pixel_to_world(
+                mm_pos,
+                (player_pos.x, player_pos.y),
+                pixel_scale,
+                mm_center,
+                rotation,
+            );
+
+            let new_id = minimap_waypoints.next_id;
+            minimap_waypoints.waypoints.push(Waypoint {
+                id: new_id,
+                position: Vec2::new(world_x, world_y),
+                label: None,
+            });
+            minimap_waypoints.next_id += 1;
+        }
+    }
+}
+
+/// Convert screen cursor position to minimap-local pixel coordinates.
+fn get_minimap_mouse_pos(windows: &Query<&Window>, mm_size: f32) -> Option<(f32, f32)> {
+    let window = windows.single().ok()?;
+    let cursor = window.cursor_position()?;
+
+    let mm_left = window.width() - MINIMAP_PADDING - mm_size;
+    let mm_top = MINIMAP_PADDING;
+
+    let rel_x = cursor.x - mm_left;
+    let rel_y = cursor.y - mm_top;
+
+    if rel_x >= 0.0 && rel_x < mm_size && rel_y >= 0.0 && rel_y < mm_size {
+        Some((rel_x, rel_y))
+    } else {
+        None
+    }
+}
+
+// ============================================================================
+// Tile Rendering
+// ============================================================================
+
+/// Spawn/despawn/update minimap tile nodes based on loaded chunks and player position.
+pub fn render_visible_tiles(
+    mut commands: Commands,
+    minimap_state: Res<MinimapState>,
+    minimap_config: Res<MinimapConfig>,
+    streaming_world: Res<StreamingWorldResource>,
+    mut hex_entity_map: ResMut<HexEntityMap>,
+    mut hex_fog_map: ResMut<HexFogMap>,
+    mut explored_hexes: ResMut<ExploredHexes>,
+    map_content_query: Query<Entity, With<MapContent>>,
+    mut minimap_assets: ResMut<MinimapAssets>,
+    mut images: ResMut<Assets<Image>>,
+    mut tile_query: Query<
+        (&mut Node, &mut ImageNode),
+        (With<MapTileNode>, Without<HexFogTile>),
+    >,
+    mut fog_query: Query<
+        (&mut Node, &mut ImageNode),
+        (With<HexFogTile>, Without<MapTileNode>),
+    >,
+) {
+    let Some(player_pos) = minimap_state.player_pos else { return };
+
+    let map_content_entity = match map_content_query.single() {
+        Ok(e) => e,
+        Err(_) => return,
     };
 
-    use idlecore_core::hex::HexCoord;
-    use idlecore_core::hex_grid::HexGrid;
-    let (q, r) = HexGrid::world_to_axial(px, py, 150.0);
-    let player_hex = HexCoord::new(q, r);
+    let pixel_scale = minimap_state.pixel_scale();
+    let mm_center = minimap_state.mm_size() / 2.0;
+    let rotation = minimap_state.rotation.map_rotation(minimap_state.facing_angle);
+    let render_radius_world = minimap_state.render_radius_px() / pixel_scale;
+    let vision_radius_world = minimap_state.vision_radius_px() / pixel_scale;
 
-    let discovery_radius = discovered_tiles.discovery_radius;
-    let chunk_size = world_resource.world.chunk_size;
-    let chunk_radius = (discovery_radius / (idlecore_core::world::HEX_SIZE as f32)) as i32 / chunk_size + 1;
-    let center_cq = player_hex.q / chunk_size;
-    let center_cr = player_hex.r / chunk_size;
+    // Pointy-top hexagon bounding box (corners at 30° + 60°·i):
+    // width = √3·R, height = 2R in world units, scaled to pixels.
+    let tile_w = (SQRT_3 * HEX_SIZE * pixel_scale).ceil().max(3.0);
+    let tile_h = (2.0 * HEX_SIZE * pixel_scale).ceil().max(3.0);
 
-    for cq in center_cq - chunk_radius..=center_cq + chunk_radius {
-        for cr in center_cr - chunk_radius..=center_cr + chunk_radius {
-            if let Some(tile_ids) = world_resource.world.loaded_chunks.get(&(cq, cr)) {
-                for &tile_hex_id in tile_ids {
-                    if discovered_tiles.is_discovered(tile_hex_id) {
-                        continue;
+    // ---- Phase 1: discover hexes from currently-streamed chunks ----
+    let mut fog_seen: HashSet<u64> = HashSet::new();
+
+    // ---- Phase 2: render every explored hex (persistent, even past streaming) ----
+    let mm_w = minimap_state.mm_size() + 64.0;
+    let mut explored_to_despawn: Vec<u64> = Vec::new();
+
+    for (&hex_id, explored) in explored_hexes.explored.iter() {
+        let (screen_x, screen_y) = world_to_map_pixel(
+            (explored.center_x, explored.center_y),
+            (player_pos.x, player_pos.y),
+            pixel_scale,
+            mm_center,
+            rotation,
+        );
+
+        let tile_left = screen_x - tile_w / 2.0;
+        let tile_top = screen_y - tile_h / 2.0;
+
+        if screen_x < -64.0 || screen_x > mm_w || screen_y < -64.0 || screen_y > mm_w {
+            explored_to_despawn.push(hex_id);
+            continue;
+        }
+
+        let handle = hex_tile_handle(
+            &mut minimap_assets,
+            &mut images,
+            tile_w as u32,
+            tile_h as u32,
+            explored.terrain,
+        );
+
+        if let Some(&entity) = hex_entity_map.hex_entities.get(&hex_id) {
+            if let Ok((mut node, mut image)) = tile_query.get_mut(entity) {
+                node.left = Val::Px(tile_left);
+                node.top = Val::Px(tile_top);
+                node.width = Val::Px(tile_w);
+                node.height = Val::Px(tile_h);
+                image.image = handle.clone();
+            }
+        } else {
+            let entity = commands.spawn((
+                Name::new("minimap-tile"),
+                MapTileNode { hex_id },
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(tile_left),
+                    top: Val::Px(tile_top),
+                    width: Val::Px(tile_w),
+                    height: Val::Px(tile_h),
+                    ..default()
+                },
+                ImageNode::new(handle),
+            )).id();
+            commands.entity(entity).insert(ChildOf(map_content_entity));
+            hex_entity_map.hex_entities.insert(hex_id, entity);
+        }
+    }
+
+    // Despawn tile entities whose hexes are off-screen (data stays in `explored`).
+    for hex_id in explored_to_despawn {
+        if let Some(entity) = hex_entity_map.hex_entities.remove(&hex_id) {
+            commands.entity(entity).despawn();
+        }
+    }
+
+    // ---- Phase 1: discover & per-frame fog on visible chunk hexes ----
+    for chunk in streaming_world.chunks.chunks.values() {
+        for cell in &chunk.cells {
+            let hex_id = HexCell::id_of(cell.q, cell.r);
+            let (center_x, center_y) = cell.world_pos(HEX_SIZE);
+
+            let dx = center_x - player_pos.x;
+            let dy = center_y - player_pos.y;
+            let dist_sq = dx * dx + dy * dy;
+
+            if dist_sq > render_radius_world * render_radius_world {
+                continue;
+            }
+
+            // Discovered once within the vision radius; never undiscovered.
+            let discovered = dist_sq <= vision_radius_world * vision_radius_world;
+            if discovered {
+                explored_hexes.explored.entry(hex_id).or_insert(ExploredCell {
+                    center_x,
+                    center_y,
+                    terrain: cell.terrain,
+                });
+            }
+
+            let (screen_x, screen_y) = world_to_map_pixel(
+                (center_x, center_y),
+                (player_pos.x, player_pos.y),
+                pixel_scale,
+                mm_center,
+                rotation,
+            );
+
+            // Fog: clear on explored hexes, cover unexplored visible hexes.
+            if discovered {
+                if let Some(fog_entity) = hex_fog_map.fog_entities.remove(&hex_id) {
+                    commands.entity(fog_entity).despawn();
+                }
+            } else {
+                fog_seen.insert(hex_id);
+                let fog_left = screen_x - tile_w / 2.0;
+                let fog_top = screen_y - tile_h / 2.0;
+                let fog_handle = hex_fog_handle(
+                    &mut minimap_assets,
+                    &mut images,
+                    tile_w as u32,
+                    tile_h as u32,
+                    minimap_config.fog_color,
+                );
+                if let Some(&fog_entity) = hex_fog_map.fog_entities.get(&hex_id) {
+                    if let Ok((mut node, mut image)) = fog_query.get_mut(fog_entity) {
+                        node.left = Val::Px(fog_left);
+                        node.top = Val::Px(fog_top);
+                        node.width = Val::Px(tile_w);
+                        node.height = Val::Px(tile_h);
+                        image.image = fog_handle;
                     }
-                    if let Some(tile) = world_resource.world.tiles.get(&tile_hex_id) {
-                        let dx = tile.center_x - px;
-                        let dy = tile.center_y - py;
-                        if dx * dx + dy * dy <= discovery_radius * discovery_radius {
-                            discovered_tiles.discover_tile(tile.hex_id, tile.center_x, tile.center_y);
-                        }
-                    }
+                } else if screen_x >= -64.0 && screen_x <= mm_w && screen_y >= -64.0 && screen_y <= mm_w {
+                    let fog_entity = commands.spawn((
+                        Name::new("minimap-fog-tile"),
+                        HexFogTile { hex_id },
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(fog_left),
+                            top: Val::Px(fog_top),
+                            width: Val::Px(tile_w),
+                            height: Val::Px(tile_h),
+                            ..default()
+                        },
+                        ImageNode::new(fog_handle),
+                    )).id();
+                    commands.entity(fog_entity).insert(ChildOf(map_content_entity));
+                    hex_fog_map.fog_entities.insert(hex_id, fog_entity);
                 }
             }
         }
     }
-}
 
-/// Track hex entities created this frame for proper despawning
-#[derive(Resource, Default)]
-pub struct HexEntityMap {
-    pub hex_entities: HashMap<u64, Entity>,
-}
-
-/// Track 3D world tile entities for proper despawning
-#[derive(Resource, Default)]
-pub struct WorldTileEntityMap {
-    pub tile_entities: HashMap<u64, Entity>,
-}
-
-/// Cache of materials by terrain color to avoid recreating every frame
-#[derive(Resource, Default)]
-pub struct MaterialCache {
-    pub cache: HashMap<[u8; 3], Handle<StandardMaterial>>,
-}
-
-/// Spawn/update despawn hex entities for discovered tiles (proper lifecycle management)
-pub fn chunk_spawn_hex_system(
-    world_resource: Option<Res<crate::plugins::world::WorldResource>>,
-    minimap_state: Option<Res<MinimapState>>,
-    discovered_tiles: Option<Res<crate::discovered_tiles::DiscoveredTiles>>,
-    world_tiles_query: Query<Entity, With<WorldTiles>>,
-    mut hex_entity_map: ResMut<HexEntityMap>,
-    mut hex_node_query: Query<&mut Node, (With<HexTileEntity>, Without<WorldTiles>)>,
-    mut hex_bg_query: Query<&mut BackgroundColor, (With<HexTileEntity>, Without<WorldTiles>)>,
-    mut commands: Commands,
-) {
-    let Some(world) = world_resource else {
-        return;
-    };
-    let Some(state) = minimap_state else {
-        return;
-    };
-    let Some(discovered) = discovered_tiles else {
-        return;
-    };
-    let Some(world_tiles_entity) = world_tiles_query.iter().next() else {
-        return;
-    };
-
-    let world_cx = state.world_center.0;
-    let world_cy = state.world_center.1;
-    let scale = world.scale;
-    let hex_w = 1.732 * (150.0 * scale);
-    let render_radius = 400.0;
-
-    let mut current_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
-    let mut spawned = 0;
-
-    // Spawn or update entities for currently visible discovered tiles
-    for &tile_hex_id in &discovered.tiles {
-        let tile = match world.world.tiles.get(&tile_hex_id) {
-            Some(t) => t,
-            None => continue,
-        };
-
-        let Some((px, py)) = state.player_pos else {
-            continue;
-        };
-
-        let is_current = {
-            let dx = tile.center_x - px;
-            let dy = tile.center_y - py;
-            dx * dx + dy * dy <= render_radius * render_radius
-        };
-
-        let rel_x = tile.center_x - world_cx;
-        let rel_y = tile.center_y - world_cy;
-        let screen_x = 100.0 + rel_x * scale;
-        let screen_y = 100.0 + rel_y * scale;
-
-        let color = tile.terrain.color();
-        let bg_color = if is_current {
-            Color::srgba(color.r, color.g, color.b, 1.0)
-        } else {
-            Color::srgba(color.r * 0.4, color.g * 0.4, color.b * 0.4, 0.7)
-        };
-
-        let tile_size = hex_w * 0.9;
-
-        if let Some(&existing_entity) = hex_entity_map.hex_entities.get(&tile_hex_id) {
-            // Update existing entity position
-            if let Ok(mut node) = hex_node_query.get_mut(existing_entity) {
-                node.left = Val::Px(screen_x - tile_size / 2.0);
-                node.top = Val::Px(screen_y - tile_size / 2.0);
-            }
-            if let Ok(mut bg) = hex_bg_query.get_mut(existing_entity) {
-                **bg = bg_color;
-            }
-            spawned += 1;
-        } else {
-            // Spawn new entity
-            commands.entity(world_tiles_entity).with_children(|parent| {
-                parent.spawn((
-                    Name::new(format!("hex-{}", tile.hex_id)),
-                    HexTileEntity,
-                    Node {
-                        position_type: PositionType::Absolute,
-                        left: Val::Px(screen_x - tile_size / 2.0),
-                        top: Val::Px(screen_y - tile_size / 2.0),
-                        width: Val::Px(tile_size),
-                        height: Val::Px(tile_size),
-                        border_radius: BorderRadius::all(Val::Px(tile_size / 2.0)),
-                        ..default()
-                    },
-                    BackgroundColor(bg_color),
-                ));
-            });
-            spawned += 1;
-        }
-
-        current_ids.insert(tile_hex_id);
-    }
-
-    // Despawn entities no longer visible (in map but not in current_ids)
-    let to_despawn: Vec<Entity> = hex_entity_map
-        .hex_entities
-        .iter()
-        .filter(|(&id, _)| !current_ids.contains(&id))
-        .map(|(_, &entity)| entity)
+    // Remove fog entities whose hexes left the visible area entirely.
+    let fog_to_despawn: Vec<u64> = hex_fog_map.fog_entities.keys()
+        .filter(|hex_id| !fog_seen.contains(hex_id))
+        .cloned()
         .collect();
 
-    for entity in to_despawn {
+    for hex_id in fog_to_despawn {
+        if let Some(entity) = hex_fog_map.fog_entities.remove(&hex_id) {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+// ============================================================================
+// Fog Overlay
+// ============================================================================
+
+/// Create or update the fog-of-war overlay texture.
+pub fn update_fog_overlay(
+    minimap_config: Res<MinimapConfig>,
+    minimap_state: Res<MinimapState>,
+    mut minimap_assets: ResMut<MinimapAssets>,
+    mut images: ResMut<Assets<Image>>,
+    mut fog_query: Query<&mut ImageNode, With<FogOverlayNode>>,
+) {
+    let size = minimap_state.mm_size() as u32;
+    let vision_px = minimap_state.vision_radius_px();
+    let softness_px = minimap_state.softness_px();
+    let fog_key = (size, vision_px, softness_px);
+
+    if minimap_assets.fog_last_key.as_ref() == Some(&fog_key) {
+        return;
+    }
+
+    let image = create_fog_image(size, vision_px, softness_px, minimap_config.fog_color);
+    let handle = images.add(image);
+
+    if let Ok(mut fog_node) = fog_query.single_mut() {
+        fog_node.image = handle.clone();
+    }
+
+    minimap_assets.fog_last_key = Some(fog_key);
+    minimap_assets.fog_texture = Some(handle);
+}
+
+/// Rotate the player arrow marker to indicate facing direction.
+pub fn update_player_marker(
+    minimap_state: Res<MinimapState>,
+    mut arrow_query: Query<&mut UiTransform, With<PlayerArrow>>,
+) {
+    let Ok(mut transform) = arrow_query.single_mut() else { return };
+
+    let angle = minimap_state.rotation.marker_rotation(minimap_state.facing_angle);
+    transform.rotation = Rot2::radians(angle);
+}
+
+// ============================================================================
+// Waypoint Rendering
+// ============================================================================
+
+/// Spawn/update/despawn waypoint marker nodes.
+pub fn render_waypoints(
+    minimap_state: Res<MinimapState>,
+    minimap_waypoints: Res<MinimapWaypoints>,
+    mut commands: Commands,
+    mut waypoint_entity_map: ResMut<WaypointEntityMap>,
+    map_content_query: Query<Entity, With<MapContent>>,
+    mut node_query: Query<&mut Node, With<WaypointNode>>,
+) {
+    let Some(player_pos) = minimap_state.player_pos else { return };
+
+    let map_content_entity = match map_content_query.single() {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    let pixel_scale = minimap_state.pixel_scale();
+    let mm_center = minimap_state.mm_size() / 2.0;
+    let rotation = minimap_state.rotation.map_rotation(minimap_state.facing_angle);
+    let mm_size = minimap_state.mm_size();
+
+    let mut active_ids: HashSet<u64> = HashSet::new();
+
+    for wp in &minimap_waypoints.waypoints {
+        let (screen_x, screen_y) = world_to_map_pixel(
+            (wp.position.x, wp.position.y),
+            (player_pos.x, player_pos.y),
+            pixel_scale,
+            mm_center,
+            rotation,
+        );
+
+        if screen_x < -10.0 || screen_x > mm_size + 10.0
+            || screen_y < -10.0 || screen_y > mm_size + 10.0
+        {
+            continue;
+        }
+
+        active_ids.insert(wp.id);
+
+        if let Some(&entity) = waypoint_entity_map.entities.get(&wp.id) {
+            if let Ok(mut node) = node_query.get_mut(entity) {
+                node.left = Val::Px(screen_x - 6.0);
+                node.top = Val::Px(screen_y - 6.0);
+            }
+        } else {
+            let marker_size = 12.0;
+            let entity = commands.spawn((
+                Name::new("waypoint-marker"),
+                WaypointNode { id: wp.id },
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(screen_x - marker_size / 2.0),
+                    top: Val::Px(screen_y - marker_size / 2.0),
+                    width: Val::Px(marker_size),
+                    height: Val::Px(marker_size),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(1.0, 0.9, 0.2, 0.9)),
+            )).id();
+            commands.entity(entity).insert(ChildOf(map_content_entity));
+            waypoint_entity_map.entities.insert(wp.id, entity);
+        }
+    }
+
+    let to_remove: Vec<u64> = waypoint_entity_map.entities.keys()
+        .filter(|id| !active_ids.contains(id))
+        .cloned()
+        .collect();
+
+    for id in to_remove {
+        if let Some(entity) = waypoint_entity_map.entities.remove(&id) {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+// ============================================================================
+// Nav Marker Rendering
+// ============================================================================
+
+/// Render navigation POI markers on the minimap.
+pub fn render_nav_markers(
+    minimap_state: Res<MinimapState>,
+    minimap_markers: Res<MinimapMarkers>,
+    mut commands: Commands,
+    map_content_query: Query<Entity, With<MapContent>>,
+    marker_query: Query<Entity, With<NavMarkerNode>>,
+) {
+    let Some(player_pos) = minimap_state.player_pos else { return };
+
+    let map_content_entity = match map_content_query.single() {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entity in marker_query.iter() {
         commands.entity(entity).despawn();
     }
-    hex_entity_map.hex_entities.retain(|id, _| current_ids.contains(id));
 
-    if spawned > 0 {
-        eprintln!("[MINIMAP] Spawned {} hex tiles via ECS (total: {})", spawned, discovered.count());
+    let pixel_scale = minimap_state.pixel_scale();
+    let mm_center = minimap_state.mm_size() / 2.0;
+    let rotation = minimap_state.rotation.map_rotation(minimap_state.facing_angle);
+
+    for marker in &minimap_markers.markers {
+        let (screen_x, screen_y) = world_to_map_pixel(
+            (marker.position.x, marker.position.y),
+            (player_pos.x, player_pos.y),
+            pixel_scale,
+            mm_center,
+            rotation,
+        );
+
+        let marker_size = 12.0;
+        let entity = commands.spawn((
+            Name::new("nav-marker"),
+            NavMarkerNode,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(screen_x - marker_size / 2.0),
+                top: Val::Px(screen_y - marker_size / 2.0),
+                width: Val::Px(marker_size),
+                height: Val::Px(marker_size),
+                ..default()
+            },
+            BackgroundColor(marker.color),
+        )).id();
+        commands.entity(entity).insert(ChildOf(map_content_entity));
     }
 }
 
-/// Build texture atlas and update the sprite
-pub fn build_minimap_atlas(
-    world_resource: Res<crate::plugins::world::WorldResource>,
-    mut minimap_state: ResMut<MinimapState>,
-    discovered_tiles: Res<crate::discovered_tiles::DiscoveredTiles>,
-    mut assets: ResMut<Assets<Image>>,
-    mut sprite_query: Query<&mut Sprite, With<MinimapAtlasSprite>>,
+// ============================================================================
+// Resize / Visibility
+// ============================================================================
+
+/// Resize minimap container and reposition center-fixed elements when size changes.
+pub fn resize_minimap_container(
+    minimap_state: Res<MinimapState>,
+    mut query: Query<
+        (
+            &mut Node,
+            Option<&MinimapRoot>,
+            Option<&FogOverlayNode>,
+            Option<&MapContent>,
+            Option<&PlayerArrow>,
+        ),
+        Or<(
+            With<MinimapRoot>,
+            With<FogOverlayNode>,
+            With<MapContent>,
+            With<PlayerArrow>,
+        )>,
+    >,
 ) {
-    if !minimap_state.needs_rebuild {
+    if !minimap_state.is_changed() {
         return;
     }
 
-    let width = minimap_state.atlas_width;
-    let height = minimap_state.atlas_height;
-    let mut pixels = vec![0u8; width as usize * height as usize * 4]; // RGBA initialized to black
+    let mm_size = minimap_state.mm_size();
+    let mm_center = mm_size / 2.0;
 
-    let world_cx = minimap_state.world_center.0;
-    let world_cy = minimap_state.world_center.1;
-    let scale = world_resource.scale;
-
-    // Transform discovered tiles to atlas coordinates and fill pixels
-    for &tile_hex_id in &discovered_tiles.tiles {
-        let tile = match world_resource.world.tiles.get(&tile_hex_id) {
-            Some(t) => t,
-            None => continue,
-        };
-
-        let rel_x = tile.center_x - world_cx;
-        let rel_y = tile.center_y - world_cy;
-        let atlas_x = (width as f32 / 2.0 + rel_x * scale) as i32;
-        let atlas_y = (height as f32 / 2.0 + rel_y * scale) as i32;
-
-        let color = tile.terrain.color();
-        // Draw a small circle/square for each tile (simplified)
-        let radius = 2;
-        for dy in -radius..=radius {
-            for dx in -radius..=radius {
-                if dx * dx + dy * dy <= radius * radius {
-                    let px = (atlas_x + dx) as usize;
-                    let py = (atlas_y + dy) as usize;
-                    if px < width as usize && py < height as usize {
-                        let idx = (py * width as usize + px) * 4;
-                        pixels[idx] = (color.r * 255.0) as u8;
-                        pixels[idx + 1] = (color.g * 255.0) as u8;
-                        pixels[idx + 2] = (color.b * 255.0) as u8;
-                        pixels[idx + 3] = 255; // fully opaque
-                    }
-                }
-            }
+    for (mut node, root, fog, map, arrow) in query.iter_mut() {
+        if root.is_some() || fog.is_some() || map.is_some() {
+            node.width = Val::Px(mm_size);
+            node.height = Val::Px(mm_size);
         }
-    }
-
-    // Create the image using Bevy 0.19 API with actual pixel data
-    let image = Image::new_fill(
-        Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        &pixels,
-        TextureFormat::Rgba8UnormSrgb,
-        Default::default(),
-    );
-
-    let handle = assets.add(image);
-    if let Some(mut sprite) = sprite_query.iter_mut().next() {
-        sprite.image = handle;
-    }
-
-    minimap_state.needs_rebuild = false;
-}
-
-/// Update minimap UI
-pub fn update_minimap_ui(
-    minimap_state: Option<Res<MinimapState>>,
-    mut coords_query: Query<&mut TextSpan, With<CoordsMarker>>,
-    mut player_query: Query<&mut Node, With<PlayerMarker>>,
-) {
-    let Some(state) = minimap_state else {
-        return;
-    };
-    if let Some((x, y)) = state.player_pos {
-        if let Some(mut coords) = coords_query.iter_mut().next() {
-            **coords = format!("{:.0}, {:.0}", x, y);
+        if arrow.is_some() {
+            node.left = Val::Px(mm_center - 8.0);
+            node.top = Val::Px(mm_center - 8.0);
         }
-    }
-
-    if let (Some((x, y)), Some(mut marker)) = (state.player_pos, player_query.iter_mut().next()) {
-        let scale = 0.09;
-        let marker_x = 100.0 + x * scale;
-        let marker_y = 100.0 + y * scale;
-        marker.left = Val::Px(marker_x - 6.0);
-        marker.top = Val::Px(marker_y - 6.0);
     }
 }

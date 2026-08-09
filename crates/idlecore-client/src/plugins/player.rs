@@ -2,14 +2,19 @@
 //! Handles player movement and position tracking
 
 use bevy::prelude::*;
-use crate::player::PlayerTransform;
+use crate::player::{PlayerOrientation, PlayerTransform};
 
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, player_movement);
+        app.add_systems(Startup, register_player_orientation);
     }
+}
+
+fn register_player_orientation(mut commands: Commands) {
+    commands.insert_resource(PlayerOrientation::default());
 }
 
 /// Player movement system — WASD input
@@ -18,6 +23,7 @@ fn player_movement(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut player_query: Query<(&mut Transform, &mut crate::player::ClientPlayer)>,
     mut player_transform: ResMut<PlayerTransform>,
+    mut orientation: ResMut<PlayerOrientation>,
 ) {
     let Ok((mut transform, mut player)) = player_query.single_mut() else {
         return;
@@ -36,6 +42,9 @@ fn player_movement(
     transform.translation.z += delta.y;
     player.position = transform.translation;
 
-    // Update resource
     player_transform.translation = transform.translation;
+
+    if input.length() > 0.0 {
+        orientation.facing_angle = input.y.atan2(input.x);
+    }
 }

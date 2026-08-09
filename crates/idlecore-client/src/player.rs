@@ -64,6 +64,13 @@ pub struct PlayerTransform {
     pub translation: Vec3,
 }
 
+/// Player's facing direction (rotation angle in radians around Y axis).
+/// 0.0 = +X axis, increases counterclockwise.
+#[derive(Resource, Default)]
+pub struct PlayerOrientation {
+    pub facing_angle: f32,
+}
+
 /// Marker for spawn point (visible indicator at world center)
 #[derive(Component)]
 pub struct SpawnMarker;

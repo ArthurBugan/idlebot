@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use bevy::prelude::*;
-use crate::player::PlayerTransform;
+use crate::player::{Player, PlayerTransform};
 use plugins::camera::CameraZoom;
 
 mod progression;
@@ -11,9 +11,8 @@ mod player;
 mod debug_panel;
 mod idle;
 mod minimap;
-mod discovered_tiles;
 mod plugins;
-
+mod world_floor;
 
 
 // --- Main Entry ---
@@ -21,13 +20,17 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .insert_resource(CameraZoom::default())
-        .insert_resource(discovered_tiles::DiscoveredTiles::default())
-        .insert_resource(plugins::world::WorldResource::default())
+        .insert_resource(plugins::world::StreamingWorldResource::default())
         .insert_resource(minimap::MinimapState::default())
+        .insert_resource(minimap::MinimapConfig::default())
+        .insert_resource(minimap::MinimapWaypoints::default())
+        .insert_resource(minimap::MinimapMarkers::default())
         .insert_resource(minimap::HexEntityMap::default())
-        .insert_resource(minimap::WorldTileEntityMap::default())
-        .insert_resource(minimap::MaterialCache::default())
-        .insert_resource(minimap::HexMeshCache::default())
+        .insert_resource(minimap::HexFogMap::default())
+        .insert_resource(minimap::ExploredHexes::default())
+        .insert_resource(minimap::WaypointEntityMap::default())
+        .insert_resource(minimap::ChunkLoadState::default())
+        .insert_resource(world_floor::WorldFloor::default())
         .add_plugins(plugins::player::PlayerPlugin)
         .add_plugins(plugins::camera::CameraPlugin)
         .add_plugins(plugins::world::WorldPlugin)
@@ -40,13 +43,25 @@ fn main() {
             idle::spawn_idle_panel,
         ))
         .add_systems(Update, (
-            minimap::update_player_pos_system,
-            minimap::discover_nearby_tiles_system,
-            minimap::chunk_spawn_hex_system,
-            minimap::build_minimap_atlas,
-            minimap::update_minimap_ui,
-            minimap::spawn_world_tiles,
+            minimap::handle_input,
+            minimap::sync_player_state.after(minimap::handle_input),
+            minimap::load_nearby_chunks
+                .after(minimap::sync_player_state),
+            minimap::render_visible_tiles
+                .after(minimap::load_nearby_chunks),
+            minimap::render_waypoints
+                .after(minimap::render_visible_tiles)
+                .after(minimap::handle_input),
+            minimap::render_nav_markers
+                .after(minimap::render_visible_tiles),
+            minimap::resize_minimap_container
+                .after(minimap::handle_input),
+            minimap::update_player_marker
+                .after(minimap::sync_player_state),
             idle::update_idle_gains_panel,
+            world_floor::update_world_floor
+                .after(minimap::sync_player_state)
+                .after(minimap::load_nearby_chunks),
         ))
         .run();
 }
@@ -85,7 +100,7 @@ fn setup(
     commands.spawn((
         Name::new("Player"),
         Player,
-        Transform::from_xyz(0.0, 1.5, 0.0),
+        Transform::from_xyz(0.0, 30.0, 0.0),
         GlobalTransform::default(),
         Mesh3d(player_mesh),
         MeshMaterial3d(player_material),
@@ -110,8 +125,8 @@ fn setup(
 /// Create a capsule-shaped player avatar (cylinder with rounded ends)
 fn create_player_mesh() -> Mesh {
     use bevy::render::mesh::{Indices, VertexAttributeValues};
-    let radius = 0.6;
-    let height = 5.0;
+    let radius = 8.0;
+    let height = 40.0;
     let segments = 16;
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
@@ -157,8 +172,4 @@ fn create_player_mesh() -> Mesh {
     mesh.insert_indices(Indices::U32(indices));
     mesh
 }
-
-/// Player marker component
-#[derive(Component)]
-struct Player;
 

@@ -50,18 +50,18 @@ impl HexCoord {
     /// Serialize hex to a u64 id: (q << 32) | r
     /// Offsets values by i32::MAX to preserve sign in u32 storage.
     pub fn to_id(&self) -> u64 {
-        const OFFSET: i32 = i32::MAX;
-        let q_u32 = (self.q + OFFSET) as u32;
-        let r_u32 = (self.r + OFFSET) as u32;
-        ((q_u32 as u64) << 32) | (r_u32 as u64)
+        const OFFSET: u64 = i32::MAX as u64;
+        let q_u64 = (self.q as i64 + OFFSET as i64) as u64;
+        let r_u64 = (self.r as i64 + OFFSET as i64) as u64;
+        (q_u64 << 32) | (r_u64 & 0xFFFFFFFF)
     }
 
     /// Parse a hex id back into a HexCoord.
     pub fn from_id(id: u64) -> Self {
-        const OFFSET: i32 = i32::MAX;
-        let q = (((id >> 32) as u32) as i32) - OFFSET;
-        let r = ((id & 0xFFFFFFFF) as u32) as i32 - OFFSET;
-        Self::new(q, r)
+        const OFFSET: i64 = i32::MAX as i64;
+        let q = ((id >> 32) as i64) - OFFSET;
+        let r = ((id & 0xFFFFFFFF) as i64) - OFFSET;
+        Self::new(q as i32, r as i32)
     }
 
     /// Get the 6 neighboring hex coordinates (directions 0-5).

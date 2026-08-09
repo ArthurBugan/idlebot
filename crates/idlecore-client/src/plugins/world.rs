@@ -3,7 +3,8 @@
 //! This plugin manages the game world state and runs the game loop.
 
 use bevy::prelude::*;
-use idlecore_core::world::EarthWorld;
+use idlecore_core::world_gen::{ChunkManager, HierarchicalGen, WorldGenConfig};
+use idlecore_core::world_persist::WorldModDB;
 
 // ---------------------------------------------------------------------------
 // Plugins
@@ -39,18 +40,36 @@ pub enum GameState {
     Playing,
 }
 
-/// Resource holding the current world state.
+/// Resource holding the streaming (whole-world) hex data model.
+///
+/// This is the world-scale representation described by the hex-world spec:
+/// chunks are generated deterministically from a seed and cached *only*
+/// around the active area, so the full world never exists in memory.
 #[derive(Resource)]
-pub struct WorldResource {
-    pub world: EarthWorld,
-    pub scale: f32,
+pub struct StreamingWorldResource {
+    pub config: WorldGenConfig,
+    pub gen: HierarchicalGen,
+    pub chunks: ChunkManager,
+    pub mods: WorldModDB,
 }
 
-impl Default for WorldResource {
+impl Default for StreamingWorldResource {
     fn default() -> Self {
+        let config = WorldGenConfig {
+            seed: 42,
+            world_radius: 100,
+        };
+        let gen = HierarchicalGen::new(config);
+        let chunks = ChunkManager::new(
+            WorldGenConfig::CHUNK_SIZE,
+            4, // active radius in chunks
+            6, // prefetch radius in chunks
+        );
         Self {
-            world: EarthWorld::generate(42, 50),
-            scale: 0.1,
+            config,
+            gen,
+            chunks,
+            mods: WorldModDB::new(),
         }
     }
 }
@@ -59,9 +78,9 @@ impl Default for WorldResource {
 // Startup Systems
 // ---------------------------------------------------------------------------
 
-/// Set up the initial world state.
-fn setup_world(mut world_resource: ResMut<WorldResource>) {
-    world_resource.world = EarthWorld::generate(42, 100);
+/// Set up the initial world state (idempotent; generation is lazy/streamed).
+fn setup_world(_streaming_world: ResMut<StreamingWorldResource>) {
+    // Nothing to pre-generate — chunks stream around the player on demand.
 }
 
 // ---------------------------------------------------------------------------
@@ -69,27 +88,22 @@ fn setup_world(mut world_resource: ResMut<WorldResource>) {
 // ---------------------------------------------------------------------------
 
 /// Start playing the game.
-fn start_playing(_resource: ResMut<WorldResource>) {
-    // Game state transition handled by Bevy states
+fn start_playing(_resource: ResMut<StreamingWorldResource>) {
+    // Game state transition handled by Bevy states.
 }
 
 /// Run the next action in the game loop.
-fn run_next_action(_resource: Res<WorldResource>) {
-    // For now, just sync the minimap
-    // TODO: implement next action
+fn run_next_action(_resource: Res<StreamingWorldResource>) {
+    // TODO: implement next action.
 }
 
-/// Update the minimap to match the current world state.
-fn update_minimap(mut resource: ResMut<WorldResource>) {
-    // Get player position from the player transform
-    // For now, use the center of the world
+/// Update the streaming world from the current player position.
+fn update_minimap(mut resource: ResMut<StreamingWorldResource>) {
+    // The minimap systems (`load_nearby_chunks`) handle player-centered
+    // streaming; this simply keeps the world anchored at the origin for
+    // scenarios before the player position is known.
     let player_q = 0i32;
     let player_r = 0i32;
-    let view_radius = 20i32;
-
-    // Load chunks around player
-    resource.world.load_chunks_around(player_q, player_r, view_radius);
-
-    // Unload chunks outside view radius
-    resource.world.unload_chunks_around(player_q, player_r, view_radius);
+    let config = resource.config;
+    resource.chunks.stream_around(&config, player_q, player_r);
 }
