@@ -58,6 +58,7 @@ impl Default for StreamingWorldResource {
         let config = WorldGenConfig {
             seed: 42,
             world_radius: 100,
+            flat: true,
         };
         let gen = HierarchicalGen::new(config);
         let chunks = ChunkManager::new(

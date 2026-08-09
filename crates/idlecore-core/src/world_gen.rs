@@ -94,6 +94,9 @@ impl HexCell {
 pub struct WorldGenConfig {
     pub seed: u64,
     pub world_radius: i32,
+    /// When true, every hex has the same elevation (flat plain) instead of
+    /// noise-based terrain heights.
+    pub flat: bool,
 }
 
 impl Default for WorldGenConfig {
@@ -101,6 +104,7 @@ impl Default for WorldGenConfig {
         Self {
             seed: 42,
             world_radius: 1000,
+            flat: false,
         }
     }
 }
@@ -122,7 +126,9 @@ impl WorldGenConfig {
         let coord = HexCoord::new(q, r);
 
         // --- Elevation (continental + local noise) ---
-        let elevation = self.elevation(q, r);
+        // A flat world uses a constant mid elevation: high enough to avoid
+        // oceans (< 0.35), low enough to avoid mountains (> 0.75).
+        let elevation = if self.flat { 0.5 } else { self.elevation(q, r) };
 
         // --- Climate variables ---
         let latitude = self.latitude(q, r);
@@ -965,6 +971,7 @@ mod tests {
         let config = WorldGenConfig {
             seed: 42,
             world_radius: 10,
+            flat: false,
         };
         // Far from center tends to be water
         let cell = config.generate_hex(8, 8);
@@ -997,7 +1004,7 @@ mod tests {
 
     #[test]
     fn test_hierarchical_ocean_consistent() {
-        let config = WorldGenConfig { seed: 42, world_radius: 50 };
+        let config = WorldGenConfig { seed: 42, world_radius: 50, flat: false };
         let gen = HierarchicalGen::new(config);
         // Find a coordinate where the continental mask is below the water
         // threshold, then verify generation classifies it as water.
@@ -1110,6 +1117,7 @@ mod tests {
         let config = WorldGenConfig {
             seed: 1234,
             world_radius: 500,
+            flat: false,
         };
         let segment = Segment::compute_metadata(1, 0, 0, SEGMENT_CHUNKS_PER_SIDE, &config);
         assert_eq!(segment.id, 1);
@@ -1172,6 +1180,7 @@ mod tests {
         let config = WorldGenConfig {
             seed: 0,
             world_radius: 100,
+            flat: false,
         };
         // Force an all-water lookup by checking against a field
         let path = find_path((0, 0), (3, 3), |_, _| {

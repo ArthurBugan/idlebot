@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn save_roundtrip_json() {
-        let config = WorldGenConfig { seed: 7, world_radius: 50 };
+        let config = WorldGenConfig { seed: 7, world_radius: 50, flat: false };
         let mut db = WorldModDB::new();
         db.apply(HexCoord::new(1, 1), ModificationKind::SetTerrain(TerrainType::Mountain));
         let save = WorldSave::from_world(&config, &db, PlayerState { position: (10.0, 20.0), ..Default::default() });

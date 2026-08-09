@@ -44,6 +44,10 @@ pub enum MinimapZoom {
     Local,
     Area,
     World,
+    /// First added zoom-in level (2× local).
+    Close,
+    /// Second added zoom-in level (4× local).
+    Max,
 }
 
 impl MinimapZoom {
@@ -52,14 +56,18 @@ impl MinimapZoom {
             MinimapZoom::Local => 0.005,
             MinimapZoom::Area => 0.0025,
             MinimapZoom::World => 0.00125,
+            MinimapZoom::Close => 0.01,
+            MinimapZoom::Max => 0.02,
         }
     }
 
     pub fn zoom_in(&self) -> Option<Self> {
         match self {
-            MinimapZoom::Local => None,
+            MinimapZoom::Local => Some(MinimapZoom::Close),
             MinimapZoom::Area => Some(MinimapZoom::Local),
             MinimapZoom::World => Some(MinimapZoom::Area),
+            MinimapZoom::Close => Some(MinimapZoom::Max),
+            MinimapZoom::Max => None,
         }
     }
 
@@ -68,6 +76,18 @@ impl MinimapZoom {
             MinimapZoom::Local => Some(MinimapZoom::Area),
             MinimapZoom::Area => Some(MinimapZoom::World),
             MinimapZoom::World => None,
+            MinimapZoom::Close => Some(MinimapZoom::Local),
+            MinimapZoom::Max => Some(MinimapZoom::Close),
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            MinimapZoom::Local => "Zoom: Local",
+            MinimapZoom::Area => "Zoom: Area",
+            MinimapZoom::World => "Zoom: World",
+            MinimapZoom::Close => "Zoom: Close",
+            MinimapZoom::Max => "Zoom: Max",
         }
     }
 }
@@ -693,7 +713,11 @@ pub fn handle_input(
         minimap_state.expanded = !minimap_state.expanded;
     }
 
+    let on_minimap = get_minimap_mouse_pos(&windows, minimap_state.mm_size()).is_some();
     for event in scroll.read() {
+        if !on_minimap {
+            continue;
+        }
         if event.y > 0.0 {
             if let Some(new_zoom) = minimap_state.zoom.zoom_in() {
                 minimap_state.zoom = new_zoom;
@@ -758,7 +782,6 @@ fn get_minimap_mouse_pos(windows: &Query<&Window>, mm_size: f32) -> Option<(f32,
 pub fn render_visible_tiles(
     mut commands: Commands,
     minimap_state: Res<MinimapState>,
-    minimap_config: Res<MinimapConfig>,
     streaming_world: Res<StreamingWorldResource>,
     mut hex_entity_map: ResMut<HexEntityMap>,
     mut hex_fog_map: ResMut<HexFogMap>,
@@ -769,10 +792,6 @@ pub fn render_visible_tiles(
     mut tile_query: Query<
         (&mut Node, &mut ImageNode),
         (With<MapTileNode>, Without<HexFogTile>),
-    >,
-    mut fog_query: Query<
-        (&mut Node, &mut ImageNode),
-        (With<HexFogTile>, Without<MapTileNode>),
     >,
 ) {
     let Some(player_pos) = minimap_state.player_pos else { return };
@@ -786,7 +805,6 @@ pub fn render_visible_tiles(
     let mm_center = minimap_state.mm_size() / 2.0;
     let rotation = minimap_state.rotation.map_rotation(minimap_state.facing_angle);
     let render_radius_world = minimap_state.render_radius_px() / pixel_scale;
-    let vision_radius_world = minimap_state.vision_radius_px() / pixel_scale;
 
     // Pointy-top hexagon bounding box (corners at 30° + 60°·i):
     // width = √3·R, height = 2R in world units, scaled to pixels.
@@ -794,7 +812,6 @@ pub fn render_visible_tiles(
     let tile_h = (2.0 * HEX_SIZE * pixel_scale).ceil().max(3.0);
 
     // ---- Phase 1: discover hexes from currently-streamed chunks ----
-    let mut fog_seen: HashSet<u64> = HashSet::new();
 
     // ---- Phase 2: render every explored hex (persistent, even past streaming) ----
     let mm_w = minimap_state.mm_size() + 64.0;
@@ -873,8 +890,10 @@ pub fn render_visible_tiles(
                 continue;
             }
 
-            // Discovered once within the vision radius; never undiscovered.
-            let discovered = dist_sq <= vision_radius_world * vision_radius_world;
+            // Any hex within the rendered area shows on the map immediately —
+            // no small vision radius gate, so there's no pop-in delay after
+            // walking onto a new hex.
+            let discovered = dist_sq <= render_radius_world * render_radius_world;
             if discovered {
                 explored_hexes.explored.entry(hex_id).or_insert(ExploredCell {
                     center_x,
@@ -883,68 +902,11 @@ pub fn render_visible_tiles(
                 });
             }
 
-            let (screen_x, screen_y) = world_to_map_pixel(
-                (center_x, center_y),
-                (player_pos.x, player_pos.y),
-                pixel_scale,
-                mm_center,
-                rotation,
-            );
-
-            // Fog: clear on explored hexes, cover unexplored visible hexes.
-            if discovered {
-                if let Some(fog_entity) = hex_fog_map.fog_entities.remove(&hex_id) {
-                    commands.entity(fog_entity).despawn();
-                }
-            } else {
-                fog_seen.insert(hex_id);
-                let fog_left = screen_x - tile_w / 2.0;
-                let fog_top = screen_y - tile_h / 2.0;
-                let fog_handle = hex_fog_handle(
-                    &mut minimap_assets,
-                    &mut images,
-                    tile_w as u32,
-                    tile_h as u32,
-                    minimap_config.fog_color,
-                );
-                if let Some(&fog_entity) = hex_fog_map.fog_entities.get(&hex_id) {
-                    if let Ok((mut node, mut image)) = fog_query.get_mut(fog_entity) {
-                        node.left = Val::Px(fog_left);
-                        node.top = Val::Px(fog_top);
-                        node.width = Val::Px(tile_w);
-                        node.height = Val::Px(tile_h);
-                        image.image = fog_handle;
-                    }
-                } else if screen_x >= -64.0 && screen_x <= mm_w && screen_y >= -64.0 && screen_y <= mm_w {
-                    let fog_entity = commands.spawn((
-                        Name::new("minimap-fog-tile"),
-                        HexFogTile { hex_id },
-                        Node {
-                            position_type: PositionType::Absolute,
-                            left: Val::Px(fog_left),
-                            top: Val::Px(fog_top),
-                            width: Val::Px(tile_w),
-                            height: Val::Px(tile_h),
-                            ..default()
-                        },
-                        ImageNode::new(fog_handle),
-                    )).id();
-                    commands.entity(fog_entity).insert(ChildOf(map_content_entity));
-                    hex_fog_map.fog_entities.insert(hex_id, fog_entity);
-                }
+            // Fog-of-war is disabled: hexes are never covered with black fog
+            // tiles. Clear any leftover fog kept from before it was disabled.
+            if let Some(fog_entity) = hex_fog_map.fog_entities.remove(&hex_id) {
+                commands.entity(fog_entity).despawn();
             }
-        }
-    }
-
-    // Remove fog entities whose hexes left the visible area entirely.
-    let fog_to_despawn: Vec<u64> = hex_fog_map.fog_entities.keys()
-        .filter(|hex_id| !fog_seen.contains(hex_id))
-        .cloned()
-        .collect();
-
-    for hex_id in fog_to_despawn {
-        if let Some(entity) = hex_fog_map.fog_entities.remove(&hex_id) {
-            commands.entity(entity).despawn();
         }
     }
 }

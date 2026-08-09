@@ -3,8 +3,10 @@
 #![allow(dead_code)]
 
 use bevy::prelude::*;
+use bevy_rapier3d::prelude::*;
 use crate::player::{Player, PlayerTransform};
 use plugins::camera::CameraZoom;
+use plugins::world::StreamingWorldResource;
 
 mod progression;
 mod player;
@@ -19,6 +21,12 @@ mod world_floor;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(RapierPhysicsPlugin::<()>::default())
+        .add_plugins(RapierDebugRenderPlugin {
+            enabled: false,
+            ..default()
+        })
+        .add_systems(Startup, boost_gravity)
         .insert_resource(CameraZoom::default())
         .insert_resource(plugins::world::StreamingWorldResource::default())
         .insert_resource(minimap::MinimapState::default())
@@ -43,8 +51,11 @@ fn main() {
             idle::spawn_idle_panel,
         ))
         .add_systems(Update, (
+            toggle_physics_debug,
             minimap::handle_input,
-            minimap::sync_player_state.after(minimap::handle_input),
+            minimap::sync_player_state
+                .after(minimap::handle_input)
+                .after(PhysicsSet::Writeback),
             minimap::load_nearby_chunks
                 .after(minimap::sync_player_state),
             minimap::render_visible_tiles
@@ -70,6 +81,7 @@ fn main() {
 fn setup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
+    streaming_world: Res<StreamingWorldResource>,
 ) {
     // Directional sun
     commands.spawn((
@@ -93,18 +105,32 @@ fn setup(
     let player_scene: Handle<bevy::world_serialization::WorldAsset> =
         asset_server.load("models/characterLargeMale.glb#Scene0");
 
+    // Drop the player in from above the starting hex; gravity settles it on the
+    // terrain colliders.
+    let start_height =
+        3.0 + streaming_world.config.generate_hex(0, 0).elevation * 25.0;
+
+    // Physics body: a top-level, unscaled entity in world units. Keep it off
+    // the 13× scaled visual root — rapiper scales colliders by the entity
+    // transform, which would otherwise balloon the capsule ~13× and float the
+    // character high above the ground.
     commands.spawn((
-        Name::new("Player"),
-        Player,
-        Transform {
-            translation: Vec3::new(0.0, 0.35, 0.0),
-            scale: Vec3::splat(13.0),
-            ..default()
+        Name::new("PlayerPhysics"),
+        plugins::player::PhysicsBody,
+        RigidBody::Dynamic,
+        Velocity::zero(),
+        Ccd::enabled(),
+        Collider::capsule(Vec3::Y * 1.6365, Vec3::Y * 6.0, 1.5),
+        Friction::coefficient(0.8),
+        Damping {
+            linear_damping: 0.0,
+            angular_damping: 6.0,
         },
+        LockedAxes::ROTATION_LOCKED_X | LockedAxes::ROTATION_LOCKED_Z,
+        Transform::from_xyz(0.0, start_height, 0.0),
         GlobalTransform::default(),
-        bevy::world_serialization::WorldAssetRoot(player_scene),
         player::ClientPlayer {
-            position: Vec3::ZERO,
+            position: Vec3::new(0.0, start_height, 0.0),
             velocity: Vec2::ZERO,
             current_hex: None,
             gold: 0,
@@ -117,5 +143,43 @@ fn setup(
             time_offline: None,
         },
     ));
+
+    // Visual root: the 13× scaled character model; pose is copied from the
+    // physics body by `sync_visual_to_physics`.
+    commands.spawn((
+        Name::new("Player"),
+        Player,
+        Transform {
+            translation: Vec3::ZERO,
+            scale: Vec3::splat(13.0),
+            ..default()
+        },
+        GlobalTransform::default(),
+        bevy::world_serialization::WorldAssetRoot(player_scene),
+    ));
+}
+
+/// F12 toggles the Rapier debug renderer (collider wireframes).
+fn toggle_physics_debug(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut context: ResMut<DebugRenderContext>,
+) {
+    if keys.just_pressed(KeyCode::F12) {
+        context.enabled = !context.enabled;
+        info!(
+            "Physics debug render: {}",
+            if context.enabled { "ON" } else { "OFF" }
+        );
+    }
+}
+
+/// The world is big (hexes × 25-unit elevations), so the default rapier
+/// gravity feels floaty; give it a snappier fall.
+fn boost_gravity(
+    mut configuration: Query<&mut RapierConfiguration, With<DefaultRapierContext>>,
+) {
+    if let Ok(mut config) = configuration.single_mut() {
+        config.gravity = Vec3::NEG_Y * 45.0;
+    }
 }
 

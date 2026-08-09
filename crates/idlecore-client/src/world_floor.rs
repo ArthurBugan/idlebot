@@ -6,6 +6,7 @@
 
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, VertexAttributeValues};
+use bevy_rapier3d::geometry::{Collider, ComputedColliderShape, TriMeshFlags};
 use idlecore_core::hex::world_pos_to_hex;
 use idlecore_core::world_gen::{WorldGenConfig, hex_to_chunk_coord};
 use idlecore_core::world_mesh::{
@@ -198,15 +199,26 @@ pub fn update_world_floor(
             GlobalTransform::default(),
         ));
 
-        // Terrain tinted by average biome color.
+        // Terrain tinted by average biome color; solid to physics (trimesh).
         parent.with_children(|parent| {
             if let Some(handle) = &terrain_handle {
-                parent.spawn((
+                let collider = meshes
+                    .get(handle)
+                    .and_then(|mesh| {
+                        Collider::from_bevy_mesh(
+                            mesh,
+                            &ComputedColliderShape::TriMesh(TriMeshFlags::default()),
+                        )
+                    });
+                let mut child = parent.spawn((
                     Name::new("terrain"),
                     Mesh3d(handle.clone()),
                     MeshMaterial3d(terrain_material.clone()),
                     Transform::default(),
                 ));
+                if let Some(collider) = collider {
+                    child.insert(collider);
+                }
             }
             if let Some(handle) = &water_handle {
                 parent.spawn((

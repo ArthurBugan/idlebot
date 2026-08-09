@@ -4,20 +4,31 @@
 use bevy::prelude::*;
 use bevy::platform::collections::HashMap;
 use bevy::gltf::Gltf;
+use bevy_rapier3d::prelude::*;
 use crate::player::{Player, PlayerOrientation, PlayerTransform};
 use crate::plugins::world::StreamingWorldResource;
 use idlecore_core::hex::world_pos_to_hex;
 use idlecore_core::world_gen::WorldGenConfig;
 
-/// Character model: feet bottom at y=+0.0105 in model space, transformed by
-/// the 13× spawn scale → feet at +0.1365 above the player anchor.
+/// Feet sit +0.1365 world units above the player anchor (model offset × 13 scale).
 const FEET_OFFSET: f32 = 0.0105 * 13.0;
+
+/// Small height differences between neighboring hexes (elevation × 25) are
+/// treated as climbable steps instead of walls.
+const MAX_STEP_HEIGHT: f32 = 12.0;
+
+/// How far ahead of the player the next hex's height is probed.
+const STEP_PROBE_DIST: f32 = 10.0;
 
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (player_movement, player_animation));
+        app.add_systems(Update, (
+            player_movement.after(PhysicsSet::Writeback),
+            sync_visual_to_physics.after(player_movement),
+            player_animation,
+        ));
         app.add_systems(Startup, (register_player_orientation, register_player_animations));
     }
 }
@@ -121,27 +132,21 @@ fn player_animation(
     state.playing = Some(target.to_string());
 }
 
-/// Terrain height (world units) directly under a world position, matching the
-/// world_floor mesh (hex elevation × elevation_scale).
-fn terrain_height_at(
-    streaming_world: &StreamingWorldResource,
-    x: f32,
-    z: f32,
-) -> f32 {
-    let (q, r) = world_pos_to_hex(x, z, WorldGenConfig::HEX_SIZE);
-    streaming_world.config.generate_hex(q, r).elevation * 25.0
-}
+/// Marker for the physics body entity that drives the visible player model.
+#[derive(Component)]
+pub struct PhysicsBody;
 
-/// Player movement system — WASD input
+/// Move the player: WASD maps directly to horizontal rigid-body velocity.
+/// Vertical motion is left to gravity against the terrain colliders, and the
+/// physics writeback keeps the body `Transform` in sync.
 fn player_movement(
-    time: Res<Time>,
     keyboard: Res<ButtonInput<KeyCode>>,
     streaming_world: Res<StreamingWorldResource>,
-    mut player_query: Query<(&mut Transform, &mut crate::player::ClientPlayer)>,
+    mut player_query: Query<(&mut Transform, &mut Velocity, &mut crate::player::ClientPlayer), With<PhysicsBody>>,
     mut player_transform: ResMut<PlayerTransform>,
     mut orientation: ResMut<PlayerOrientation>,
 ) {
-    let Ok((mut transform, mut player)) = player_query.single_mut() else {
+    let Ok((mut transform, mut velocity, mut player)) = player_query.single_mut() else {
         return;
     };
 
@@ -151,25 +156,56 @@ fn player_movement(
     if keyboard.pressed(KeyCode::KeyA) { input.x -= 1.0; }
     if keyboard.pressed(KeyCode::KeyD) { input.x += 1.0; }
 
-    let speed = 100.0;
-    let dt = time.delta_secs();
-    let delta = input * speed * dt;
-    transform.translation.x += delta.x;
-    transform.translation.z += delta.y;
+    let dir = input.normalize_or_zero();
+    let mut speed = 150.0;
+    if keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight) {
+        speed *= 100.0;
+    }
+    velocity.linear.x = dir.x * speed;
+    velocity.linear.z = dir.y * speed;
 
-    // Snap feet to the terrain under the player.
-    transform.translation.y = terrain_height_at(
-        &streaming_world,
-        transform.translation.x,
-        transform.translation.z,
-    ) - FEET_OFFSET;
+    // Step up: when walking toward a slightly higher neighbor hex, lift the
+    // body so the step is climbable instead of becoming a wall.
+    if dir != Vec2::ZERO {
+        let x = transform.translation.x;
+        let z = transform.translation.z;
+        let ahead_x = x + dir.x * STEP_PROBE_DIST;
+        let ahead_z = z + dir.y * STEP_PROBE_DIST;
+        let here = terrain_height_at(&streaming_world, x, z);
+        let ahead = terrain_height_at(&streaming_world, ahead_x, ahead_z);
+        if ahead > here && ahead - here <= MAX_STEP_HEIGHT {
+            transform.translation.y = ahead - FEET_OFFSET;
+        }
+    }
 
-    player.position = transform.translation;
-
-    player_transform.translation = transform.translation;
-
-    if input.length() > 0.0 {
+    if dir != Vec2::ZERO {
         orientation.facing_angle = input.y.atan2(input.x);
         transform.rotation = Quat::from_rotation_y(std::f32::consts::PI / 2.0 - orientation.facing_angle);
     }
+
+    player.position = transform.translation;
+    player_transform.translation = transform.translation;
+}
+
+/// Terrain height (world units) directly under a world position, matching the
+/// world_floor mesh (hex elevation × elevation_scale 25).
+fn terrain_height_at(
+    streaming_world: &StreamingWorldResource,
+    x: f32,
+    z: f32,
+) -> f32 {
+    let (q, r) = world_pos_to_hex(x, z, WorldGenConfig::HEX_SIZE);
+    streaming_world.config.generate_hex(q, r).elevation * 25.0
+}
+
+/// The visual root carries the 13× model scale; the physics body is unscaled,
+/// so copy the body's world pose onto the visual root every frame.
+fn sync_visual_to_physics(
+    bodies: Query<&Transform, With<PhysicsBody>>,
+    mut roots: Query<&mut Transform, (With<Player>, Without<PhysicsBody>)>,
+) {
+    let Ok(body) = bodies.single() else { return };
+    let Ok(mut root) = roots.single_mut() else { return };
+    root.translation = body.translation;
+    root.rotation = body.rotation;
 }
