@@ -22,7 +22,7 @@
  * Requires: node 18+, @gltf-transform/core, @gltf-transform/functions.
  */
 
-import { NodeIO } from '@gltf-transform/core';
+import { Accessor, NodeIO } from '@gltf-transform/core';
 import {
     dedup as dedupAction,
     mergeDocuments,
@@ -66,6 +66,64 @@ for (const file of files.sort()) {
     }
 
     const clipName = sourceAnim.getName().replace(/^Root\|/, '');
+
+    // FBX2glTF only writes channels for bones that move; every other bone
+    // keeps the animation file's node transform (its pose for that clip).
+    // Merge those static bones in as constant channels, otherwise they stay
+    // at the character's T-pose (e.g. thumbs flat against the palm)
+    // while the rest of the body plays the clip → misaligned pose.
+    const animated = new Set(
+        sourceAnim
+            .listChannels()
+            .map((ch) => `${ch.getTargetNode().getName()}/${ch.getTargetPath()}`),
+    );
+    const srcBuffer = doc.getRoot().listBuffers()[0] ?? doc.createBuffer();
+    const paths = [
+        { path: 'rotation', get: (n) => n.getRotation(), ident: [0, 0, 0, 1], type: Accessor.Type.VEC4 },
+        { path: 'translation', get: (n) => n.getTranslation(), ident: [0, 0, 0], type: Accessor.Type.VEC3 },
+        { path: 'scale', get: (n) => n.getScale(), ident: [1, 1, 1], type: Accessor.Type.VEC3 },
+    ];
+    let constants = 0;
+    const sceneRoots = new Set(
+        doc.getRoot().listScenes().map((s) => s.listChildren()),
+    );
+    for (const node of doc.getRoot().listNodes()) {
+        const host = charNodes.get(node.getName());
+        if (!host) continue;
+        const isSceneRoot = sceneRoots.has(node);
+        if (isSceneRoot) continue;
+        for (const { path, get, ident, type } of paths) {
+            if (animated.has(`${node.getName()}/${path}`)) continue;
+            const value = get(node);
+            const isIdent = value.every((v, i) => Math.abs(v - ident[i]) < 1e-6);
+            if (isIdent) continue;
+            const times = doc
+                .createAccessor()
+                .setType(Accessor.Type.SCALAR)
+                .setArray(new Float32Array([0, 1]))
+                .setBuffer(srcBuffer);
+            const out = doc
+                .createAccessor()
+                .setType(type)
+                .setArray(new Float32Array([...value, ...value]))
+                .setBuffer(srcBuffer);
+            const sampler = doc
+                .createAnimationSampler()
+                .setInput(times)
+                .setOutput(out)
+                .setInterpolation('LINEAR');
+            sourceAnim.addSampler(sampler).addChannel(
+                doc
+                    .createAnimationChannel()
+                    .setTargetNode(node)
+                    .setTargetPath(path)
+                    .setSampler(sampler),
+            );
+            constants++;
+        }
+    }
+    if (constants) console.log(`  ${file}: +${constants} constant channels for static bones`);
+
     doc.getRoot().setDefaultScene(null);
     mergeDocuments(character, doc);
 
@@ -98,6 +156,6 @@ const single = character.createBuffer();
 for (const acc of root.listAccessors()) acc.setBuffer(single);
 for (const b of root.listBuffers()) if (b !== single) b.dispose();
 
-await character.transform(pruneAction(), dedupAction());
+await character.transform(pruneAction({ keepAttributes: true }), dedupAction());
 await io.write(resolve(outPath), character);
 console.log(`\nWrote ${outPath}: ${merged} animations merged (${skipped} skipped).`);
