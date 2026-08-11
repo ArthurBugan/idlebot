@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use crate::player::Player;
 
 /// All skin textures shipped in `assets/skins/` (kept in sync with the folder).
-const SKIN_FILES: &[&str] = &[
+pub const SKIN_FILES: &[&str] = &[
     "alienA", "alienB", "astroFemaleA", "astroFemaleB", "astroMaleA",
     "astroMaleB", "athleteFemaleBlue", "athleteFemaleGreen", "athleteFemaleRed",
     "athleteFemaleYellow", "athleteMaleBlue", "athleteMaleGreen", "athleteMaleRed",

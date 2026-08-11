@@ -23,6 +23,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::plugins::world::StreamingWorldResource;
 use crate::player::Player;
+use crate::fps_counter::FpsText;
 
 // ============================================================================
 // Constants
@@ -505,6 +506,7 @@ pub fn spawn_minimap_ui(
     mut images: ResMut<Assets<Image>>,
 ) {
     let font: Handle<Font> = asset_server.load("fonts/FiraSans-Bold.ttf");
+    let font_clone = font.clone();
 
     let arrow_img = create_arrow_image(16, Color::srgba(0.2, 0.9, 1.0, 0.95));
     let arrow_texture = images.add(arrow_img);
@@ -638,6 +640,32 @@ pub fn spawn_minimap_ui(
             TextColor(Color::srgba(0.7, 0.8, 1.0, 1.0)),
         ))
         .with_child(TextSpan::new("Zoom: Local"));
+
+        // FPS counter — bottom-right of minimap
+        parent.spawn((
+            Name::new("minimap-fps"),
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(4.0),
+                bottom: Val::Px(2.0),
+                padding: UiRect::axes(Val::Px(4.0), Val::Px(1.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+        ))
+        .with_children(|fps_parent| {
+            fps_parent.spawn((
+                Name::new("minimap-fps-text"),
+                FpsText,
+                Text::new("FPS: 0"),
+                TextFont {
+                    font: FontSource::Handle(font_clone),
+                    font_size: FontSize::Px(9.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.8, 1.0, 0.8)),
+            ));
+        });
     });
 }
 

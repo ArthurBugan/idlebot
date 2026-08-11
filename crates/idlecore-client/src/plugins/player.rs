@@ -44,7 +44,10 @@ pub struct PlayerAnimationState {
     pub graph: Option<Handle<AnimationGraph>>,
     pub clips: HashMap<String, AnimationNodeIndex>,
     pub player_entity: Option<Entity>,
-    pub playing: Option<String>,
+    /// Currently-playing locomotion clip (idle/walk/run/crouch…).
+    pub locomotion: Option<String>,
+    /// A one-shot clip (jump/attack/death) currently playing; `None` when idle.
+    pub one_shot: Option<AnimationNodeIndex>,
 }
 
 impl Default for PlayerAnimationState {
@@ -54,7 +57,8 @@ impl Default for PlayerAnimationState {
             graph: None,
             clips: default(),
             player_entity: None,
-            playing: None,
+            locomotion: None,
+            one_shot: None,
         }
     }
 }
@@ -70,7 +74,8 @@ fn register_player_animations(
 }
 
 /// Load named clips into an `AnimationGraph` asset, attach it to the player's
-/// `AnimationPlayer` once the scene spawns, then play idle/run by input.
+/// `AnimationPlayer` once the scene spawns, then drive locomotion and
+/// one-shot animations (jump/attack/death) from input.
 fn player_animation(
     mut commands: Commands,
     gltf_assets: Res<Assets<Gltf>>,
@@ -84,13 +89,18 @@ fn player_animation(
     // 1. Build the animation graph once the glTF asset is loaded.
     if state.graph.is_none() {
         let Some(gltf) = gltf_assets.get(&state.gltf) else { return };
+        info!("GLB loaded: {} named animations", gltf.named_animations.len());
+        for (name, _) in &gltf.named_animations {
+            info!("  Animation: {}", name);
+        }
+        if gltf.named_animations.is_empty() {
+            warn!("No animations found in GLB!");
+            return;
+        }
         let mut graph = AnimationGraph::new();
         for (name, clip) in &gltf.named_animations {
             let node = graph.add_clip(clip.clone(), 1.0, graph.root);
             state.clips.insert(name.to_string(), node);
-        }
-        if state.clips.is_empty() {
-            return;
         }
         state.graph = Some(graphs.add(graph));
     }
@@ -106,30 +116,79 @@ fn player_animation(
                 .insert(AnimationGraphHandle(state.graph.clone().unwrap()))
                 .insert(AnimationTransitions::new());
             state.player_entity = Some(entity);
-            break;
-        }
-        if state.player_entity.is_none() {
+            info!("Attached animation graph to entity");
             return;
         }
-    }
-
-    // 3. Switch animation based on input (with a short crossfade).
-    let target = if keyboard.any_pressed([KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD]) {
-        "run"
-    } else {
-        "idle"
-    };
-    if state.playing.as_deref() == Some(target) {
+        warn!("No AnimationPlayer found in player descendants");
         return;
     }
-    let Some(node_index) = state.clips.get(target) else { return };
-    let Ok((_, mut player, Some(mut transitions))) = animation_players.get_mut(state.player_entity.unwrap()) else {
-        return
+
+    let Ok((_, mut player, Some(mut transitions))) =
+        animation_players.get_mut(state.player_entity.unwrap())
+    else {
+        return;
     };
+
+    // 3a. A one-shot animation (jump/attack/death) is playing: wait for it to
+    //     finish, then fall back to locomotion.
+    if let Some(shot_node) = state.one_shot {
+        let finished = player
+            .animation(shot_node)
+            .map(bevy::animation::ActiveAnimation::is_finished)
+            .unwrap_or(true);
+        if !finished {
+            return;
+        }
+        state.one_shot = None;
+        // Force the locomotion clip to restart once the shot is over.
+        state.locomotion = None;
+    }
+
+    // 3b. Trigger a one-shot animation.
+    let shot = if keyboard.just_pressed(KeyCode::Space) {
+        Some("jump")
+    } else if keyboard.just_pressed(KeyCode::KeyF) {
+        Some("attack")
+    } else if keyboard.just_pressed(KeyCode::KeyK) {
+        Some("death")
+    } else {
+        None
+    };
+    if let Some(name) = shot {
+        let Some(node) = state.clips.get(name) else {
+            warn!("Animation '{name}' not found!");
+            return;
+        };
+        transitions.play(&mut player, *node, std::time::Duration::from_millis(120));
+        state.one_shot = Some(*node);
+        info!("Playing one-shot animation: {name}");
+        return;
+    }
+
+    // 3c. Locomotion: crouch (Ctrl) / walk / run (Shift), idle otherwise.
+    let moving = keyboard.any_pressed([KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD]);
+    let crouching = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
+    let sprinting =
+        keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
+    let target = match (crouching, moving, sprinting) {
+        (true, true, _) => "crouchWalk",
+        (true, false, _) => "crouchIdle",
+        (false, true, true) => "run",
+        (false, true, false) => "walk",
+        _ => "idle",
+    };
+    if state.locomotion.as_deref() == Some(target) {
+        return;
+    }
+    let Some(node) = state.clips.get(target) else {
+        warn!("Animation '{target}' not found! Available: {:?}", state.clips.keys().collect::<Vec<_>>());
+        return;
+    };
+    info!("Playing animation: {target}");
     transitions
-        .play(&mut player, *node_index, std::time::Duration::from_millis(150))
+        .play(&mut player, *node, std::time::Duration::from_millis(150))
         .repeat();
-    state.playing = Some(target.to_string());
+    state.locomotion = Some(target.to_string());
 }
 
 /// Marker for the physics body entity that drives the visible player model.

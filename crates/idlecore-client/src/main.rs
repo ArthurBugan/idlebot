@@ -15,11 +15,17 @@ mod idle;
 mod minimap;
 mod plugins;
 mod skins;
+mod inventory;
+mod fps_counter;
 mod world_floor;
 
 
 // --- Main Entry ---
 fn main() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .init();
+
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(RapierPhysicsPlugin::<()>::default())
@@ -44,6 +50,8 @@ fn main() {
         .add_plugins(plugins::camera::CameraPlugin)
         .add_plugins(plugins::world::WorldPlugin)
         .add_plugins(skins::SkinsPlugin)
+        // .add_plugins(inventory::InventoryPlugin)
+        .add_plugins(fps_counter::FpsCounterPlugin)
         .insert_resource(PlayerTransform::default())
         .insert_resource(debug_panel::DebugPanelOpen(false))
         .insert_resource(idle::IdleGainsState::default())
@@ -174,7 +182,6 @@ fn toggle_physics_debug(
         );
     }
 }
-
 /// The world is big (hexes × 25-unit elevations), so the default rapier
 /// gravity feels floaty; give it a snappier fall.
 fn boost_gravity(
