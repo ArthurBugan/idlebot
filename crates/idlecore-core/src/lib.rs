@@ -35,6 +35,7 @@ pub mod protocol;
 pub mod wallet_auth;
 pub mod player_identity;
 pub mod scheduler;
+#[cfg(feature = "bevy")]
 pub mod assets;
 
 /// Simple RGBA color (0.0–1.0 per channel)
@@ -52,6 +53,7 @@ impl Color {
     }
 
     /// Convert to Bevy Color type for materials.
+    #[cfg(feature = "bevy")]
     pub fn to_bevy(&self) -> bevy::color::Color {
         bevy::color::Color::srgb(self.r, self.g, self.b)
     }

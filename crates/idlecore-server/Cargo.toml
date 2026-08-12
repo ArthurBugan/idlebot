@@ -3,10 +3,12 @@ name = "idlecore-server"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+crate-type = ["cdylib"]
+
 [dependencies]
-idlecore-core = { path = "../idlecore-core" }
+idlecore-core = { path = "../idlecore-core", default-features = false }
 spacetimedb = { workspace = true }
-alloy = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

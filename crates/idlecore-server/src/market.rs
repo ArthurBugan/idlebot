@@ -1,131 +1,242 @@
-//! Sistema de mercado - publish e compra de templates
+//! Marketplace (Spec 011) — publish (50G, 30-day expiry), renew (10G/7d),
+//! buy with USDT + 5% platform fee + 48 h escrow, disputes.
 
-use super::types::MarketListingDbEntry;
 use spacetimedb::{ReducerContext, Table};
-use crate::types::{market_listing, player};
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::economy::{add_usdt, spend_gold, spend_usdt};
+use crate::types::{player, 
+    market_listing, now_secs, MarketListing, DISPUTE_REFUND_PENALTY_PERMILLE, ESCROW_SECS,
+    LISTING_DURATION_SECS, LISTING_GRACE_SECS, LISTING_PUBLISH_COST, LISTING_RENEWAL_COST,
+    LISTING_RENEWAL_PERIOD, PLATFORM_FEE_PERMILLE,
+};
 
-/// Publishar template no market
-pub fn publish_template(
+fn valid_category(c: &str) -> bool {
+    matches!(c, "Agent" | "Code" | "Template" | "Snippet")
+}
+
+fn permille_of(price: u64, permille: u64) -> u64 {
+    (price as u128 * permille as u128 / 1000) as u64
+}
+
+/// Spec 011 FR1/FR2: publish a listing. Costs 50G.
+pub fn publish(
     ctx: &ReducerContext,
-    wallet_address: &str,
+    address: &str,
     title: String,
-    github_url: String,
     description: String,
-    price_usdt: f64,
-) {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    // Verificar se player tem Gold suficiente pra publicar
-    let player = ctx.db.player().iter()
-        .find(|p| p.address == wallet_address)
-        .expect("Player not found");
-
-    if player.gold < 50 {
-        tracing::warn!("Not enough gold to publish template");
-        return;
+    github_url: String,
+    price_usdt: u64,
+    category: String,
+) -> Result<u64, String> {
+    if title.trim().is_empty() || !title.chars().next().is_some_and(|c| c.is_alphanumeric()) {
+        return Err("Title must be non-empty".to_string());
+    }
+    if price_usdt == 0 {
+        return Err("Price must be > 0 USDT".to_string());
+    }
+    if !github_url.starts_with("https://github.com/") {
+        return Err("GitHub URL required (https://github.com/...)".to_string());
+    }
+    if !valid_category(&category) {
+        return Err("Category must be Agent|Code|Template|Snippet".to_string());
     }
 
-    // Deduzir gold
-    let mut player = player;
-    player.gold = player.gold.saturating_sub(50);
-    ctx.db.player().address().update(player);
+    let mut p = crate::economy::find_player(ctx, &address.to_lowercase())
+        .ok_or_else(|| "Player not found".to_string())?;
+    spend_gold(ctx, &mut p, LISTING_PUBLISH_COST, "publish_listing")?;
 
-    // Criar listing (ID seria gerado de outra forma em produção)
-    let listing_id = generate_listing_id();
-
-    let listing = MarketListingDbEntry {
-        listing_id,
-        seller: wallet_address.to_string(),
+    let now = now_secs(ctx);
+    let listing_row = ctx.db.market_listing().insert(MarketListing {
+        listing_id: 0,
+        seller: p.address.clone(),
         title,
-        github_url,
         description,
+        github_url,
         price_usdt,
+        category,
         published_at: now,
-        sold: false,
-    };
+        expires_at: now + LISTING_DURATION_SECS,
+        is_sold: false,
+        buyer: None,
+        escrow_until: 0,
+        disputed: false,
+    });
 
-    ctx.db.market_listing().insert(listing);
-
-    tracing::info!("Template published: {}", listing_id);
+    p.templates_published = p.templates_published.saturating_add(1);
+    ctx.db.player().address().update(p);
+    let id = listing_row.listing_id;
+    tracing::info!("LISTING: {} published #{id}", address);
+    Ok(id)
 }
 
-/// Completar compra de template (chamado via blockchain event)
-pub fn complete_purchase(
-    ctx: &ReducerContext,
-    _seller: &str,
-    buyer: &str,
-    listing_id: u64,
-    price_usdt: f64,
-) {
-    let listing = ctx.db.market_listing().iter()
-        .find(|l| l.listing_id == listing_id)
-        .expect("Listing not found");
-
-    if listing.sold {
-        tracing::warn!("Listing already sold");
-        return;
+/// Spec 011 FR5-FR7: buy a listing with USDT; 5% platform fee, seller paid
+/// minus fee, then 48 h escrow before the seller's payout is considered final.
+pub fn buy(ctx: &ReducerContext, buyer: &str, listing_id: u64) -> Result<(), String> {
+    let Some(mut listing) = ctx
+        .db
+        .market_listing()
+        .listing_id()
+        .find(listing_id)
+    else {
+        return Err("Listing not found".to_string());
+    };
+    if listing.is_sold {
+        return Err("Listing already sold".to_string());
+    }
+    if listing.seller == buyer {
+        return Err("Cannot buy your own listing".to_string());
+    }
+    let now = now_secs(ctx);
+    if listing.expires_at < now {
+        return Err("Listing expired".to_string());
     }
 
-    // Mark as sold
-    let listing_id = listing.listing_id;
-    let title = listing.title.clone();
-    let github_url = listing.github_url.clone();
-    let seller_addr = listing.seller.clone();
-    let mut listing = listing;
-    listing.sold = true;
-    ctx.db.market_listing().listing_id().update(listing);
+    let mut b = crate::economy::find_player(ctx, &buyer.to_lowercase())
+        .ok_or_else(|| "Player not found".to_string())?;
+    if b.usdt < listing.price_usdt {
+        return Err("Insufficient USDT".to_string());
+    }
 
-    // Adicionar template ao inventário do comprador
-    let buyer_player = ctx.db.player().iter()
-        .find(|p| p.address == buyer)
-        .expect("Buyer not found");
+    // Charge buyer, hold seller payout in escrow (PROPOSAL 4.2).
+    spend_usdt(ctx, &mut b, listing.price_usdt, "buy_listing")?;
+    let fee = permille_of(listing.price_usdt, PLATFORM_FEE_PERMILLE);
+    let seller_payout = listing.price_usdt - fee;
 
-    let mut buyer_player = buyer_player;
-    let template_json = format!(
-        "{{\"id\":{},\"title\":\"{}\",\"url\":\"{}\",\"author\":\"{}\",\"price\":{}}}",
-        listing_id, title, github_url, seller_addr, price_usdt
+    listing.is_sold = true;
+    listing.buyer = Some(buyer.to_lowercase());
+    listing.escrow_until = now + ESCROW_SECS;
+    ctx.db.market_listing().listing_id().update(listing.clone());
+
+    b.templates_purchased = b.templates_purchased.saturating_add(1);
+    let mut templates: Vec<String> = serde_json::from_str(&b.templates).unwrap_or_default();
+    templates.push(listing.github_url.clone());
+    b.templates = serde_json::to_string(&templates).unwrap();
+    ctx.db.player().address().update(b);
+
+    tracing::info!(
+        "SALE: #{listing_id} {buyer} paid {}u6 (fee {fee}) escrow until {}",
+        listing.price_usdt,
+        listing.escrow_until
     );
-
-    buyer_player.templates = if buyer_player.templates.is_empty() {
-        template_json
-    } else {
-        format!("{},{}", buyer_player.templates, template_json)
-    };
-
-    ctx.db.player().address().update(buyer_player);
-
-    tracing::info!("Template purchased: {} by {}", listing_id, buyer);
+    let _ = seller_payout; // credited on escrow release
+    Ok(())
 }
 
-/// Cleanup listings antigos não vendidos (maior que 30 dias)
-pub fn cleanup_old_listings(ctx: &ReducerContext) {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+/// Release the escrow to the seller (called after the 48 h window, or
+/// explicitly). 5% platform fee already withheld at purchase time.
+pub fn release_escrow(ctx: &ReducerContext, listing_id: u64) -> Result<(), String> {
+    let Some(mut listing) = ctx
+        .db
+        .market_listing()
+        .listing_id()
+        .find(listing_id)
+    else {
+        return Err("Listing not found".to_string());
+    };
+    if !listing.is_sold || listing.escrow_until == 0 {
+        return Err("Listing has no pending escrow".to_string());
+    }
+    let now = now_secs(ctx);
+    if now < listing.escrow_until {
+        return Err("Escrow window not over".to_string());
+    }
 
-    let cutoff = now - (30 * 24 * 3600); // 30 dias
+    let fee = permille_of(listing.price_usdt, PLATFORM_FEE_PERMILLE);
+    let payout = listing.price_usdt - fee;
+    if let Some(mut s) = crate::economy::find_player(ctx, &listing.seller) {
+        add_usdt(ctx, &mut s, payout, "escrow_release");
+        ctx.db.player().address().update(s);
+    }
 
-    // Buscar listings antigos e marcá-los como expirados
-    for mut listing in ctx.db.market_listing().iter() {
-        if !listing.sold && listing.published_at < cutoff {
-            let id = listing.listing_id;
-            listing.sold = true;
-            ctx.db.market_listing().listing_id().update(listing);
-            tracing::debug!("Expired old listing: {}", id);
+    listing.escrow_until = 0;
+    ctx.db.market_listing().listing_id().update(listing);
+    tracing::info!("ESCROW: #{listing_id} released {payout}u6 to seller");
+    Ok(())
+}
+
+/// Dispute: buyer gets a refund minus a 2% penalty, listing removed
+/// (PROPOSAL 4.2 — automatic buyer-wins path).
+pub fn dispute(ctx: &ReducerContext, buyer: &str, listing_id: u64) -> Result<(), String> {
+    let Some(mut listing) = ctx
+        .db
+        .market_listing()
+        .listing_id()
+        .find(listing_id)
+    else {
+        return Err("Listing not found".to_string());
+    };
+    if listing.buyer.as_deref() != Some(buyer) {
+        return Err("Only the buyer can dispute".to_string());
+    }
+    if !listing.is_sold || listing.escrow_until == 0 {
+        return Err("Nothing to dispute".to_string());
+    }
+
+    let penalty = permille_of(listing.price_usdt, DISPUTE_REFUND_PENALTY_PERMILLE);
+    let refund = listing.price_usdt - penalty;
+    if let Some(mut b) = crate::economy::find_player(ctx, buyer) {
+        add_usdt(ctx, &mut b, refund, "dispute_refund");
+        ctx.db.player().address().update(b);
+    }
+
+    listing.escrow_until = 0;
+    listing.disputed = true;
+    ctx.db.market_listing().listing_id().update(listing);
+    tracing::info!("DISPUTE: #{listing_id} refunded {refund}u6 minus 2% penalty");
+    Ok(())
+}
+
+/// Spec 011 FR8/F renewal: extend expiry (auto-renewed by the scheduler or
+/// manually) for 10G / 7 days (Ecosystem 2.4).
+pub fn renew(ctx: &ReducerContext, seller: &str, listing_id: u64) -> Result<(), String> {
+    let Some(mut listing) = ctx
+        .db
+        .market_listing()
+        .listing_id()
+        .find(listing_id)
+    else {
+        return Err("Listing not found".to_string());
+    };
+    if listing.seller != seller {
+        return Err("Only the seller can renew".to_string());
+    }
+    if listing.is_sold {
+        return Err("Sold listings cannot be renewed".to_string());
+    }
+
+    let mut p = crate::economy::find_player(ctx, &seller.to_lowercase())
+        .ok_or_else(|| "Player not found".to_string())?;
+    spend_gold(ctx, &mut p, LISTING_RENEWAL_COST, "renew_listing")?;
+
+    let now = now_secs(ctx);
+    listing.expires_at = listing.expires_at.max(now) + LISTING_RENEWAL_PERIOD;
+    ctx.db.market_listing().listing_id().update(listing);
+    tracing::info!("RENEW: #{listing_id} renewed by {seller}");
+    Ok(())
+}
+
+/// Scheduler (hourly): deactivate expired listings past the 24 h grace
+/// period (Ecosystem 2.4); release matured escrows.
+pub fn cleanup(ctx: &ReducerContext) {
+    let now = now_secs(ctx);
+    let mut expired = 0u64;
+    let mut released = 0u64;
+
+    let listing_ids: Vec<u64> = ctx.db.market_listing().iter().map(|l| l.listing_id).collect();
+    for id in listing_ids {
+        let Some(mut l) = ctx.db.market_listing().listing_id().find(id) else {
+            continue;
+        };
+        if !l.is_sold && l.expires_at + LISTING_GRACE_SECS < now {
+            // Expired: remove (publish gold was already spent).
+            ctx.db.market_listing().listing_id().delete(l.listing_id);
+            expired += 1;
+        } else if l.is_sold && l.escrow_until > 0 && l.escrow_until <= now && !l.disputed {
+            drop(l);
+            let _ = release_escrow(ctx, id);
+            released += 1;
         }
     }
-}
-
-/// Gerar ID único pra listing (simplificado)
-fn generate_listing_id() -> u64 {
-    static mut COUNTER: u64 = 0;
-    unsafe {
-        COUNTER += 1;
-        COUNTER
+    if expired > 0 || released > 0 {
+        tracing::info!("MARKET-TICK: {expired} expired, {released} escrow released");
     }
 }

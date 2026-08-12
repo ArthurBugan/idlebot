@@ -3,10 +3,13 @@ name = "idlecore-core"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["bevy"]
+bevy = ["dep:bevy"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-chrono = { workspace = true }
 rand = { workspace = true }
 tracing = { workspace = true }
-bevy = { workspace = true }
+bevy = { workspace = true, optional = true }

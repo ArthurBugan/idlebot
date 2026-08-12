@@ -16,6 +16,7 @@ mod minimap;
 mod plugins;
 mod skins;
 mod inventory;
+mod net;
 mod fps_counter;
 mod world_floor;
 
@@ -52,6 +53,8 @@ fn main() {
         .add_plugins(skins::SkinsPlugin)
         // .add_plugins(inventory::InventoryPlugin)
         .add_plugins(fps_counter::FpsCounterPlugin)
+        .add_plugins(net::plugin::NetPlugin)
+        .add_plugins(net::hud::NetHudPlugin)
         .insert_resource(PlayerTransform::default())
         .insert_resource(debug_panel::DebugPanelOpen(false))
         .insert_resource(idle::IdleGainsState::default())

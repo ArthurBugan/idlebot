@@ -1,93 +1,83 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+//! Voice channels (Spec 005) — auto-created per hex, active at 2+ players,
+//! destroyed after 5 minutes of emptiness (FR1-FR4).
+
 use spacetimedb::{ReducerContext, Table};
-use crate::types::VoiceChannelDbEntry;
-use crate::types::voice_channel;
+use crate::types::{now_secs, voice_channel, VoiceChannel};
 
-/// Join channel de voz
-pub fn join_channel(ctx: &ReducerContext, wallet_address: &str, hex_id: u64) {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+/// Spec 005 FR4: empty-channel destruction timeout.
+pub const CHANNEL_EMPTY_TIMEOUT_SECS: u64 = 300;
 
-    // Buscar ou criar channel
-    let channel_entry = ctx.db.voice_channel().iter()
-        .find(|ch| ch.hex_id == hex_id);
-
-    match channel_entry {
-        Some(mut ch) => {
-            // Player already present or trying to rejoin. Update activity.
-            let mut players: Vec<String> = serde_json::from_str(&ch.players).unwrap_or_default();
-            if !players.contains(&wallet_address.to_string()) {
-                // New player joining existing channel
-                players.push(wallet_address.to_string());
-                ch.players = serde_json::to_string(&players).unwrap();
-                ch.last_activity = now;
-
-                // Transition to active state if the second player joins
-                if players.len() >= 2 && !ch.is_active {
-                    ch.is_active = true;
-                }
-                ctx.db.voice_channel().hex_id().update(ch);
+/// Spec 005 FR2/FR3: join the channel for a hex (auto-creating it).
+pub fn join(ctx: &ReducerContext, address: &str, hex_id: u64) -> Result<(), String> {
+    let now = now_secs(ctx);
+    let mut players: Vec<String> = {
+        let mut ch = match ctx.db.voice_channel().hex_id().find(hex_id) {
+            Some(ch) => ch,
+            None => {
+                ctx.db.voice_channel().insert(VoiceChannel {
+                    hex_id,
+                    players: serde_json::to_string(&vec![address.to_lowercase()]).unwrap(),
+                    created_at: now,
+                    last_activity: now,
+                    is_active: false,
+                });
+                return Ok(());
             }
+        };
+        let list: Vec<String> = serde_json::from_str(&ch.players).unwrap_or_default();
+        if list.iter().any(|p| p == &address.to_lowercase()) {
+            return Ok(()); // already in channel
         }
-        None => {
-            // First player joins: create PENDING channel.
-            let players = vec![wallet_address.to_string()];
-            let channel = VoiceChannelDbEntry {
-                hex_id,
-                players: serde_json::to_string(&players).unwrap(),
-                created_at: now,
-                last_activity: now,
-                is_active: false, // <-- NEW: Starts inactive/pending
-            };
-            ctx.db.voice_channel().insert(channel);
+        let mut list = list;
+        list.push(address.to_lowercase());
+
+        // Spec 005 FR2: activate at 2 players.
+        if list.len() >= 2 && !ch.is_active {
+            ch.is_active = true;
+            tracing::info!("VOICE: channel {hex_id} activated ({} players)", list.len());
         }
-    }
+        ch.players = serde_json::to_string(&list).unwrap();
+        ch.last_activity = now;
+        ctx.db.voice_channel().hex_id().update(ch);
+        list
+    };
+    let _ = &mut players;
+    Ok(())
 }
 
-/// Leave channel de voz
-pub fn leave_channel(ctx: &ReducerContext, wallet_address: &str, hex_id: u64) {
-    let ch = ctx.db.voice_channel().iter()
-        .find(|ch| ch.hex_id == hex_id);
-
-    if let Some(mut ch) = ch {
-        let mut players: Vec<String> = serde_json::from_str(&ch.players).unwrap_or_default();
-        players.retain(|p| p != wallet_address);
-
-        if players.is_empty() {
-            // If the last player leaves, destroy channel.
-            ctx.db.voice_channel().delete(ch);
-        } else {
-            // Players remain, update activity. is_active state persists.
-            ch.players = serde_json::to_string(&players).unwrap();
-            ch.last_activity = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-            ctx.db.voice_channel().hex_id().update(ch);
-        }
+/// Spec 005 FR3: leave a channel; the channel persists (empty) until the
+/// cleanup scheduler destroys it after 5 minutes.
+pub fn leave(ctx: &ReducerContext, address: &str, hex_id: u64) -> Result<(), String> {
+    let Some(mut ch) = ctx.db.voice_channel().hex_id().find(hex_id) else {
+        return Ok(());
+    };
+    let mut list: Vec<String> = serde_json::from_str(&ch.players).unwrap_or_default();
+    list.retain(|p| p != &address.to_lowercase());
+    ch.players = serde_json::to_string(&list).unwrap();
+    ch.last_activity = now_secs(ctx);
+    if list.is_empty() {
+        ch.is_active = false;
     }
+    ctx.db.voice_channel().hex_id().update(ch);
+    Ok(())
 }
 
-/// Cleanup channels inativos (maior que 5 minutos sem atividade)
-pub fn cleanup_inactive_channels(ctx: &ReducerContext) {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    let timeout = 300; // 5 minutos
-
-    // Buscar channels inativos
-    let channels: Vec<VoiceChannelDbEntry> = ctx.db.voice_channel().iter().collect();
-
-    for ch in channels {
-        let time_diff = now - ch.last_activity;
-        if time_diff > timeout {
-            let cid = ch.hex_id;
-            ctx.db.voice_channel().delete(ch);
-            tracing::debug!("Removed inactive voice channel: {}", cid);
+/// Schedule cleanup (runs every minute): destroy channels empty ≥ 5 min.
+pub fn cleanup(ctx: &ReducerContext) {
+    let now = now_secs(ctx);
+    let mut removed = 0u64;
+    let channel_ids: Vec<u64> = ctx.db.voice_channel().iter().map(|c| c.hex_id).collect();
+    for hex_id in channel_ids {
+        let Some(ch) = ctx.db.voice_channel().hex_id().find(hex_id) else {
+            continue;
+        };
+        let players: Vec<String> = serde_json::from_str(&ch.players).unwrap_or_default();
+        if players.is_empty() && now.saturating_sub(ch.last_activity) >= CHANNEL_EMPTY_TIMEOUT_SECS {
+            ctx.db.voice_channel().hex_id().delete(ch.hex_id);
+            removed += 1;
         }
+    }
+    if removed > 0 {
+        tracing::info!("VOICE-TICK: destroyed {removed} idle channels");
     }
 }
