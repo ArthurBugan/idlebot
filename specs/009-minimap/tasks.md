@@ -32,9 +32,9 @@
 - [ ] **T2.7** Add player dots and object markers to global map
 
 ## Phase 6: Teleport Integration
-- [ ] **T3.1** Add click-to-select hex on minimap
-- [ ] **T3.2** Populate teleport UI with selected destination
-- [ ] **T3.3** Handle teleport confirmation from minimap selection
+- [x] **T3.1** Left-click selects hex — selection ring + selected_hex/selected_px in MinimapState
+- [x] **T3.2** Teleport (hex) HUD button + stats line shows dest/cost
+- [x] **T3.3** Confirmation — teleport_player reducer with cooldown/cost reporting
 
 ## Phase 7: Testing
 - [x] **T4.1** Minimap renders hexes correctly (test_minimap_new, test_minimap_viewport_objects)

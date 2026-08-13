@@ -17,6 +17,7 @@ enum HudAction {
     ClaimIdle,
     BuyBicycle,
     EquipBicycle,
+    Teleport,
 }
 
 const TEXT_COLOR: Color = Color::srgb(0.9, 0.95, 1.0);
@@ -86,6 +87,7 @@ fn spawn_hud(mut commands: Commands) {
             ("Claim Idle Gains", HudAction::ClaimIdle),
             ("Buy Bicycle (500G)", HudAction::BuyBicycle),
             ("Equip Bicycle", HudAction::EquipBicycle),
+            ("Teleport (hex)", HudAction::Teleport),
         ] {
             parent
                 .spawn((
@@ -113,6 +115,7 @@ fn spawn_hud(mut commands: Commands) {
 /// Refresh status/stats/log text every frame from `Net` + `ClientPlayer`.
 fn update_hud_text(
     net: Res<Net>,
+    minimap_state: Res<crate::minimap::MinimapState>,
     player: Option<Query<&ClientPlayer>>,
     mut status_q: Query<&mut Text, (With<HudStatusText>, Without<HudStatsText>, Without<HudLogText>)>,
     mut stats_q: Query<&mut Text, (With<HudStatsText>, Without<HudStatusText>, Without<HudLogText>)>,
@@ -176,6 +179,14 @@ fn update_hud_text(
                 }
             }
         }
+        // Spec 009 T3.2: show the selected teleport destination and cost.
+        match minimap_state.selected_hex {
+            Some((q, r)) => {
+                let cost = (100.0 * (p.level as f32).sqrt()) as u64;
+                stats.push_str(&format!("\nTeleport -> hex ({q},{r}) cost {cost}G"));
+            }
+            None => {}
+        }
     }
     if let Ok(mut t) = stats_q.single_mut() {
         t.0 = stats;
@@ -207,6 +218,18 @@ pub(crate) fn reducer_report(name: &'static str, tx: std::sync::mpsc::Sender<Net
     }
 }
 
+/// Reducer callback for `teleport_player` (SDK drops the (x, y) return value).
+fn teleport_report(name: &'static str, tx: std::sync::mpsc::Sender<NetEvent>, q: i32, r: i32) -> impl FnOnce(&super::gen::ReducerEventContext, Result<Result<(), String>, spacetimedb_sdk::__codegen::InternalError>) + Send + 'static {
+    move |_ctx, res| {
+        let (ok, msg) = match &res {
+            Ok(Ok(())) => (true, format!("teleport ok -> hex ({q},{r})")),
+            Ok(Err(e)) => (false, e.clone()),
+            Err(e) => (false, format!("send error: {e}")),
+        };
+        let _ = tx.send(NetEvent::ReducerResult { name, ok, msg });
+    }
+}
+
 /// Invoke a reducer, reporting local send failures to the HUD log.
 pub(crate) fn send_reducer(
     conn: &DbConnection,
@@ -219,7 +242,12 @@ pub(crate) fn send_reducer(
 }
 
 /// Click handling: invoke the corresponding server reducer.
-fn hud_buttons(mut net: ResMut<Net>, player: Option<Query<&ClientPlayer>>, mut interactions: Query<(&Interaction, &HudAction), Changed<Interaction>>) {
+fn hud_buttons(
+    mut net: ResMut<Net>,
+    mut minimap_state: ResMut<crate::minimap::MinimapState>,
+    player: Option<Query<&ClientPlayer>>,
+    mut interactions: Query<(&Interaction, &HudAction), Changed<Interaction>>,
+) {
     for (interaction, action) in interactions.iter_mut() {
         if *interaction != Interaction::Pressed {
             continue;
@@ -258,6 +286,17 @@ fn hud_buttons(mut net: ResMut<Net>, player: Option<Query<&ClientPlayer>>, mut i
                     }
                     HudAction::EquipBicycle => {
                         send_reducer(conn, &tx, |r| r.equip_vehicle_then("Bicycle".to_string(), reducer_report("equip_vehicle", tx.clone(), 0)));
+                    }
+                    HudAction::Teleport => {
+                        let Some((q, r)) = minimap_state.selected_hex else {
+                            let _ = tx.send(NetEvent::ServerMessage(
+                                "Teleport: left-click a hex on the minimap first".to_string(),
+                            ));
+                            continue;
+                        };
+                        send_reducer(conn, &tx, |reducers| reducers.teleport_player_then(q, r, teleport_report("teleport", tx.clone(), q, r)));
+                        minimap_state.selected_hex = None;
+                        minimap_state.selected_px = None;
                     }
                     HudAction::Connect => {}
                 }

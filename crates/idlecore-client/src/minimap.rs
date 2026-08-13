@@ -126,6 +126,10 @@ pub struct MinimapState {
     pub visible: bool,
     pub player_pos: Option<Vec2>,
     pub facing_angle: f32,
+    /// Click-to-teleport target: axial (q, r) of the last left-clicked hex.
+    pub selected_hex: Option<(i32, i32)>,
+    /// Pixel position (minimap-space) at which to draw the selection ring.
+    pub selected_px: Option<(f32, f32)>,
 }
 
 impl Default for MinimapState {
@@ -137,6 +141,8 @@ impl Default for MinimapState {
             visible: true,
             player_pos: None,
             facing_angle: 0.0,
+            selected_hex: None,
+            selected_px: None,
         }
     }
 }
@@ -298,6 +304,10 @@ pub struct NavMarkerNode;
 pub struct RemotePlayerDot {
     pub address: String,
 }
+
+/// Selection ring marking the click-to-teleport target hex.
+#[derive(Component)]
+pub struct SelectionMarker;
 
 // ============================================================================
 // Texture Generation
@@ -830,6 +840,29 @@ pub fn handle_input(
             minimap_waypoints.next_id += 1;
         }
     }
+
+    if mouse_buttons.just_pressed(MouseButton::Left) {
+        if let (Some(player_pos), Some(mm_pos)) =
+            (minimap_state.player_pos, get_minimap_mouse_pos(&windows, minimap_state.mm_size()))
+        {
+            let pixel_scale = minimap_state.pixel_scale();
+            let mm_center = minimap_state.mm_size() / 2.0;
+            let rotation = minimap_state.rotation.map_rotation(minimap_state.facing_angle);
+            let (wx, wz) = map_pixel_to_world(
+                mm_pos,
+                (player_pos.x, player_pos.y),
+                pixel_scale,
+                mm_center,
+                rotation,
+            );
+            let (q, r) = world_pos_to_hex(wx, wz, WorldGenConfig::HEX_SIZE);
+            minimap_state.selected_hex = Some((q, r));
+            minimap_state.selected_px = Some(mm_pos);
+        } else {
+            minimap_state.selected_hex = None;
+            minimap_state.selected_px = None;
+        }
+    }
 }
 
 /// Convert screen cursor position to minimap-local pixel coordinates.
@@ -1265,4 +1298,40 @@ pub fn render_remote_players(
             ));
         });
     }
+}
+
+// ============================================================================
+// Teleport Selection Marker
+// ============================================================================
+
+/// Render a ring around the last left-clicked hex (Spec 009 T3.1).
+pub fn render_selection_marker(
+    minimap_state: Res<MinimapState>,
+    mut commands: Commands,
+    map_content_query: Query<Entity, With<MapContent>>,
+    marker_query: Query<Entity, With<SelectionMarker>>,
+) {
+    for entity in marker_query.iter() {
+        commands.entity(entity).despawn();
+    }
+    let Some(px) = minimap_state.selected_px else { return };
+    let Ok(map_content_entity) = map_content_query.single() else { return };
+    let size = 22.0;
+    commands.entity(map_content_entity).with_children(|parent| {
+        parent.spawn((
+            Name::new("selection-marker"),
+            SelectionMarker,
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Px(size),
+                height: Val::Px(size),
+                left: Val::Px(px.0 - size / 2.0),
+                top: Val::Px(px.1 - size / 2.0),
+                border: UiRect::all(Val::Px(2.0)),
+                ..default()
+            },
+            BorderColor::all(Color::srgb(0.3, 1.0, 0.5)),
+            UiTransform::IDENTITY,
+        ));
+    });
 }

@@ -82,6 +82,8 @@ fn main() {
             minimap::render_remote_players
                 .after(minimap::render_nav_markers)
                 .after(minimap::sync_player_state),
+            minimap::render_selection_marker
+                .after(minimap::render_remote_players),
             minimap::resize_minimap_container
                 .after(minimap::handle_input),
             minimap::update_player_marker

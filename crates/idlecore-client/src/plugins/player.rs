@@ -217,6 +217,9 @@ fn player_movement(
 
     let dir = input.normalize_or_zero();
     let mut speed = 150.0;
+    if let Some(v) = &player.owned_vehicle {
+        speed *= v.speed_multiplier();
+    }
     if keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight) {
         speed *= 100.0;
     }

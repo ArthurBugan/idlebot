@@ -411,11 +411,20 @@ fn sync_remote_players(
         if row.address == *mine {
             // Authoritative state for our own wallet → mirror into the local sim.
             if let Ok(mut p) = player.single_mut() {
+                let old_level = p.level;
                 p.gold = row.gold;
                 p.usdt = row.usdt;
                 p.xp = row.total_xp;
                 p.level = row.level;
                 p.eco_points = row.eco_points as u64;
+                // Spec 006 T6.3: restore equipped vehicle from the authoritative row.
+                p.owned_vehicle = vehicle_from_str(&row.vehicle);
+                if row.level > old_level {
+                    let _ = net.sender().send(NetEvent::ServerMessage(format!(
+                        "LEVEL UP! Now level {}",
+                        row.level
+                    )));
+                }
             }
             continue;
         }
@@ -467,5 +476,17 @@ fn sync_remote_players(
         if !known.contains(&marker.0) {
             commands.entity(entity).despawn();
         }
+    }
+}
+
+/// Map a server-side vehicle string back to the core Vehicle enum.
+fn vehicle_from_str(s: &str) -> Option<idlecore_core::Vehicle> {
+    match s {
+        "Bicycle" => Some(idlecore_core::Vehicle::Bicycle),
+        "Scooter" => Some(idlecore_core::Vehicle::Scooter),
+        "Motorcycle" => Some(idlecore_core::Vehicle::Motorcycle),
+        "Boat" => Some(idlecore_core::Vehicle::Boat),
+        "Airplane" => Some(idlecore_core::Vehicle::Airplane),
+        _ => None,
     }
 }

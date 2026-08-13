@@ -10,10 +10,10 @@
 - [x] **T1.4** Create Vehicle struct with type, speed_multiplier, gold_cost
 
 ## Phase 2: Vehicle Purchase (FR1)
-- [ ] **T2.1** Implement purchase_vehicle() - deduct gold, add to player inventory
-- [ ] **T2.2** Validate player has enough gold
-- [ ] **T2.3** Mark vehicle as purchased
-- [ ] **T2.4** Return success/failure to client
+- [x] **T2.1** purchase_vehicle() — buy_vehicle reducer deducts gold, inserts player_vehicle
+- [x] **T2.2** Validate gold — spend_gold rejects insufficient balance
+- [x] **T2.3** Mark purchased — player_vehicle row insert
+- [x] **T2.4** Return success/failure — Result<String, String> → HUD log
 
 ## Phase 3: Vehicle Equipment (FR2)
 - [x] **T3.1** Implement equip_vehicle() - set equipped flag
@@ -30,12 +30,12 @@
 ## Phase 5: Vehicle Display (FR4)
 - [ ] **T5.1** Render vehicle on player character (top-down)
 - [ ] **T5.2** Show vehicle icon/type indicator
-- [ ] **T5.3** Update visual when player equips/un equips
+- [x] **T5.3** Equip state update — HUD vehicle stat mirrors authoritative row; speed multiplier applied
 
 ## Phase 6: Persistence (FR5)
-- [ ] **T6.1** Store purchased vehicles in DB
-- [ ] **T6.2** Store equipped vehicle in DB
-- [ ] **T6.3** Restore vehicle state on reconnect
+- [x] **T6.1** Persist purchases — player_vehicle table
+- [x] **T6.2** Persist equipped — player.vehicle + equipped flag
+- [x] **T6.3** Restore on reconnect — sync_remote_players mirrors row.vehicle into ClientPlayer
 
 ## Phase 7: Testing
 - [ ] **T7.1** Test purchase with sufficient gold
