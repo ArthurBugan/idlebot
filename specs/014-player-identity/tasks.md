@@ -15,10 +15,10 @@
 - [ ] **T2.5** Implement get_player_by_address()
 
 ## Phase 3: Database Integration
-- [ ] **T3.1** Create SpacetimeDB player table schema (matches spec)
-- [ ] **T3.2** Implement create_player_spacetimedb() — insert new player
+- [x] **T3.1** Player schema — types.rs game player row (address PK, stats, positions)
+- [x] **T3.2** create_player — login reducer upserts the player row
 - [ ] **T3.3** Implement update_player_spacetimedb() — update display_name, avatar, bio
-- [ ] **T3.4** Implement get_player_spacetimedb() — look up by address
+- [x] **T3.4** get_player — client reads subscribed player rows by address
 
 ## Phase 4: SpacetimeDB Indexes
 - [ ] **T3.5** Create index on players.address (unique)

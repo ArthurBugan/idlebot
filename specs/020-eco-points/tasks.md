@@ -5,14 +5,14 @@
 ## Phase 1: Data Model
 - [ ] **T1.1** Define EcoPointSource enum (CleanPollution, PlantTree, HarvestTree, DailyBonus)
 - [ ] **T1.2** Define EcoPoints struct (total_earned, total_spent, current)
-- [ ] **T1.3** Implement add_points() — route to correct source
-- [ ] **T1.4** Implement spend_points() — prevent negative
+- [x] **T1.3** add_points — economy::add_eco_points with action routing
+- [x] **T1.4** spend_points — economy::spend_eco_points rejects negative
 
 ## Phase 2: Hex Eco Rating
-- [ ] **T2.1** Define HexEcoRating struct (rating 0-100, last_updated, decay_rate, eco_actions)
-- [ ] **T2.2** Implement apply_action() — handle clean/plant/harvest/decay
-- [ ] **T2.3** Implement decay_daily() — check elapsed ≥ 86400s, apply decay
-- [ ] **T2.4** Implement get_eco_tint() — HSL green color based on rating
+- [x] **T2.1** HexEcoRating — hex_tile.eco_rating (0-100 int on the row)
+- [x] **T2.2** apply_action — clean/plant/harvest update hex state; hourly_eco_tick adjusts ratings
+- [x] **T2.3** decay — hourly_eco_tick decays ratings on schedule
+- [x] **T2.4** get_eco_tint — HUD shows hex eco rating (Lush/Healthy/Strained/Degraded)
 - [ ] **T2.5** Implement get_eco_title() — Eco Enthusiast (100+), Eco Warrior (500+), Eco Legend (1000+)
 
 ## Phase 3: Cosmetic Unlocks
@@ -20,7 +20,7 @@
 - [ ] **T3.2** Implement check_eco_unlock() — verify EP threshold met
 
 ## Phase 4: Scheduler Integration
-- [ ] **T4.1** Create eco_decay_scheduler() — runs daily, decays all hexes
+- [x] **T4.1** eco scheduler — hourly_eco_tick + weekly_audit in scheduler.rs
 - [ ] **T4.2** Implement atomic update (all-or-nothing)
 - [ ] **T4.3** Log scheduled action
 

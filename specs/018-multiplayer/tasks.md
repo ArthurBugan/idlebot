@@ -3,17 +3,17 @@
 > **Implementation Checklist**
 
 ## Phase 1: Connection Flow
-- [ ] **T1.1** Implement connect_to_spacetimedb() — wallet auth → JWT → connection
-- [ ] **T1.2** Subscribe to player_state table
-- [ ] **T1.3** Subscribe to hex_tiles table
-- [ ] **T1.4** Subscribe to voice_channels table
-- [ ] **T1.5** Subscribe to market_listings table
+- [x] **T1.1** connect_to_spacetimedb — DEMO_WALLET login flow in Net::connect
+- [x] **T1.2** player subscription — subscribe_to_all_tables
+- [x] **T1.3** hex_tiles subscription — subscribe_to_all_tables
+- [x] **T1.4** voice_channels subscription — subscribe_to_all_tables
+- [x] **T1.5** market_listings subscription — subscribe_to_all_tables
 
 ## Phase 2: Player State Sync
 - [ ] **T2.1** Define PlayerState struct (player_id, hex_id, position_x, position_y, velocity, vehicle_id, status, connected_at)
-- [ ] **T2.2** Implement handle_player_state_update() — sync to local state
-- [ ] **T2.3** Broadcast player position changes to other clients
-- [ ] **T2.4** Implement view radius filtering (3-hex radius, online only)
+- [x] **T2.2** handle_player_state_update — sync_remote_players mirrors rows into Net.players + markers
+- [x] **T2.3** Position broadcast — move_player_then sent while moving (0.75s throttle)
+- [x] **T2.4** View radius filtering — player rows beyond 3 hexes skipped (markers + minimap dots)
 
 ## Phase 3: Movement Prediction
 - [ ] **T3.1** Define PredictedMovement struct (local_position, local_hex)

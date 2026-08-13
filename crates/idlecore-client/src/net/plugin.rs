@@ -435,6 +435,23 @@ fn sync_remote_players(
     let Some(conn) = net.conn.as_ref() else { return };
     let Some(mine) = net.address.clone() else { return };
 
+    // Spec 018 T2.4: only players within 3 hexes are visible.
+    let own_hex: Option<(i32, i32)> = player
+        .single()
+        .ok()
+        .and_then(|p| p.current_hex.map(|h| (h.q, h.r)))
+        .or_else(|| {
+            player
+                .single()
+                .ok()
+                .map(|p| idlecore_core::hex::world_pos_to_hex(p.position.x, p.position.z, WorldGenConfig::HEX_SIZE))
+        });
+    let in_view = |row_hex_id: u64| -> bool {
+        let Some((q, r)) = own_hex else { return true };
+        let rc = idlecore_core::hex::HexCoord::from_id(row_hex_id);
+        axial_hex_distance((q, r), (rc.q, rc.r)) <= 3
+    };
+
     let rows: Vec<Player> = conn.db.player().iter().collect();
     let mut known: Vec<String> = Vec::new();
     for row in &rows {
@@ -456,6 +473,12 @@ fn sync_remote_players(
                     )));
                 }
             }
+            continue;
+        }
+        if !in_view(row.hex_id) {
+            // Outside the view radius: don't light the marker, but keep the
+            // row known so the marker despawn logic leaves it alone.
+            known.push(row.address.clone());
             continue;
         }
         known.push(row.address.clone());
@@ -490,13 +513,22 @@ fn sync_remote_players(
         } else {
             materials.add(StandardMaterial::from(Color::srgb(0.4, 0.4, 0.5)))
         };
-        commands.spawn((
-            RemotePlayerMarker(row.address.clone()),
-            Mesh3d(meshes.add(Cuboid::new(0.6, 1.2, 0.6))),
-            MeshMaterial3d(mat),
-            Transform::from_translation(pos),
-            RigidBody::Fixed,
-        ));
+        commands
+            .spawn((
+                RemotePlayerMarker(row.address.clone()),
+                Mesh3d(meshes.add(Cuboid::new(0.6, 1.2, 0.6))),
+                MeshMaterial3d(mat),
+                Transform::from_translation(pos),
+                RigidBody::Fixed,
+            ))
+            .with_child((
+                Name::new("player-name-label"),
+                Text2d::new(short_addr(&row.address)),
+                TextFont { font_size: 30.0.into(), ..default() },
+                TextColor(Color::srgb(0.95, 0.95, 1.0)),
+                TextShadow { color: Color::BLACK, offset: Vec2::new(1.0, 1.0) },
+                Transform::from_xyz(0.0, 1.8, 0.0),
+            ));
     }
 
     net.players.retain(|k, _| known.contains(k));
@@ -518,5 +550,21 @@ fn vehicle_from_str(s: &str) -> Option<idlecore_core::Vehicle> {
         "Boat" => Some(idlecore_core::Vehicle::Boat),
         "Airplane" => Some(idlecore_core::Vehicle::Airplane),
         _ => None,
+    }
+}
+
+/// Axial hex-grid distance (max of the three cube coordinates).
+fn axial_hex_distance(a: (i32, i32), b: (i32, i32)) -> i32 {
+    let dq = (a.0 - b.0).abs();
+    let dr = (a.1 - b.1).abs();
+    let ds = (a.0 + a.1 - b.0 - b.1).abs();
+    dq.max(dr).max(ds)
+}
+
+fn short_addr(s: &str) -> String {
+    if s.len() > 12 {
+        format!("{}...{}", &s[..5], &s[s.len() - 4..])
+    } else {
+        s.to_string()
     }
 }

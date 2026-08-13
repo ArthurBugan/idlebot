@@ -180,6 +180,13 @@ fn update_hud_text(
                 }
             }
         }
+        // Spec 020 T2.4: eco rating of the hex under the player.
+        if let Some(conn) = &net.conn {
+            let hex_id = crate::net::plugin::Net::hex_id_at(p.position.x, p.position.z);
+            if let Some(h) = conn.db.hex_tile().hex_id().find(&hex_id) {
+                stats.push_str(&format!("\nHex eco: {} {}", h.eco_rating, eco_title(h.eco_rating)));
+            }
+        }
         // Spec 006 T3.4: vehicle inventory from the subscription cache.
         if let (Some(conn), Some(mine)) = (&net.conn, &net.address) {
             let owned: Vec<String> = conn
@@ -319,5 +326,18 @@ fn hud_buttons(
                 }
             }
         }
+    }
+}
+
+/// Spec 020 T2.5-ish: title for a hex's eco rating.
+fn eco_title(rating: i32) -> &'static str {
+    if rating >= 80 {
+        "Lush"
+    } else if rating >= 50 {
+        "Healthy"
+    } else if rating >= 25 {
+        "Strained"
+    } else {
+        "Degraded"
     }
 }
