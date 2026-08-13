@@ -226,6 +226,9 @@ fn teleport_report(name: &'static str, tx: std::sync::mpsc::Sender<NetEvent>, q:
             Ok(Err(e)) => (false, e.clone()),
             Err(e) => (false, format!("send error: {e}")),
         };
+        if ok {
+            let _ = tx.send(NetEvent::Teleported { q, r });
+        }
         let _ = tx.send(NetEvent::ReducerResult { name, ok, msg });
     }
 }

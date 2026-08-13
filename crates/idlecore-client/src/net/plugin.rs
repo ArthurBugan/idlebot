@@ -33,6 +33,8 @@ pub enum NetEvent {
     ConnectError(String),
     Disconnected(String),
     ReducerResult { name: &'static str, ok: bool, msg: String },
+    /// A teleport confirmed by the server; the sim must move the player.
+    Teleported { q: i32, r: i32 },
     ServerMessage(String),
 }
 
@@ -107,7 +109,8 @@ impl Net {
     }
 
     /// Drain pending events and apply them to this resource.
-    pub fn drain(&mut self) {
+    pub fn drain(&mut self) -> Vec<(i32, i32)> {
+        let mut teleports = Vec::new();
         let mut pending = Vec::new();
         {
             let rx = self.rx.get_mut().unwrap();
@@ -155,9 +158,11 @@ impl Net {
                     };
                     self.log_line(&line);
                 }
+                NetEvent::Teleported { q, r } => teleports.push((q, r)),
                 NetEvent::ServerMessage(msg) => self.log_line(&msg),
             }
         }
+        teleports
     }
 
     fn log_line(&mut self, line: &str) {
@@ -262,6 +267,7 @@ impl Net {
         HexCoord::new(q, r).to_id()
     }
 }
+
 
 /// Marker component for spawned remote-player markers.
 #[derive(Component)]
@@ -380,8 +386,32 @@ fn auto_connect(mut net: ResMut<Net>) {
 }
 
 /// Move events off the queue before other systems read the resource.
-fn net_drain(mut net: ResMut<Net>) {
-    net.drain();
+fn net_drain(
+    mut net: ResMut<Net>,
+    mut bodies: Query<
+        (&mut Transform, &mut Velocity, &mut crate::player::ClientPlayer),
+        With<crate::plugins::player::PhysicsBody>,
+    >,
+) {
+    let teleports = net.drain();
+    if teleports.is_empty() {
+        return;
+    }
+    let Ok((mut transform, mut velocity, mut player)) = bodies.single_mut() else {
+        return;
+    };
+    for (q, r) in teleports {
+        let (wx, wz) = idlecore_core::hex_grid::HexGrid::axial_to_world(
+            q,
+            r,
+            WorldGenConfig::HEX_SIZE,
+        );
+        let y = transform.translation.y.max(0.5);
+        transform.translation = Vec3::new(wx, y, wz);
+        velocity.linear = Vec3::ZERO;
+        player.position = Vec3::new(wx, y, wz);
+        player.current_hex = Some(crate::player::CurrentHex { q, r });
+    }
 }
 
 /// Pump the SDK connection (processes incoming messages and pending sends).
