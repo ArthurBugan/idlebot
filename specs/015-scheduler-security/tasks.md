@@ -3,27 +3,27 @@
 > **Implementation Checklist**
 
 ## Phase 1: Scheduler Infrastructure
-- [ ] **T1.1** Define ScheduledFunction struct (name, interval, is_running, last_run, error_count)
-- [ ] **T1.2** Create Scheduler struct with 4 scheduled functions
-- [ ] **T1.3** Implement validate_scheduled_context() — check server-only
-- [ ] **T1.4** Implement atomic_scheduled_update() — all-or-nothing
+- [x] **T1.1** ScheduledFunction — scheduled_* tables with interval + scheduled_log rows
+- [x] **T1.2** Scheduler — register_all: idle gains, plant growth, voice cleanup, market cleanup, eco maintenance
+- [x] **T1.3** Server-only execution — spacetimedb schedulers only run module-side
+- [x] **T1.4** Atomic updates — reducer transactions per scheduled run
 
 ## Phase 2: Idle Gains Scheduler
-- [ ] **T2.1** Implement idle_gains_scheduler() — runs every 5 min
-- [ ] **T2.2** Calculate elapsed offline time per player
-- [ ] **T2.3** Look up idle gains table (level bracket → XP/gold)
-- [ ] **T2.4** Atomic update: deduct pending, add earned
-- [ ] **T2.5** Log scheduled action
+- [x] **T2.1** idle_gains_scheduler — 300s interval (register_all)
+- [x] **T2.2** Elapsed idle time — server computes from last_action_at
+- [x] **T2.3** Idle gains lookup — level-bracketed pending XP/gold rows
+- [x] **T2.4** Atomic claim — claim_idle_gains transacts gains
+- [x] **T2.5** Scheduled logging — audit() appends scheduled_log rows
 
 ## Phase 3: Plant Updates Scheduler
-- [ ] **T2.6** Implement plant_updates_scheduler() — runs every 10 sec
-- [ ] **T2.7** Check plant maturity: if mature and not harvested, set Ready
+- [x] **T2.6** plant_updates_scheduler — 10s sweep (register_all)
+- [x] **T2.7** Maturity sweep — scheduled_plant_growth
 - [ ] **T2.8** Validate server-only execution
 
 ## Phase 4: Voice Cleanup Scheduler
-- [ ] **T3.1** Implement voice_cleanup_scheduler() — runs every 1 min
-- [ ] **T3.2** Check each channel for emptiness
-- [ ] **T3.3** If empty > 300 seconds, destroy channel
+- [x] **T3.1** voice_cleanup_scheduler — 60s interval
+- [x] **T3.2** Empty-channel check — scheduled_voice_cleanup
+- [x] **T3.3** 300s idleness destroy — scheduled_voice_cleanup
 - [ ] **T3.4** Notify affected players
 
 ## Phase 5: Listing Cleanup Scheduler

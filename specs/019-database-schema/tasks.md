@@ -3,18 +3,18 @@
 > **Implementation Checklist**
 
 ## Phase 1: Core Tables
-- [ ] **T1.1** Define Player table (player_id UUID PK, address TEXT UNIQUE, display_name, avatar, level, total_xp, gold, eco_points, position, hex_q, hex_r, vehicle_id, cosmetics_hash, status, last_login, created_at)
-- [ ] **T1.2** Define HexTile table (hex_q, hex_r, hex_s, hex_id u64 PK, terrain, eco_rating, has_plant, has_pollution, plant_type, elevation)
-- [ ] **T1.3** Define Vehicle table (vehicle_id PK, player_id UUID FK, vehicle_type, purchased_at, equipped)
-- [ ] **T1.4** Define Cosmetic table (cosmetic_id PK, player_id UUID FK, category, cosmetic_type, purchased_at, equipped)
-- [ ] **T1.5** Define VoiceChannel table (channel_id UUID PK, hex_id, players, created_at, last_occupied, is_empty, peer_data)
-- [ ] **T1.6** Define MarketListing table (listing_id UUID PK, seller_id UUID FK, title, description, github_url, price_usdt, category, published_at, expires_at, is_sold, buyer_id)
-- [ ] **T1.7** Define IdleGain table (player_id UUID FK, pending_xp, pending_gold, last_calculated_at, claimed_at)
-- [ ] **T1.8** Define Transaction table (transaction_id UUID PK, player_id UUID FK, timestamp, action_type, gold_change, xp_change, eco_points_change, balance_after)
-- [ ] **T1.9** Define ScheduledFunctionState table (function_name, last_run_at, next_run_at, status, error_count)
+- [x] **T1.1** Player table — address PK (deviation: PK = address, UUID not used), stats + position + status columns
+- [x] **T1.2** HexTile table — hex_id PK, terrain, eco_rating, pollution, plant JSON
+- [x] **T1.3** player_vehicle table — vehicle_id PK, durability, maintenance
+- [x] **T1.4** player_cosmetic table — cosmetic_id PK + equipped flag
+- [x] **T1.5** voice_channel table — hex_id PK, participants, occupancy
+- [x] **T1.6** market_listing table — listing_id PK, escrow, dispute fields
+- [x] **T1.7** idle_gain table — player PK, pending_xp/pending_gold
+- [x] **T1.8** transaction table — ledger rows for every econ action
+- [x] **T1.9** Scheduled tables — scheduled_idle_gains/plant_growth/voice_cleanup/market_cleanup/eco_maintenance + scheduled_log audit
 
 ## Phase 2: Indexes
-- [ ] **T2.1** Create index on players(address) — unique
+- [x] **T2.1** Address index — PK on players.address (unique by definition)
 - [ ] **T2.2** Create index on hex_tiles(hex_id) — unique
 - [ ] **T2.3** Create index on vehicles(player_id) — FK
 - [ ] **T2.4** Create index on cosmetics(player_id) — FK

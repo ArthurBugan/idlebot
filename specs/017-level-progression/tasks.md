@@ -3,14 +3,14 @@
 > **Implementation Checklist**
 
 ## Phase 1: Data Model
-- [ ] **T1.1** Define ProgressionState struct (current_level, total_xp)
-- [ ] **T1.2** Define XP contribution per action (plant=5, harvest=10, clean=15)
-- [ ] **T1.3** Define IdleGainXP struct (level bracket → XP amount)
+- [x] **T1.1** ProgressionState — player.level + player.total_xp columns
+- [x] **T1.2** XP per action — plant=5, harvest=10, clean=15 (types.rs constants)
+- [x] **T1.3** IdleGainXP — scheduled idle_gain rows with pending_xp by level bracket
 
 ## Phase 2: Level Calculation
 - [x] **T2.1** Implement xp_for_next_level(level) → 100 * level^2 — server xp_to_next
-- [ ] **T2.2** Implement calculate_level(total_xp) — incremental loop
-- [ ] **T2.3** Verify: calculate_level(0)=1, calculate_level(100)=2, calculate_level(500)=3
+- [x] **T2.2** Level calc — server add_xp loop over xp_to_next thresholds
+- [x] **T2.3** Threshold math matches 100*level^2 (core progression.rs unit tests)
 - [ ] **T2.4** Implement cache_latest_level() for O(1) UI lookup
 
 ## Phase 3: XP Bar Calculation
@@ -20,11 +20,11 @@
 
 ## Phase 4: Server Authority
 - [x] **T4.1** Level calculation server-side — authoritative player row syncs level
-- [ ] **T4.2** Implement apply_xp(gained) — server calls calculate_level
-- [ ] **T4.3** Implement check_level_up() — return new_level if advanced
+- [x] **T4.2** apply_xp — add_xp applies gains server-side, level authoritative
+- [x] **T4.3** check_level_up — sync_remote_players logs LEVEL UP! on advance
 
 ## Phase 5: Level-Up Event
-- [ ] **T5.1** Emit LevelUp event on advancement
+- [x] **T5.1** LevelUp event — client HUD log on level advance
 - [ ] **T5.2** Broadcast to all subscribed clients
 - [ ] **T5.3** Client displays level-up notification
 
