@@ -22,8 +22,8 @@
 
 ## Phase 4: Client Integration
 - [ ] **T2.1** Subscribe to hex occupancy events on client
-- [ ] **T2.2** Update minimap when player position changes
-- [ ] **T2.3** Update minimap when other players enter/leave view
+- [x] **T2.2** Update minimap when player position changes — sync_player_state system
+- [x] **T2.3** Update minimap when other players enter/leave view — render_remote_players dots
 - [x] **T2.4** Render minimap overlay in bottom-right corner (minimap.rs)
 
 ## Phase 5: Global Map
@@ -39,7 +39,7 @@
 ## Phase 7: Testing
 - [x] **T4.1** Minimap renders hexes correctly (test_minimap_new, test_minimap_viewport_objects)
 - [ ] **T4.2** Player position updates in real-time
-- [ ] **T4.3** Other players visible (within range)
+- [x] **T4.3** Other players visible (within range) — orange dots on minimap
 - [x] **T4.4** Zoom in/out works smoothly (test_zoom_in_cycle, test_zoom_out_cycle)
 - [ ] **T4.5** Click hex selects destination correctly
 - [ ] **T4.6** Global map shows full grid

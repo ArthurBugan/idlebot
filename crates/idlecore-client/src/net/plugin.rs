@@ -301,7 +301,75 @@ impl Plugin for NetPlugin {
         app.insert_resource(Net::default())
             .add_systems(Startup, auto_connect)
             .add_systems(PreUpdate, net_drain)
-            .add_systems(Update, (net_advance, sync_remote_players));
+            .add_systems(Update, (net_advance, sync_remote_players, interact_key_press));
+    }
+}
+
+/// Server-side `Plant` serialised on the hex row (mirror of `types.rs`).
+#[derive(serde::Deserialize)]
+struct HexPlant {
+    plant_type: String,
+    planted_at: u64,
+    growth_time: u64,
+}
+
+/// Spec 004 T5.1 — `E` performs a context action on the hex under the player:
+/// harvest a mature crop, clean pollution, or plant Wheat on empty grass.
+fn interact_key_press(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    net: Res<Net>,
+    player: Option<Query<&ClientPlayer>>,
+) {
+    if !keyboard.just_pressed(KeyCode::KeyE) {
+        return;
+    }
+    if let Some(p) = player.as_ref().and_then(|q| q.single().ok()) {
+        let hex_id = Net::hex_id_at(p.position.x, p.position.z);
+        let Some(conn) = net.conn.as_ref() else {
+            net.push(NetEvent::ServerMessage("E: not connected".to_string()));
+            return;
+        };
+        let tx = net.sender();
+        let Some(hex) = conn.db.hex_tile().hex_id().find(&hex_id) else {
+            net.push(NetEvent::ServerMessage(format!("E: hex {hex_id} not found")));
+            return;
+        };
+        if let Some(plant_json) = &hex.plant {
+            match serde_json::from_str::<HexPlant>(plant_json) {
+                Ok(plant) => {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    if now >= plant.planted_at + plant.growth_time {
+                        super::hud::send_reducer(conn, &tx, |r| {
+                            r.harvest_then(hex_id, super::hud::reducer_report("harvest", tx.clone(), hex_id))
+                        });
+                    } else {
+                        net.push(NetEvent::ServerMessage(format!(
+                            "E: {} still growing ({}s left)",
+                            plant.plant_type,
+                            plant.planted_at + plant.growth_time - now
+                        )));
+                    }
+                }
+                Err(_) => net.push(NetEvent::ServerMessage("E: corrupt plant data".to_string())),
+            }
+        } else if hex.is_polluted {
+            super::hud::send_reducer(conn, &tx, |r| {
+                r.clean_then(hex_id, super::hud::reducer_report("clean", tx.clone(), hex_id))
+            });
+        } else if hex.terrain == "Grass" || hex.terrain == "Forest" {
+            super::hud::send_reducer(conn, &tx, |r| {
+                r.plant_then(
+                    hex_id,
+                    "Wheat".to_string(),
+                    super::hud::reducer_report("plant", tx.clone(), hex_id),
+                )
+            });
+        } else {
+            net.push(NetEvent::ServerMessage(format!("E: cannot interact on {}", hex.terrain)));
+        }
     }
 }
 
@@ -344,6 +412,7 @@ fn sync_remote_players(
             // Authoritative state for our own wallet → mirror into the local sim.
             if let Ok(mut p) = player.single_mut() {
                 p.gold = row.gold;
+                p.usdt = row.usdt;
                 p.xp = row.total_xp;
                 p.level = row.level;
                 p.eco_points = row.eco_points as u64;

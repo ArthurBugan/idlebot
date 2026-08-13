@@ -8,18 +8,18 @@
 - [ ] **T1.3** Define IdleGainXP struct (level bracket → XP amount)
 
 ## Phase 2: Level Calculation
-- [ ] **T2.1** Implement xp_for_next_level(level) → 100 * level^2
+- [x] **T2.1** Implement xp_for_next_level(level) → 100 * level^2 — server xp_to_next
 - [ ] **T2.2** Implement calculate_level(total_xp) — incremental loop
 - [ ] **T2.3** Verify: calculate_level(0)=1, calculate_level(100)=2, calculate_level(500)=3
 - [ ] **T2.4** Implement cache_latest_level() for O(1) UI lookup
 
 ## Phase 3: XP Bar Calculation
-- [ ] **T3.1** Implement xp_progress() → current_level / xp_for_next_level
-- [ ] **T3.2** Implement xp_remaining() → xp_for_next_level - current_level
-- [ ] **T3.3** Format as "X / Y XP to Level N"
+- [x] **T3.1** Implement xp_progress() — HUD shows current XP / threshold
+- [x] **T3.2** Implement xp_remaining() — HUD shows remaining XP
+- [x] **T3.3** Format as "X / Y XP to Level N" — HUD stats line
 
 ## Phase 4: Server Authority
-- [ ] **T4.1** Move level calculation to server-side
+- [x] **T4.1** Level calculation server-side — authoritative player row syncs level
 - [ ] **T4.2** Implement apply_xp(gained) — server calls calculate_level
 - [ ] **T4.3** Implement check_level_up() — return new_level if advanced
 

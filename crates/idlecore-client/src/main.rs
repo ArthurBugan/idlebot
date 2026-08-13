@@ -38,6 +38,7 @@ fn main() {
         .insert_resource(CameraZoom::default())
         .insert_resource(plugins::world::StreamingWorldResource::default())
         .insert_resource(minimap::MinimapState::default())
+        .insert_resource(minimap::RemoteDotEntityMap::default())
         .insert_resource(minimap::MinimapConfig::default())
         .insert_resource(minimap::MinimapWaypoints::default())
         .insert_resource(minimap::MinimapMarkers::default())
@@ -78,6 +79,9 @@ fn main() {
                 .after(minimap::handle_input),
             minimap::render_nav_markers
                 .after(minimap::render_visible_tiles),
+            minimap::render_remote_players
+                .after(minimap::render_nav_markers)
+                .after(minimap::sync_player_state),
             minimap::resize_minimap_container
                 .after(minimap::handle_input),
             minimap::update_player_marker
@@ -147,6 +151,7 @@ fn setup(
             velocity: Vec2::ZERO,
             current_hex: None,
             gold: 0,
+            usdt: 0,
             xp: 0,
             level: 1,
             eco_points: 0,

@@ -18,7 +18,7 @@
 
 ## Phase 3: Client Integration
 - [ ] **T3.1** `IdleGainsPanel` UI component in `client/src/idle.rs`
-- [ ] **T3.2** Gain display logic (pending_gold_text, format_offline_duration)
+- [x] **T3.2** Gain display — HUD stats show pending idle gains from idle_gain row
 - [ ] **T3.3** Handle gain application on login (`apply_idle_gains_to_panel`, `handle_claim_all_button`)
 - [ ] **T3.4** Disable claim after application (claim button interacts via InteractionAction)
 

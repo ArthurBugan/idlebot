@@ -17,13 +17,13 @@
 ## Phase 3: Economy Ledger
 - [x] **T1.9** Define Transaction struct (id, player_id, timestamp, action, gold_change, etc.)
 - [x] **T1.10** Create EconomyLedger for transaction recording
-- [ ] **T1.11** Add transaction creation to execute_action() - Client-side integration pending
+- [x] **T1.11** Add transaction creation — spend_gold/add_gold/add_xp/add_eco all append Transaction rows
 
 ## Phase 4: Integration
 - [x] **T2.1** Wire idle gains to gold earning (calculate_idle_gains in economy.rs)
 - [x] **T2.2** Wire action costs to economy (actions.rs, teleport.rs)
 - [x] **T2.3** Wire vehicle/cosmetic purchases to economy (partial — vehicle speed applied)
-- [ ] **T2.4** Display currencies in client UI
+- [x] **T2.4** Display currencies in client UI — Gold/USDT/Eco in HUD stats
 
 ## Phase 5: Testing
 - [x] **T3.1** Gold earned/spent correctly on all actions (test_idle_gains, test_execute_harvest_success)

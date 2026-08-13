@@ -144,16 +144,38 @@ fn update_hud_text(
     let mut stats = String::new();
     if let Some(p) = player.as_ref().and_then(|q| q.single().ok()) {
         stats.push_str(&format!(
-            "LV {} | XP {} | Gold {} | Eco {} | Vehicle {}",
+            "LV {} | XP {} | Gold {} | USDT {} | Eco {} | Vehicle {}",
             p.level,
             p.xp,
             p.gold,
+            p.usdt,
             p.eco_points,
             p.owned_vehicle
                 .as_ref()
                 .map(|v| format!("{v:?}"))
                 .unwrap_or_else(|| "None".to_string())
         ));
+        // Spec 017: XP progress toward next level (threshold 100 * level^2).
+        if p.level < 100 {
+            let need = 100u64 * (p.level as u64) * (p.level as u64);
+            stats.push_str(&format!(
+                "\nXP {}/{} to Level {}",
+                p.xp.min(need),
+                need,
+                p.level + 1
+            ));
+        }
+        // Spec 001: show unclaimed idle gains banked server-side.
+        if let (Some(conn), Some(mine)) = (&net.conn, &net.address) {
+            if let Some(g) = conn.db.idle_gain().player().find(mine) {
+                if g.pending_gold > 0 || g.pending_xp > 0 {
+                    stats.push_str(&format!(
+                        "\nIdle pending: +{}G +{}XP",
+                        g.pending_gold, g.pending_xp
+                    ));
+                }
+            }
+        }
     }
     if let Ok(mut t) = stats_q.single_mut() {
         t.0 = stats;
@@ -174,7 +196,7 @@ fn short(s: &str) -> String {
 
 /// Build a reducer callback that reports the outcome into the event channel.
 /// `name` is reused for constructing Arg structs when the reducer has none.
-fn reducer_report(name: &'static str, tx: std::sync::mpsc::Sender<NetEvent>, hex: u64) -> impl FnOnce(&super::gen::ReducerEventContext, Result<Result<(), String>, spacetimedb_sdk::__codegen::InternalError>) + Send + 'static {
+pub(crate) fn reducer_report(name: &'static str, tx: std::sync::mpsc::Sender<NetEvent>, hex: u64) -> impl FnOnce(&super::gen::ReducerEventContext, Result<Result<(), String>, spacetimedb_sdk::__codegen::InternalError>) + Send + 'static {
     move |_ctx, res| {
         let (ok, msg) = match &res {
             Ok(Ok(())) => (true, format!("{name} ok (hex {hex})")),
@@ -186,7 +208,7 @@ fn reducer_report(name: &'static str, tx: std::sync::mpsc::Sender<NetEvent>, hex
 }
 
 /// Invoke a reducer, reporting local send failures to the HUD log.
-fn send_reducer(
+pub(crate) fn send_reducer(
     conn: &DbConnection,
     tx: &std::sync::mpsc::Sender<NetEvent>,
     f: impl FnOnce(&RemoteReducers) -> Result<(), spacetimedb_sdk::Error>,

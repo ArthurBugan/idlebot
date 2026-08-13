@@ -30,9 +30,9 @@
 - [ ] **T4.4** Test reducer with mock player and hex — **PARTIAL** (core tests exist)
 
 ## Phase 5: Client Integration
-- [ ] **T5.1** Add interaction key binding (E key) in input.rs
-- [ ] **T5.2** Implement interaction system in interaction.rs (execute_interaction fn)
-- [ ] **T5.3** Update player gold/XP UI on action — **NOT WIRING**
+- [x] **T5.1** Add interaction key binding (E key) in input.rs
+- [x] **T5.2** Implement interaction system in interaction.rs (execute_interaction fn)
+- [x] **T5.3** Update player gold/XP UI on action — HUD stats sync from authoritative player row
 - [ ] **T5.4** Test interaction in client window — **NOT WRITTEN**
 - [ ] **T5.5** Test: plant → wait → harvest flow — **NOT TESTED**
 

@@ -201,10 +201,17 @@ pub struct MinimapAssets {
     pub fog_texture: Option<Handle<Image>>,
     pub fog_last_key: Option<(u32, f32, f32)>,
     pub arrow_texture: Handle<Image>,
+    pub dot_texture: Handle<Image>,
     /// Cached hexagon tile textures: (width_px, height_px, terrain) → image.
     pub hex_tiles: HashMap<(u32, u32, idlecore_core::terrain::TerrainType), Handle<Image>>,
     /// Cached hexagon fog textures: (width_px, height_px) → image.
     pub hex_fog_tiles: HashMap<(u32, u32), Handle<Image>>,
+}
+
+/// Track minimap dot entities, keyed by remote player address.
+#[derive(Resource, Default)]
+pub struct RemoteDotEntityMap {
+    pub dots: HashMap<String, Entity>,
 }
 
 /// Track tile entities for proper despawn lifecycle.
@@ -285,6 +292,12 @@ pub struct WaypointNode {
 /// A navigation marker node.
 #[derive(Component)]
 pub struct NavMarkerNode;
+
+/// A dot representing a remote player on the minimap.
+#[derive(Component)]
+pub struct RemotePlayerDot {
+    pub address: String,
+}
 
 // ============================================================================
 // Texture Generation
@@ -495,6 +508,38 @@ fn hex_fog_handle(
     handle
 }
 
+/// Create a filled-circle texture for remote player dots.
+fn create_dot_image(size: u32, color: Color) -> Image {
+    let mut pixels = vec![0u8; (size * size * 4) as usize];
+    let srgba = color.to_srgba();
+    let cr = (srgba.red * 255.0) as u8;
+    let cg = (srgba.green * 255.0) as u8;
+    let cb = (srgba.blue * 255.0) as u8;
+    let ca = (srgba.alpha * 255.0) as u8;
+    let r = size as f32 / 2.0 - 0.5;
+    let c = size as f32 / 2.0;
+    for y in 0..size {
+        for x in 0..size {
+            let dx = x as f32 + 0.5 - c;
+            let dy = y as f32 + 0.5 - c;
+            if dx * dx + dy * dy <= r * r {
+                let idx = ((y * size + x) * 4) as usize;
+                pixels[idx] = cr;
+                pixels[idx + 1] = cg;
+                pixels[idx + 2] = cb;
+                pixels[idx + 3] = ca;
+            }
+        }
+    }
+    Image::new(
+        Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    )
+}
+
 // ============================================================================
 // Startup / Spawn
 // ============================================================================
@@ -510,6 +555,8 @@ pub fn spawn_minimap_ui(
 
     let arrow_img = create_arrow_image(16, Color::srgba(0.2, 0.9, 1.0, 0.95));
     let arrow_texture = images.add(arrow_img);
+    let dot_img = create_dot_image(16, Color::srgba(0.95, 0.55, 0.2, 0.95));
+    let dot_texture = images.add(dot_img);
 
     let transparent_pixels: Vec<u8> = vec![0, 0, 0, 0];
     let transparent_img = Image::new(
@@ -525,6 +572,7 @@ pub fn spawn_minimap_ui(
         fog_texture: Some(transparent_handle.clone()),
         fog_last_key: None,
         arrow_texture: arrow_texture.clone(),
+        dot_texture: dot_texture.clone(),
         hex_tiles: HashMap::new(),
         hex_fog_tiles: HashMap::new(),
     });
@@ -1156,5 +1204,65 @@ pub fn resize_minimap_container(
             node.left = Val::Px(mm_center - 8.0);
             node.top = Val::Px(mm_center - 8.0);
         }
+    }
+}
+
+// ============================================================================
+// Remote Player Dots
+// ============================================================================
+
+/// Spawn/despawn dots for other players on the minimap (Spec 009 T2.3/T4.3).
+/// Rebuilt each frame; dots are cheap and few.
+pub fn render_remote_players(
+    minimap_state: Res<MinimapState>,
+    net: Res<crate::net::plugin::Net>,
+    minimap_assets: Res<MinimapAssets>,
+    mut commands: Commands,
+    map_content_query: Query<Entity, With<MapContent>>,
+    dot_query: Query<Entity, With<RemotePlayerDot>>,
+) {
+    let Some(player_pos) = minimap_state.player_pos else { return };
+    let Ok(map_content_entity) = map_content_query.single() else { return };
+
+    for entity in dot_query.iter() {
+        commands.entity(entity).despawn();
+    }
+
+    let pixel_scale = minimap_state.pixel_scale();
+    let mm_center = minimap_state.mm_size() / 2.0;
+    let rotation = minimap_state.rotation.map_rotation(minimap_state.facing_angle);
+    let mm_w = minimap_state.mm_size() + 64.0;
+    let dot_size = 8.0;
+
+    for (address, snap) in &net.players {
+        if !snap.online {
+            continue;
+        }
+        let (screen_x, screen_y) = world_to_map_pixel(
+            (snap.x, snap.y),
+            (player_pos.x, player_pos.y),
+            pixel_scale,
+            mm_center,
+            rotation,
+        );
+        if screen_x < -64.0 || screen_x > mm_w || screen_y < -64.0 || screen_y > mm_w {
+            continue;
+        }
+        commands.entity(map_content_entity).with_children(|parent| {
+            parent.spawn((
+                Name::new(format!("remote-dot-{address}")),
+                RemotePlayerDot { address: address.clone() },
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(dot_size),
+                    height: Val::Px(dot_size),
+                    left: Val::Px(screen_x - dot_size / 2.0),
+                    top: Val::Px(screen_y - dot_size / 2.0),
+                    ..default()
+                },
+                UiTransform::IDENTITY,
+                ImageNode::new(minimap_assets.dot_texture.clone()),
+            ));
+        });
     }
 }
