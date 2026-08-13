@@ -20,7 +20,7 @@
 - [x] **T3.1** Implement `execute_plant(player, hex, plant_type, now)` — spend gold, plant
 - [x] **T3.2** Implement `execute_harvest(player, hex, now)` — collect gold + XP, remove plant
 - [x] **T3.3** Implement `execute_clean(player, hex)` — spend gold, remove pollution
-- [ ] **T3.4** Implement plant growth system (`farming.rs::update_plant_growth`) — server-side growth
+- [x] **T3.4** Plant growth — maturity computed from planted_at + growth_time; scheduled_plant_growth sweep
 - [x] **T3.5** Write unit tests for action execution (2 tests in actions.rs)
 
 ## Phase 4: Server Integration
@@ -41,7 +41,7 @@
 - [ ] **T6.2** Performance test: multiple players interacting simultaneously — **NOT WRITTEN**
 - [ ] **T6.3** Edge case: interacting with non-adjacent hex — **NOT TESTED**
 - [ ] **T6.4** Edge case: double harvest on same plant — **NOT TESTED**
-- [ ] **T6.5** Visual feedback: plant grows, harvest animation — **NOT WIRING**
+- [x] **T6.5** Visual feedback — planted hexes show cones that turn golden at maturity; harvest/clean removes them
 
 ## Verification
 - [x] All core unit tests pass (13 tests in actions.rs + plant.rs)

@@ -5,6 +5,8 @@
 //! in and despawned when they leave the rendered radius.
 
 use bevy::prelude::*;
+use spacetimedb_sdk::Table;
+use std::collections::HashMap;
 use bevy::render::mesh::{Indices, VertexAttributeValues};
 use bevy_rapier3d::geometry::{Collider, ComputedColliderShape, TriMeshFlags};
 use idlecore_core::hex::world_pos_to_hex;
@@ -232,6 +234,175 @@ pub fn update_world_floor(
 
         floor.entities.insert((*cq, *cr), parent.id());
     }
+}
+
+// ============================================================================
+// Plant / Pollution Visuals (Spec 016 T2.4, Spec 004 T6.5)
+// ============================================================================
+
+/// Per-hex visual state cache for plants and pollution.
+#[derive(Resource, Default)]
+pub struct FloorPlantState {
+    pub visuals: HashMap<u64, Entity>,
+    pub stage: HashMap<u64, (bool, Option<String>, bool)>,
+}
+
+/// Root entity rendering a plant or pollution marker on one hex.
+#[derive(Component)]
+pub struct HexPlantVisual {
+    pub hex_id: u64,
+}
+
+/// Shared meshes/materials for plant visuals (built lazily).
+#[derive(Resource, Default)]
+pub struct FloorPlantAssets {
+    pub young_mat: Option<Handle<StandardMaterial>>,
+    pub mature_mat: Option<Handle<StandardMaterial>>,
+    pub pollution_mat: Option<Handle<StandardMaterial>>,
+    pub cone_mesh: Option<Handle<Mesh>>,
+    pub tall_cone_mesh: Option<Handle<Mesh>>,
+    pub disc_mesh: Option<Handle<Mesh>>,
+}
+
+fn ensure_plant_assets(
+    assets: &mut FloorPlantAssets,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) {
+    if assets.young_mat.is_none() {
+        assets.young_mat = Some(materials.add(StandardMaterial::from_color(Color::srgb(0.25, 0.75, 0.3))));
+        assets.mature_mat = Some(materials.add(StandardMaterial::from_color(Color::srgb(0.95, 0.8, 0.25))));
+        assets.pollution_mat = Some(materials.add(StandardMaterial::from_color(Color::srgb(0.18, 0.2, 0.16))));
+        assets.cone_mesh = Some(meshes.add(Cone::new(0.8, 1.6)));
+        assets.tall_cone_mesh = Some(meshes.add(Cone::new(0.9, 2.6)));
+        assets.disc_mesh = Some(meshes.add(Cylinder::new(1.5, 0.12)));
+    }
+}
+
+/// Spawn/update/despawn hex visuals from the authoritative `hex_tile` cache.
+pub fn update_plant_visuals(
+    mut commands: Commands,
+    net: Res<crate::net::plugin::Net>,
+    player_transform: Res<crate::player::PlayerTransform>,
+    streaming_world: Res<StreamingWorldResource>,
+    mut state: ResMut<FloorPlantState>,
+    mut assets: ResMut<FloorPlantAssets>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    ensure_plant_assets(&mut assets, &mut meshes, &mut materials);
+    let (young, mature_mat_h, pollution) = (
+        assets.young_mat.clone().unwrap(),
+        assets.mature_mat.clone().unwrap(),
+        assets.pollution_mat.clone().unwrap(),
+    );
+    let (cone, tall, disc) = (
+        assets.cone_mesh.clone().unwrap(),
+        assets.tall_cone_mesh.clone().unwrap(),
+        assets.disc_mesh.clone().unwrap(),
+    );
+
+    let Some(conn) = net.conn.as_ref() else { return };
+
+    let px = player_transform.translation.x;
+    let pz = player_transform.translation.z;
+    let (hq, hr) = world_pos_to_hex(px, pz, WorldGenConfig::HEX_SIZE);
+    let max_dist = RENDER_RADIUS_HEXES / WorldGenConfig::HEX_SIZE + 2.0;
+
+    let mut seen: Vec<u64> = Vec::new();
+    for row in crate::net::gen::HexTileTableAccess::hex_tile(&conn.db).iter() {
+        let dq = (row.hex_q - hq).abs() as f32;
+        let dr = (row.hex_r - hr).abs() as f32;
+        let ds = ((row.hex_q + row.hex_r) - (hq + hr)).abs() as f32;
+        if dq.max(dr).max(ds) > max_dist {
+            continue;
+        }
+        seen.push(row.hex_id);
+
+        let is_polluted = row.is_polluted;
+        let plant_json = row.plant.clone();
+
+        // Determine desired visual: pollution disc, plant cone, or nothing.
+        let mut kind: Option<(Option<Handle<Mesh>>, Handle<StandardMaterial>)> = None;
+        if is_polluted {
+            kind = Some((Some(disc.clone()), pollution.clone()));
+        }
+        let mut mature = false;
+        if let Some(json) = &plant_json {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
+                let planted_at = v.get("planted_at").and_then(|x| x.as_u64()).unwrap_or(0);
+                let growth = v
+                    .get("growth_time")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(3600);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                mature = now >= planted_at + growth;
+                let kind_name = v.get("plant_type").and_then(|x| x.as_str()).unwrap_or("");
+                let use_tall = matches!(kind_name, "Tree" | "Corn" | "RareHerb");
+                kind = Some((
+                    Some(if use_tall { tall.clone() } else { cone.clone() }),
+                    if mature { mature_mat_h.clone() } else { young.clone() },
+                ));
+            }
+        }
+
+        let cached = state.stage.get(&row.hex_id).cloned();
+        if cached == Some((is_polluted, plant_json.clone(), mature)) {
+            continue;
+        }
+
+        let (wx, wz) = row_world_center(row.hex_q, row.hex_r);
+        let existing = state.visuals.get(&row.hex_id).copied();
+        match kind {
+            Some((mesh, mat)) => {
+                let mesh = mesh.unwrap();
+                if let Some(entity) = existing {
+                    commands.entity(entity).despawn();
+                }
+                let mut root = commands.spawn((
+                    Name::new(format!("hex-visual-{}", row.hex_id)),
+                    HexPlantVisual { hex_id: row.hex_id },
+                    Transform::from_xyz(wx, 0.0, wz),
+                    Visibility::Visible,
+                ));
+                root.with_child((
+                    Mesh3d(mesh),
+                    MeshMaterial3d(mat),
+                    Transform::from_xyz(0.0, 1.1, 0.0),
+                ));
+                state.visuals.insert(row.hex_id, root.id());
+                state.stage.insert(row.hex_id, (is_polluted, plant_json, mature));
+            }
+            None => {
+                if let Some(entity) = existing {
+                    commands.entity(entity).despawn();
+                    state.visuals.remove(&row.hex_id);
+                    state.stage.remove(&row.hex_id);
+                }
+            }
+        }
+    }
+
+    // Despawn visuals for hexes that left the radius or have no row.
+    let stale: Vec<u64> = state
+        .visuals
+        .keys()
+        .filter(|k| !seen.contains(k))
+        .copied()
+        .collect();
+    for hex_id in stale {
+        if let Some(entity) = state.visuals.remove(&hex_id) {
+            commands.entity(entity).despawn();
+        }
+        state.stage.remove(&hex_id);
+    }
+}
+
+fn row_world_center(q: i32, r: i32) -> (f32, f32) {
+    idlecore_core::hex_grid::HexGrid::axial_to_world(q, r, WorldGenConfig::HEX_SIZE)
 }
 
 #[cfg(test)]

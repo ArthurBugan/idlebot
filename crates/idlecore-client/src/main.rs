@@ -60,6 +60,8 @@ fn main() {
         .insert_resource(PlayerTransform::default())
         .insert_resource(debug_panel::DebugPanelOpen(false))
         .insert_resource(idle::IdleGainsState::default())
+        .insert_resource(world_floor::FloorPlantState::default())
+        .insert_resource(world_floor::FloorPlantAssets::default())
         .add_systems(Startup, (
             setup,
             minimap::spawn_minimap_ui,
@@ -90,6 +92,7 @@ fn main() {
             minimap::update_player_marker
                 .after(minimap::sync_player_state),
             idle::update_idle_gains_panel,
+            world_floor::update_plant_visuals,
             world_floor::update_world_floor
                 .after(minimap::sync_player_state)
                 .after(minimap::load_nearby_chunks),

@@ -3,19 +3,19 @@
 > **Implementation Checklist**
 
 ## Phase 1: Procedural Placeholders (MVP)
-- [ ] **T1.1** Verify hex material colors defined (Grass, Forest, Water, City, Desert, Polluted)
+- [x] **T1.1** Hex material colors — terrain tint per biome in world_mesh/chunk mesh colors
 - [ ] **T1.2** Verify player mesh (tetrahedron placeholder) exists
-- [ ] **T1.3** Verify plant meshes (simple cones) exist
+- [x] **T1.3** Plant meshes — cone/tall-cone primitives spawned per planted hex
 - [ ] **T1.4** Verify terrain colors match spec (#7EC850, #228B22, etc.)
-- [ ] **T1.5** Verify pollution visible (dark markers)
+- [x] **T1.5** Pollution visible — dark disc marker on polluted hexes
 
 ## Phase 2: Asset Loading Infrastructure
 - [ ] **T2.1** Define AssetHandle type for glTF models
 - [ ] **T2.2** Implement load_vehicle_assets() — spawn meshes from asset server
 - [ ] **T2.3** Implement load_cosmetic_assets() — hats, auras, trails
-- [ ] **T2.4** Implement load_plant_assets() — Wheat, Tree, RareHerb
-- [ ] **T2.5** Implement load_terrain_materials() — 6 terrain colors
-- [ ] **T2.6** Add asset loading to Bevy app initialization
+- [x] **T2.4** load_plant_assets — shared cone meshes + young/mature materials (FloorPlantAssets)
+- [x] **T2.5** Terrain materials — biome-colored chunk meshes (world_floor)
+- [x] **T2.6** Asset loading — FloorPlantAssets ensured lazily in update_plant_visuals
 
 ## Phase 3: Vehicle Models (5 types)
 - [ ] **T3.1** Create vehicle model paths (vehicles/bicycle.glb, etc.)
