@@ -56,6 +56,7 @@ fn main() {
         .add_plugins(fps_counter::FpsCounterPlugin)
         .add_plugins(net::plugin::NetPlugin)
         .add_plugins(net::hud::NetHudPlugin)
+        .add_plugins(net::market::MarketPlugin)
         .insert_resource(PlayerTransform::default())
         .insert_resource(debug_panel::DebugPanelOpen(false))
         .insert_resource(idle::IdleGainsState::default())

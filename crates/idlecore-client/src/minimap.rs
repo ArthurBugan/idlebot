@@ -799,6 +799,18 @@ pub fn handle_input(
         minimap_state.expanded = !minimap_state.expanded;
     }
 
+    // Spec 009 T1.12: +/- keyboard zoom.
+    if keyboard.just_pressed(KeyCode::Equal) || keyboard.just_pressed(KeyCode::NumpadAdd) {
+        if let Some(new_zoom) = minimap_state.zoom.zoom_in() {
+            minimap_state.zoom = new_zoom;
+        }
+    }
+    if keyboard.just_pressed(KeyCode::Minus) || keyboard.just_pressed(KeyCode::NumpadSubtract) {
+        if let Some(new_zoom) = minimap_state.zoom.zoom_out() {
+            minimap_state.zoom = new_zoom;
+        }
+    }
+
     let on_minimap = get_minimap_mouse_pos(&windows, minimap_state.mm_size()).is_some();
     for event in scroll.read() {
         if !on_minimap {

@@ -3,5 +3,6 @@
 
 pub mod gen;
 pub mod hud;
+pub mod market;
 pub mod plugin;
 

@@ -5,6 +5,7 @@
 use bevy::prelude::*;
 
 use crate::player::ClientPlayer;
+use spacetimedb_sdk::Table;
 use super::gen::*;
 use super::plugin::{Net, NetEvent, NetStatus};
 
@@ -177,6 +178,19 @@ fn update_hud_text(
                         g.pending_gold, g.pending_xp
                     ));
                 }
+            }
+        }
+        // Spec 006 T3.4: vehicle inventory from the subscription cache.
+        if let (Some(conn), Some(mine)) = (&net.conn, &net.address) {
+            let owned: Vec<String> = conn
+                .db
+                .player_vehicle()
+                .iter()
+                .filter(|v| v.player == *mine)
+                .map(|v| v.vehicle_type.clone())
+                .collect();
+            if !owned.is_empty() {
+                stats.push_str(&format!("\nOwned: {}", owned.join(", ")));
             }
         }
         // Spec 009 T3.2: show the selected teleport destination and cost.

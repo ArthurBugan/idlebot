@@ -28,8 +28,13 @@ impl Plugin for PlayerPlugin {
             player_movement.after(PhysicsSet::Writeback),
             sync_visual_to_physics.after(player_movement),
             player_animation,
+            update_vehicle_indicator,
         ));
-        app.add_systems(Startup, (register_player_orientation, register_player_animations));
+        app.add_systems(Startup, (
+            register_player_orientation,
+            register_player_animations,
+            spawn_vehicle_indicator,
+        ));
     }
 }
 
@@ -270,4 +275,114 @@ fn sync_visual_to_physics(
     let Ok(mut root) = roots.single_mut() else { return };
     root.translation = body.translation;
     root.rotation = body.rotation;
+}
+
+// ============================================================================
+// Vehicle Indicator (Spec 006 T5.1/T5.2)
+// ============================================================================
+
+/// Colored ground plate + floating label rendered while a vehicle is equipped.
+#[derive(Resource, Default)]
+pub struct VehicleIndicator {
+    pub plate: Option<Entity>,
+    pub label: Option<Entity>,
+    pub plate_material: Option<Handle<StandardMaterial>>,
+}
+
+fn vehicle_color(vehicle: &idlecore_core::Vehicle) -> Color {
+    match vehicle {
+        idlecore_core::Vehicle::None => Color::srgba(0.2, 0.2, 0.2, 0.0),
+        idlecore_core::Vehicle::Bicycle => Color::srgb(0.2, 0.9, 1.0),
+        idlecore_core::Vehicle::Scooter => Color::srgb(0.6, 1.0, 0.3),
+        idlecore_core::Vehicle::Motorcycle => Color::srgb(1.0, 0.45, 0.2),
+        idlecore_core::Vehicle::Boat => Color::srgb(0.3, 0.6, 1.0),
+        idlecore_core::Vehicle::Airplane => Color::srgb(0.8, 0.5, 1.0),
+    }
+}
+
+fn spawn_vehicle_indicator(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut indicator: ResMut<VehicleIndicator>,
+) {
+    let plate_material = materials.add(StandardMaterial::from_color(Color::srgb(0.3, 0.3, 0.3)));
+    let plate = commands
+        .spawn((
+            Name::new("vehicle-plate"),
+            Mesh3d(meshes.add(Cuboid::new(3.0, 0.06, 3.0))),
+            MeshMaterial3d(plate_material.clone()),
+            Transform::from_xyz(0.0, -100.0, 0.0),
+            Visibility::Hidden,
+        ))
+        .id();
+    let label = commands
+        .spawn((
+            Name::new("vehicle-label"),
+            Text2d::new(""),
+            TextFont { font_size: 18.0.into(), ..default() },
+            TextColor(Color::BLACK),
+            TextShadow { color: Color::WHITE, offset: Vec2::new(0.5, 0.5) },
+            Transform::from_xyz(0.0, -100.0, 0.0),
+            Visibility::Hidden,
+        ))
+        .id();
+    indicator.plate = Some(plate);
+    indicator.label = Some(label);
+    indicator.plate_material = Some(plate_material);
+}
+
+fn update_vehicle_indicator(
+    body: Query<(&Transform, &crate::player::ClientPlayer), With<PhysicsBody>>,
+    indicator: Option<Res<VehicleIndicator>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut plates: Query<(&mut Transform, &mut Visibility), Without<Text2d>>,
+    mut labels: Query<(&mut Transform, &mut Visibility, &mut Text2d), Without<Mesh3d>>,
+) {
+    let Some(indicator) = indicator else { return };
+    let Ok((body_t, player)) = body.single() else { return };
+
+    let vehicle = player
+        .owned_vehicle
+        .as_ref()
+        .filter(|v| **v != idlecore_core::Vehicle::None);
+
+    if let Some(entity) = indicator.plate {
+        if let Ok((mut t, mut vis)) = plates.get_mut(entity) {
+            match vehicle {
+                Some(v) => {
+                    *t = Transform::from_xyz(body_t.translation.x, 0.15, body_t.translation.z);
+                    *vis = Visibility::Visible;
+                    if let Some(h) = &indicator.plate_material {
+                        if let Some(mut m) = materials.get_mut(h) {
+                            m.base_color = vehicle_color(v);
+                        }
+                    }
+                }
+                None => {
+                    *t = Transform::from_xyz(0.0, -100.0, 0.0);
+                    *vis = Visibility::Hidden;
+                }
+            }
+        }
+    }
+    if let Some(entity) = indicator.label {
+        if let Ok((mut t, mut vis, mut text)) = labels.get_mut(entity) {
+            match vehicle {
+                Some(v) => {
+                    *t = Transform::from_xyz(
+                        body_t.translation.x,
+                        body_t.translation.y + 12.0,
+                        body_t.translation.z,
+                    );
+                    *vis = Visibility::Visible;
+                    text.0 = v.display_name().to_string();
+                }
+                None => {
+                    *t = Transform::from_xyz(0.0, -100.0, 0.0);
+                    *vis = Visibility::Hidden;
+                }
+            }
+        }
+    }
 }

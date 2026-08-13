@@ -19,7 +19,7 @@
 - [x] **T3.1** Implement equip_vehicle() - set equipped flag
 - [x] **T3.2** Implement unequip_vehicle() - set equipped=false
 - [x] **T3.3** Track equipped vehicle per player (Player.vehicle field)
-- [ ] **T3.4** UI shows vehicle inventory
+- [x] **T3.4** Inventory UI — HUD stats lists owned vehicles from player_vehicle cache
 
 ## Phase 4: Speed Application (FR3)
 - [x] **T4.1** Apply speed multiplier to player movement (speed_multiplier() method)
@@ -28,8 +28,8 @@
 - [x] **T4.4** Server validates vehicle state before applying speed
 
 ## Phase 5: Vehicle Display (FR4)
-- [ ] **T5.1** Render vehicle on player character (top-down)
-- [ ] **T5.2** Show vehicle icon/type indicator
+- [x] **T5.1** Vehicle rendered — colored ground plate under the player
+- [x] **T5.2** Type indicator — floating label above the player (e.g. "Bicycle")
 - [x] **T5.3** Equip state update — HUD vehicle stat mirrors authoritative row; speed multiplier applied
 
 ## Phase 6: Persistence (FR5)

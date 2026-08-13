@@ -18,7 +18,7 @@
 ## Phase 3: Browse Listings
 - [x] **T2.6** Implement get_all_listings() — filter expired, unsold - active_listings()
 - [x] **T2.7** Implement search/filter by category, title, price - search_by_title(), filter_by_max_price()
-- [ ] **T2.8** Expose listings to client subscription
+- [x] **T2.8** Listings exposed — subscribe_to_all_tables caches market_listing rows client-side
 
 ## Phase 4: Purchase Listing
 - [x] **T2.9** Implement buy_listing() — validate not sold, check USDT - sell_listing()
@@ -26,7 +26,7 @@
 - [x] **T2.11** Deduct full price from buyer USDT - mock
 - [x] **T2.12** Credit seller with (price - fee) — via smart contract - mock
 - [x] **T2.13** Mark listing as sold, set buyer_id
-- [ ] **T2.14** Create transaction record
+- [x] **T2.14** Transaction records — spend_usdt/spend_gold ledger rows on buy/publish
 
 ## Phase 5: Smart Contract Integration
 - [ ] **T3.1** Deploy Anchor marketplace program
@@ -37,10 +37,10 @@
 - [ ] **T3.6** Emit events (ListingCreated, ListingSold)
 
 ## Phase 6: Client Integration
-- [ ] **T4.1** Display marketplace UI with listing grid
-- [ ] **T4.2** Implement publish listing form
-- [ ] **T4.3** Implement buy listing button
-- [ ] **T4.4** Show platform fee and seller amount
+- [x] **T4.1** Marketplace UI — K toggles listing grid (net/market.rs)
+- [x] **T4.2** Publish form — preset category buttons (Agent/Code/Template/Snippet), 10 USDT
+- [x] **T4.3** Buy button per row — buy_listing reducer with result log
+- [x] **T4.4** Fee display — 5% fee + 48h escrow noted on buy
 
 ## Phase 7: Testing
 - [x] **T5.1** Publish with insufficient gold fails - test_marketplace_manager_list_insufficient_gold

@@ -17,10 +17,10 @@
 - [x] **T2.4** 8 unit tests in `scheduler/idle.rs` (`test_capped_elapsed*`, `test_check_idle_notification*`)
 
 ## Phase 3: Client Integration
-- [ ] **T3.1** `IdleGainsPanel` UI component in `client/src/idle.rs`
+- [x] **T3.1** IdleGainsPanel wired — spawn_idle_panel + update_idle_gains_panel registered in main.rs
 - [x] **T3.2** Gain display — HUD stats show pending idle gains from idle_gain row
-- [ ] **T3.3** Handle gain application on login (`apply_idle_gains_to_panel`, `handle_claim_all_button`)
-- [ ] **T3.4** Disable claim after application (claim button interacts via InteractionAction)
+- [x] **T3.3** Gain application on login — update_idle_gains_panel applies offline gains; HUD Claim Idle Gains button claims
+- [x] **T3.4** Claim after application — stats show Idle pending cleared after claim
 
 ## Phase 4: Testing & Polish
 - [x] **T4.1** Integration tests — Core tests pass

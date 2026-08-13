@@ -18,7 +18,7 @@
 - [x] **T1.9** Implement zoom_in() — cycle Local→Mid→Global
 - [x] **T1.10** Implement zoom_out() — cycle Global→Mid→Local
 - [x] **T1.11** Handle zoom edge cases (already at max/min) - returns None
-- [ ] **T1.12** Add keyboard/mouse zoom controls (scroll wheel, +/- keys) - Client side
+- [x] **T1.12** Zoom controls — scroll wheel + +/- (and numpad +/-) keys
 
 ## Phase 4: Client Integration
 - [ ] **T2.1** Subscribe to hex occupancy events on client
