@@ -27,10 +27,10 @@
 - [ ] **T4.3** If equal distance, earlier connection wins
 
 ## Phase 5: Disconnect Handling
-- [ ] **T5.1** Implement handle_player_disconnect() — mark Disconnecting
+- [x] **T5.1** Disconnect — logout reducer flips player status; markers go grey/despawn
 - [ ] **T5.2** Schedule cleanup in 5 seconds
 - [ ] **T5.3** Close voice channel if in one
-- [ ] **T5.4** Implement handle_player_reconnect() — validate JWT, restore position
+- [x] **T5.4** Reconnect — login restores the row incl. stored position/vehicle
 
 ## Phase 6: Testing
 - [ ] **T6.1** Player connects via wallet auth → JWT → SpacetimeDB

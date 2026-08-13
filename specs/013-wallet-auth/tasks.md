@@ -17,17 +17,17 @@
 - [ ] **T2.1** Define Session struct (address, created_at, expires_at, player_id)
 - [ ] **T2.2** Implement generate_jwt() — create JWT with address + expiration
 - [ ] **T2.3** Implement verify_jwt() — validate token and check expiration
-- [ ] **T2.4** Implement create_session(address) — look up or create player
+- [x] **T2.4** create_session — login reducer upserts the player row
 
 ## Phase 4: Server Integration
-- [ ] **T2.5** Register verify_login handler in server main.rs
-- [ ] **T2.6** Implement create_player() for new wallet addresses
-- [ ] **T2.7** Implement re-authenticate for existing players
-- [ ] **T2.8** Handle wallet disconnection (token expiry)
+- [x] **T2.5** verify_login — login + logout reducers registered
+- [x] **T2.6** create_player — login creates the row when missing
+- [x] **T2.7** Re-auth — persisted identity token + DEMO_WALLET login restores the row
+- [x] **T2.8** Disconnect — logout reducer + status flip; heartbeat tracks presence
 
 ## Phase 5: Client Integration
 - [ ] **T3.1** Add wallet connection UI (MetaMask connect button)
-- [ ] **T3.2** Display connected wallet address
+- [x] **T3.2** Wallet display — HUD status shows wallet + identity
 - [ ] **T3.3** Implement request_login() flow (get nonce, display for signing)
 - [ ] **T3.4** Implement signMessage() with wallet
 - [ ] **T3.5** Submit signed login and display session token

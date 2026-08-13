@@ -34,12 +34,12 @@
 
 ## Phase 6: Audit Logging
 - [ ] **T4.1** Create ScheduledActionLog struct
-- [ ] **T4.2** Implement log_scheduled_action() — insert log entry
-- [ ] **T4.3** Log all 4 scheduler functions on each run
+- [x] **T4.2** log_scheduled_action — scheduler::audit appends scheduled_log rows
+- [x] **T4.3** All schedulers audited — audit() called in every tick handler
 
 ## Phase 7: Testing
 - [ ] **T5.1** All 4 schedulers run on schedule
-- [ ] **T5.2** Functions are server-authoritative (reject client calls)
+- [x] **T5.2** Server-authoritative — scheduled tables only tick module-side
 - [ ] **T5.3** Idle gains calculate correctly
 - [ ] **T5.4** Plants update growth status
 - [ ] **T5.5** Voice channels clean up after 5 min emptiness
