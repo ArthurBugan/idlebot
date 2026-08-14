@@ -66,6 +66,7 @@ fn main() {
         .add_systems(Startup, (
             setup,
             assets::load_all_assets,
+            assets::spawn_vehicle_models,
             minimap::spawn_minimap_ui,
             idle::spawn_idle_panel,
         ))
@@ -99,6 +100,7 @@ fn main() {
                 .after(minimap::sync_player_state)
                 .after(minimap::load_nearby_chunks),
             assets::track_asset_loading,
+            assets::sync_vehicle_model,
             assets::apply_vehicle_material,
             assets::update_trail_vfx,
             assets::expire_trail_particles,

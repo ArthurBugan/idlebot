@@ -11,7 +11,7 @@ use bevy::world_serialization::WorldAsset;
 use bevy::time::Time;
 use idlecore_core::assets::{
     AssetManager, VehicleAssetType, cosmetic_paths, plant_paths, vehicle_animation_clips,
-    vehicle_material_spec, vehicle_paths,
+    vehicle_material_spec, vehicle_paths, vehicle_shape,
 };
 use idlecore_core::Vehicle;
 
@@ -237,6 +237,7 @@ mod tests {
     use super::*;
     use bevy::app::App;
     use bevy::time::TimePlugin;
+    use idlecore_core::assets::{vehicle_triangle_budget, ShapePart};
 
     #[test]
     fn bicycle_material_is_painted_steel() {
@@ -288,5 +289,176 @@ mod tests {
         m.load_cosmetic_assets();
         m.load_plant_assets();
         assert_eq!(m.total_count(), 14);
+    }
+}
+// ============================================================================
+// Primitive vehicle models (Spec 016 T3.2/T3.4 — simple shapes, no glb needed)
+// ============================================================================
+
+use idlecore_core::assets::ShapePart;
+
+/// Marks a spawned primitive vehicle model so its visibility can be synced to
+/// the equipped vehicle.
+#[derive(Component, Clone, Copy, PartialEq)]
+pub struct VehicleModelKind(pub VehicleAssetType);
+
+/// Builds the Bevy mesh for a core `ShapePart` at the same resolutions the
+/// core triangle estimates assume.
+pub fn build_shape_mesh(part: &ShapePart) -> Mesh {
+    match part {
+        ShapePart::Cylinder { radius, height, segments } => {
+            Cylinder::new(*radius, *height).mesh().resolution(*segments).build()
+        }
+        ShapePart::Torus { major, minor, major_segments, minor_segments } => {
+            // bevy Torus::new(inner, outer); minor_radius = (outer-inner)/2.
+            Torus::new(*major - *minor, *major + *minor)
+                .mesh()
+                .major_resolution(*major_segments as usize)
+                .minor_resolution(*minor_segments as usize)
+                .build()
+        }
+        ShapePart::Box { x, y, z } => Mesh::from(Cuboid::new(*x, *y, *z)),
+        ShapePart::Cone { radius, height, segments } => {
+            Cone::new(*radius, *height).mesh().resolution(*segments).build()
+        }
+        ShapePart::Capsule { min_y, max_y, radius, segments } => {
+            Capsule3d::new(*radius, (max_y - min_y) * 0.5)
+                .mesh()
+                .longitudes(*segments)
+                .latitudes(4)
+                .build()
+        }
+    }
+}
+
+/// Per-part placement (translation, rotation) for each vehicle plan.
+fn part_transform(vehicle: VehicleAssetType, index: usize) -> (Vec3, Quat) {
+    use VehicleAssetType as V;
+    let rot_x = |a: f32| Quat::from_rotation_x(a);
+    match vehicle {
+        V::Bicycle => match index {
+            0 => (Vec3::new(0.0, 0.55, -0.25), rot_x(std::f32::consts::FRAC_PI_2)),
+            1 => (Vec3::new(0.0, 0.7, 0.25), rot_x(std::f32::consts::FRAC_PI_2)),
+            2 => (Vec3::new(0.0, 0.28, -0.42), rot_x(std::f32::consts::FRAC_PI_2)),
+            _ => (Vec3::new(0.0, 0.28, 0.42), rot_x(std::f32::consts::FRAC_PI_2)),
+        },
+        V::Scooter => match index {
+            0 => (Vec3::new(0.0, 0.15, 0.0), Quat::IDENTITY),
+            1 => (Vec3::new(0.0, 0.48, 0.28), Quat::IDENTITY),
+            2 => (Vec3::new(0.0, 0.16, -0.24), rot_x(std::f32::consts::FRAC_PI_2)),
+            _ => (Vec3::new(0.0, 0.16, 0.22), rot_x(std::f32::consts::FRAC_PI_2)),
+        },
+        V::Motorcycle => match index {
+            0 => (Vec3::new(0.0, 0.52, 0.0), Quat::IDENTITY),
+            1 => (Vec3::new(0.0, 0.32, -0.35), rot_x(std::f32::consts::FRAC_PI_2)),
+            2 => (Vec3::new(0.0, 0.32, 0.35), rot_x(std::f32::consts::FRAC_PI_2)),
+            _ => (Vec3::new(0.0, 0.78, -0.12), Quat::IDENTITY),
+        },
+        V::Boat => match index {
+            0 => (Vec3::new(0.0, 0.2, 0.0), Quat::IDENTITY),
+            1 => (Vec3::new(0.0, 0.45, -0.15), Quat::IDENTITY),
+            _ => (Vec3::new(0.0, 0.75, 0.4), Quat::IDENTITY),
+        },
+        V::Airplane => match index {
+            0 => (Vec3::new(0.0, 0.7, 0.0), rot_x(std::f32::consts::FRAC_PI_2)),
+            1 => (Vec3::new(0.0, 0.68, 0.0), Quat::IDENTITY),
+            2 => (Vec3::new(0.0, 0.85, 0.55), rot_x(std::f32::consts::FRAC_PI_2)),
+            _ => (Vec3::new(0.0, 0.7, -0.62), rot_x(std::f32::consts::FRAC_PI_2)),
+        },
+        V::None => (Vec3::ZERO, Quat::IDENTITY),
+    }
+}
+
+/// Spawns every vehicle's primitive model as hidden children of the player
+/// root; `sync_vehicle_model` shows the equipped one.
+pub fn spawn_vehicle_models(
+    mut commands: Commands,
+    bodies: Query<Entity, With<PhysicsBody>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    use VehicleAssetType as V;
+    let Ok(player_root) = bodies.single() else { return };
+    for vehicle in [
+        V::Bicycle, V::Scooter, V::Motorcycle, V::Boat, V::Airplane,
+    ] {
+        let spec = vehicle_material_spec(vehicle);
+        for (i, part) in vehicle_shape(vehicle).iter().enumerate() {
+            let (translation, rotation) = part_transform(vehicle, i);
+            let mut m = StandardMaterial::from_color(Color::srgb(spec.r, spec.g, spec.b));
+            m.metallic = spec.metallic;
+            m.perceptual_roughness = spec.roughness;
+            commands.spawn((
+                Name::new(format!("vehicle-{:?}-part-{i}", vehicle).to_lowercase()),
+                VehicleModelKind(vehicle),
+                Mesh3d(meshes.add(build_shape_mesh(part))),
+                MeshMaterial3d(materials.add(m)),
+                Transform::from_translation(translation).with_rotation(rotation),
+                Visibility::Hidden,
+                ChildOf(player_root),
+            ));
+        }
+    }
+}
+
+/// Shows the model matching the equipped vehicle, hides the rest.
+pub fn sync_vehicle_model(
+    body: Query<&ClientPlayer, With<PhysicsBody>>,
+    mut models: Query<(&VehicleModelKind, &mut Visibility)>,
+) {
+    let Ok(player) = body.single() else { return };
+    let equipped = player.owned_vehicle.as_ref().map(to_asset_type).unwrap_or(VehicleAssetType::None);
+    for (kind, mut vis) in &mut models {
+        *vis = if kind.0 == equipped && kind.0 != VehicleAssetType::None {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+#[cfg(test)]
+mod vehicle_mesh_tests {
+    use super::*;
+    use idlecore_core::assets::vehicle_triangle_budget;
+
+    fn tri_count(mesh: &Mesh) -> usize {
+        mesh.indices().map(|i| i.len() / 3).unwrap_or(0)
+    }
+
+    #[test]
+    fn built_meshes_match_triangle_budget() {
+        use VehicleAssetType as V;
+        for vehicle in [V::Bicycle, V::Scooter, V::Motorcycle, V::Boat, V::Airplane] {
+            let mut total = 0usize;
+            for part in vehicle_shape(vehicle) {
+                total += tri_count(&build_shape_mesh(part));
+            }
+            assert!(
+                total < 500,
+                "{vehicle:?} built with {total} triangles (budget 500)"
+            );
+            assert!(
+                total <= vehicle_triangle_budget(vehicle) as usize,
+                "{vehicle:?} real {total} exceeds estimate {}",
+                vehicle_triangle_budget(vehicle)
+            );
+        }
+    }
+
+    #[test]
+    fn every_part_has_a_transform() {
+        use VehicleAssetType as V;
+        for vehicle in [V::Bicycle, V::Scooter, V::Motorcycle, V::Boat, V::Airplane] {
+            let parts = vehicle_shape(vehicle);
+            for (i, _) in parts.iter().enumerate() {
+                let _ = part_transform(vehicle, i); // must not panic
+            }
+        }
+    }
+
+    #[test]
+    fn shape_estimates_are_exact_for_boxes() {
+        assert_eq!(ShapePart::Box { x: 1.0, y: 1.0, z: 1.0 }.estimated_triangles(), 12);
     }
 }

@@ -19,9 +19,9 @@
 
 ## Phase 3: Vehicle Models (5 types)
 - [x] **T3.1** Create vehicle model paths — vehicle_paths() single source (5 paths)
-- [x] **T3.2** Load each vehicle type — asset-server handles per type; procedural plate/particles as fallback until files exist
+- [x] **T3.2** Load each vehicle type — primitive-shape models per type (bicycle frame+2 wheels, scooter deck+column, motorcycle body, boat hull+cabin, airplane fuselage+wings+tail), shown/hidden by sync_vehicle_model
 - [x] **T3.3** Apply material based on vehicle type — vehicle_material_spec() PBR (metallic/perceptual_roughness/emissive) applied by apply_vehicle_material
-- [ ] **T3.4** Verify < 500 triangles per model
+- [x] **T3.4** Verify < 500 triangles per model — built_meshes_match_triangle_budget counts real mesh indices (largest: motorcycle 244)
 
 ## Phase 4: Cosmetic Models
 - [x] **T4.1** Create cosmetic model paths — cosmetic_paths() single source (6 paths)

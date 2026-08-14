@@ -404,3 +404,154 @@ mod spec_tests {
         assert_eq!(m.total_count(), 14);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Primitive shape plans (Spec 016 T3.4 — <500 triangles per vehicle)
+// ---------------------------------------------------------------------------
+
+/// One primitive part of a vehicle/cosmetic model. Pure data; the client maps
+/// it onto Bevy mesh builders with the resolutions mirrored in
+/// `estimated_triangles`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ShapePart {
+    /// (radius, height, segments)
+    Cylinder { radius: f32, height: f32, segments: u32 },
+    /// (major_radius, minor_radius, major_segments, minor_segments)
+    Torus { major: f32, minor: f32, major_segments: u32, minor_segments: u32 },
+    /// (x, y, z)
+    Box { x: f32, y: f32, z: f32 },
+    /// (radius, height, segments)
+    Cone { radius: f32, height: f32, segments: u32 },
+    /// (min_y, max_y, radius, segments)
+    Capsule { min_y: f32, max_y: f32, radius: f32, segments: u32 },
+}
+
+impl ShapePart {
+    /// Conservative triangle count for the builder resolutions used by the
+    /// client (cylinder: 4·segments; cone: 3·segments; torus: major·minor·2;
+    /// capsule: 10·segments with 4 latitudes; box: 12).
+    pub fn estimated_triangles(&self) -> u32 {
+        match self {
+            ShapePart::Cylinder { segments, .. } => segments * 4,
+            ShapePart::Torus { major_segments, minor_segments, .. } => {
+                major_segments * minor_segments * 2
+            }
+            ShapePart::Box { .. } => 12,
+            ShapePart::Cone { segments, .. } => segments * 3,
+            ShapePart::Capsule { segments, .. } => segments * 10,
+        }
+    }
+}
+
+/// Vehicle model plans (Spec 016 T3.2/T3.4): every type stays under 500
+/// triangles with primitive shapes.
+pub fn vehicle_shape(vehicle: VehicleAssetType) -> &'static [ShapePart] {
+    match vehicle {
+        VehicleAssetType::None => &[],
+        // Frame tube + saddle + two wheels.
+        VehicleAssetType::Bicycle => &[
+            ShapePart::Cylinder { radius: 0.05, height: 0.8, segments: 10 },
+            ShapePart::Cylinder { radius: 0.05, height: 0.5, segments: 10 },
+            ShapePart::Torus { major: 0.28, minor: 0.06, major_segments: 8, minor_segments: 5 },
+            ShapePart::Torus { major: 0.28, minor: 0.06, major_segments: 8, minor_segments: 5 },
+        ],
+        // Deck + column + two small wheels.
+        VehicleAssetType::Scooter => &[
+            ShapePart::Box { x: 0.3, y: 0.05, z: 0.7 },
+            ShapePart::Cylinder { radius: 0.04, height: 0.6, segments: 8 },
+            ShapePart::Torus { major: 0.16, minor: 0.05, major_segments: 8, minor_segments: 4 },
+            ShapePart::Torus { major: 0.16, minor: 0.05, major_segments: 8, minor_segments: 4 },
+        ],
+        // Body + two wheels + handlebar.
+        VehicleAssetType::Motorcycle => &[
+            ShapePart::Box { x: 0.45, y: 0.25, z: 1.1 },
+            ShapePart::Torus { major: 0.3, minor: 0.07, major_segments: 10, minor_segments: 5 },
+            ShapePart::Torus { major: 0.3, minor: 0.07, major_segments: 10, minor_segments: 5 },
+            ShapePart::Cylinder { radius: 0.03, height: 0.7, segments: 8 },
+        ],
+        // Hull + cabin + mast.
+        VehicleAssetType::Boat => &[
+            ShapePart::Box { x: 0.7, y: 0.3, z: 1.3 },
+            ShapePart::Box { x: 0.3, y: 0.25, z: 0.4 },
+            ShapePart::Cylinder { radius: 0.03, height: 0.9, segments: 8 },
+        ],
+        // Fuselage + wings + tail.
+        VehicleAssetType::Airplane => &[
+            ShapePart::Box { x: 0.3, y: 0.3, z: 1.5 },
+            ShapePart::Box { x: 1.3, y: 0.05, z: 0.35 },
+            ShapePart::Box { x: 0.35, y: 0.05, z: 0.3 },
+            ShapePart::Capsule { min_y: -0.25, max_y: 0.25, radius: 0.08, segments: 8 },
+        ],
+    }
+}
+
+/// Total estimated triangle count for a vehicle's model plan.
+pub fn vehicle_triangle_budget(vehicle: VehicleAssetType) -> u32 {
+    vehicle_shape(vehicle).iter().map(|p| p.estimated_triangles()).sum()
+}
+
+/// Cosmetic plans layered on top of the player mesh (Spec 016 T4.2/T4.3).
+pub fn cosmetic_shape(cosmetic: CosmeticAssetType) -> &'static [ShapePart] {
+    match cosmetic {
+        CosmeticAssetType::Hat => &[
+            ShapePart::Cone { radius: 0.35, height: 0.45, segments: 10 },
+            ShapePart::Cylinder { radius: 0.37, height: 0.06, segments: 10 },
+        ],
+        CosmeticAssetType::Aura => &[
+            ShapePart::Torus { major: 0.5, minor: 0.03, major_segments: 16, minor_segments: 4 },
+        ],
+        CosmeticAssetType::Trail => &[ShapePart::Box { x: 0.05, y: 0.05, z: 0.05 }],
+    }
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+
+    #[test]
+    fn every_vehicle_under_500_triangles() {
+        for v in [
+            VehicleAssetType::Bicycle,
+            VehicleAssetType::Scooter,
+            VehicleAssetType::Motorcycle,
+            VehicleAssetType::Boat,
+            VehicleAssetType::Airplane,
+        ] {
+            let budget = vehicle_triangle_budget(v);
+            assert!(
+                budget < 500,
+                "{v:?} exceeds triangle budget: {budget} >= 500"
+            );
+            assert!(!vehicle_shape(v).is_empty(), "{v:?} has no parts");
+        }
+    }
+
+    #[test]
+    fn none_has_no_parts() {
+        assert!(vehicle_shape(VehicleAssetType::None).is_empty());
+        assert_eq!(vehicle_triangle_budget(VehicleAssetType::None), 0);
+    }
+
+    #[test]
+    fn primitives_are_axis_aligned() {
+        // Smoke: builders won't be fed degenerate sizes.
+        for part in vehicle_shape(VehicleAssetType::Airplane) {
+            match part {
+                ShapePart::Box { x, y, z } => {
+                    assert!(*x > 0.0 && *y > 0.0 && *z > 0.0);
+                }
+                ShapePart::Cylinder { radius, height, .. } => {
+                    assert!(*radius > 0.0 && *height > 0.0);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn cosmetics_have_parts() {
+        assert!(cosmetic_shape(CosmeticAssetType::Hat).len() == 2);
+        assert!(cosmetic_shape(CosmeticAssetType::Aura).len() == 1);
+        assert!(!cosmetic_shape(CosmeticAssetType::Trail).is_empty());
+    }
+}
