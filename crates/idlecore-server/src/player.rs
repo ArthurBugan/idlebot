@@ -10,32 +10,47 @@ use crate::types::{
 /// Login: create the account on first login, otherwise restore it. Binds the
 /// SpacetimeDB connection identity to the wallet address (server-authoritative
 /// ownership — the address is only ever stored once, on first login).
-pub fn login(
-    ctx: &ReducerContext,
+/// Outcome of a login, separated from the DB write so it is testable.
+#[derive(Debug, Clone)]
+pub struct LoginOutcome {
+    pub created: bool,
+    pub player: Player,
+    pub rapid: bool,
+}
+
+/// Pure part of login: create the account on first login, otherwise restore
+/// it. Binds the connection identity to the wallet address (server-
+/// authoritative ownership — the address is only ever stored once, on first
+/// login) and applies the idle-gain anti-cheat rapid-login ban.
+pub fn resolve_login(
+    existing: Option<&Player>,
     address: &str,
-    sender_identity: &str,
-) -> Result<(bool, bool), String> {
-    let now = now_secs(ctx);
+    identity: &str,
+    now: u64,
+) -> Result<LoginOutcome, String> {
     let lower = address.to_lowercase();
-
-    let mut player = match ctx.db.player().address().find(lower.clone()) {
-        Some(p) => p,
-        None => {
-            let p = new_player(&lower, sender_identity, now);
-            ctx.db.player().insert(p.clone());
-            return Ok((true, false)); // created = true
-        }
+    let Some(existing) = existing else {
+        return Ok(LoginOutcome {
+            created: true,
+            player: new_player(&lower, identity, now),
+            rapid: false,
+        });
     };
-
-    if !player.identity.is_empty() && player.identity != sender_identity {
+    if !existing.identity.is_empty() && existing.identity != identity {
         return Err("Address already claimed by another identity".to_string());
     }
-    player.identity = sender_identity.to_string();
+    let mut player = existing.clone();
+    player.identity = identity.to_string();
 
     // Idle-gain anti-cheat: rapid re-login within 5 min of the previous one
     // triggers a 90-day "new player" state (PROPOSAL 2.2).
-    let rapid = player.last_login > 0 && now.saturating_sub(player.last_login) < RAPID_LOGIN_WINDOW_SECS;
-    player.rapid_login_count = if rapid { player.rapid_login_count.saturating_add(1) } else { 0 };
+    let rapid = player.last_login > 0
+        && now.saturating_sub(player.last_login) < RAPID_LOGIN_WINDOW_SECS;
+    player.rapid_login_count = if rapid {
+        player.rapid_login_count.saturating_add(1)
+    } else {
+        0
+    };
     if rapid && player.rapid_login_count >= 2 {
         player.idle_gains_blocked_until = now.saturating_add(RAPID_LOGIN_BAN_SECS);
         tracing::warn!(
@@ -49,9 +64,29 @@ pub fn login(
     player.status = "online".to_string();
     player.last_login = now;
     player.last_seen = now;
+    Ok(LoginOutcome {
+        created: false,
+        player,
+        rapid,
+    })
+}
 
-    ctx.db.player().address().update(player.clone());
-    Ok((false, rapid))
+/// Login: applies `resolve_login`, then persists the row (Spec 013/014).
+pub fn login(
+    ctx: &ReducerContext,
+    address: &str,
+    sender_identity: &str,
+) -> Result<(bool, bool), String> {
+    let now = now_secs(ctx);
+    let lower = address.to_lowercase();
+    let existing = ctx.db.player().address().find(lower.clone());
+    let outcome = resolve_login(existing.as_ref(), &lower, sender_identity, now)?;
+    if outcome.created {
+        ctx.db.player().insert(outcome.player.clone());
+    } else {
+        ctx.db.player().address().update(outcome.player.clone());
+    }
+    Ok((outcome.created, outcome.rapid))
 }
 
 /// Create a brand-new player (Spec 014): starting gold 100, level 1.
@@ -208,5 +243,55 @@ pub fn log_outcome(_ctx: &ReducerContext, address: &str, action: &str, outcome: 
         crate::interactions::Outcome::Err(msg) => {
             tracing::warn!("ACT-REJECTED {address} {action}: {msg}");
         }
+    }
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+
+    fn sample(address: &str, identity: &str, last_login: u64, count: u32) -> Player {
+        let mut p = new_player(address, identity, 1_000_000);
+        p.last_login = last_login;
+        p.rapid_login_count = count;
+        p
+    }
+
+    #[test]
+    fn creation_from_wallet_address_works() {
+        // Spec 014 T5.1: first login creates the row from the wallet address.
+        let outcome = resolve_login(None, "0xAbC123", "id-1", 1_000_000).unwrap();
+        assert!(outcome.created);
+        assert!(!outcome.rapid);
+        let p = &outcome.player;
+        assert_eq!(p.address, "0xabc123");
+        assert_eq!(p.identity, "id-1");
+        assert_eq!(p.level, 1);
+        assert_eq!(p.gold, STARTING_GOLD);
+        assert_eq!(p.status, "online");
+        assert_eq!(p.avatar, "Tetrahedron");
+    }
+
+    #[test]
+    fn claimed_address_rejected_for_other_identity() {
+        let existing = sample("0xa", "id-1", 0, 0);
+        let err = resolve_login(Some(&existing), "0xA", "id-2", 1_000_000).unwrap_err();
+        assert!(err.contains("claimed"));
+    }
+
+    #[test]
+    fn empty_identity_claim_binds() {
+        let existing = sample("0xa", "", 0, 0);
+        let outcome = resolve_login(Some(&existing), "0xa", "id-9", 1_000_000).unwrap();
+        assert!(!outcome.created);
+        assert_eq!(outcome.player.identity, "id-9");
+    }
+
+    #[test]
+    fn regular_relogin_resets_rapid_count() {
+        let existing = sample("0xa", "id-1", 1_000_000 - 400, 3);
+        let outcome = resolve_login(Some(&existing), "0xa", "id-1", 1_000_000).unwrap();
+        assert!(!outcome.rapid);
+        assert_eq!(outcome.player.rapid_login_count, 0);
     }
 }

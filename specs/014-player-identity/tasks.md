@@ -30,7 +30,7 @@
 - [x] **T4.3** Avatar Next button cycles the 5 shapes via update_profile
 
 ## Phase 6: Testing
-- [ ] **T5.1** Player creation from wallet address works
+- [x] **T5.1** Player creation from wallet address works — resolve_login pure fn + tests (address lowercased, identity bound, STARTING_GOLD)
 - [x] **T5.2** Client filters alphanumerics ≤20; server update_profile re-validates
 - [x] **T5.3** Counters incremented in plant/harvest/clean/buy reducers
 - [x] **T5.4** Row persistence + reconnect restore
