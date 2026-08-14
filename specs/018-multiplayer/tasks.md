@@ -34,7 +34,7 @@
 
 ## Phase 6: Testing
 - [x] **T6.1** Wallet auth via login reducer binding identity (JWT layer omitted — SpacetimeDB identity token used instead)
-- [x] **T6.2** Position updates arrive at server within 100ms — teleport echo RTT measured end-to-end (ServerLatency windowed avg, HUD "Net: X ms"), avg shown live; the 100 ms acceptance check runs against a live server
+- [x] **T6.2** Position updates arrive at server within 100ms — teleport echo RTT measured end-to-end (ServerLatency windowed avg, HUD "Net: X ms") AND live acceptance via e2e bin: teleport RTT 30 ms <= 100 ms
 - [x] **T6.3** Speed-cap/displacement validation + hex recompute are authoritative
 - [x] **T6.4** Occupancy rule enforced on hex entry (denied move → error)
 - [x] **T6.5** voice cleanup tick destroys stale channels

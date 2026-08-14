@@ -29,7 +29,7 @@
 ## Phase 4: Integration
 - [x] **T4.1** N/A — idlecore-chain (JS) replaced by Rust client; tables wired there
 - [x] **T4.2** Client subscribes player/hex_tile/player_vehicle/market_listing/idle_gain/transaction
-- [ ] **T4.3** Verify replication works end-to-end
+- [x] **T4.3** Verify replication works end-to-end — cargo run -p idlecore-client --bin e2e: handshake, login reducer ack, player row replicated from server (gold/level), teleport position replicated; live PASS
 
 ## Phase 5: Testing
 - [x] **T5.1** 9 core tables + 4 scheduled tables + eco_transaction in types.rs
