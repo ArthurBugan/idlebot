@@ -99,8 +99,12 @@ fn main() {
             world_floor::update_world_floor
                 .after(minimap::sync_player_state)
                 .after(minimap::load_nearby_chunks),
+        ))
+        .add_systems(Update, (
             assets::track_asset_loading,
             assets::sync_vehicle_model,
+            assets::sync_cosmetic_layers,
+            assets::toggle_cosmetic_layers,
             assets::apply_vehicle_material,
             assets::update_trail_vfx,
             assets::expire_trail_particles,

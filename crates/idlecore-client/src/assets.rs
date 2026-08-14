@@ -10,8 +10,8 @@ use bevy::prelude::*;
 use bevy::world_serialization::WorldAsset;
 use bevy::time::Time;
 use idlecore_core::assets::{
-    AssetManager, VehicleAssetType, cosmetic_paths, plant_paths, vehicle_animation_clips,
-    vehicle_material_spec, vehicle_paths, vehicle_shape,
+    AssetManager, CosmeticAssetType, VehicleAssetType, cosmetic_paths, cosmetic_shape,
+    plant_paths, vehicle_animation_clips, vehicle_material_spec, vehicle_paths, vehicle_shape,
 };
 use idlecore_core::Vehicle;
 
@@ -462,3 +462,170 @@ mod vehicle_mesh_tests {
         assert_eq!(ShapePart::Box { x: 1.0, y: 1.0, z: 1.0 }.estimated_triangles(), 12);
     }
 }
+
+// ============================================================================
+// Cosmetic layers on the avatar (Spec 016 T4.2/T4.3 — primitive shapes)
+// ============================================================================
+
+/// Which cosmetic layer set is currently displayed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CosmeticMode {
+    #[default]
+    None,
+    Hat,
+    Aura,
+    Both,
+}
+
+/// Cycles None → Hat → Aura → Both → None (pure, testable).
+pub fn next_cosmetic_mode(mode: CosmeticMode) -> CosmeticMode {
+    match mode {
+        CosmeticMode::None => CosmeticMode::Hat,
+        CosmeticMode::Hat => CosmeticMode::Aura,
+        CosmeticMode::Aura => CosmeticMode::Both,
+        CosmeticMode::Both => CosmeticMode::None,
+    }
+}
+
+#[derive(Resource, Default)]
+pub struct CosmeticLayers {
+    pub mode: CosmeticMode,
+}
+
+/// Marks a spawned cosmetic layer and its category.
+#[derive(Component, Clone, Copy, PartialEq, Debug)]
+pub struct CosmeticLayerKind(pub CosmeticAssetType);
+
+/// Spawns the hat (cone + brim at head height) and the aura ring around the
+/// player, both hidden until toggled. Parented to the unscaled physics body.
+pub fn spawn_cosmetic_layers(
+    mut commands: Commands,
+    bodies: Query<Entity, With<PhysicsBody>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let Ok(player_root) = bodies.single() else { return };
+    let hat = cosmetic_shape(CosmeticAssetType::Hat);
+    let placements: [(&[ShapePart], CosmeticAssetType, Vec3, Quat, Color); 2] = [
+        (&hat, CosmeticAssetType::Hat, Vec3::new(0.0, 1.5, 0.0), Quat::IDENTITY, Color::srgb(1.0, 0.55, 0.1)),
+        (
+            cosmetic_shape(CosmeticAssetType::Aura),
+            CosmeticAssetType::Aura,
+            Vec3::new(0.0, 1.0, 0.0),
+            Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
+            Color::srgb(0.2, 1.0, 0.5),
+        ),
+    ];
+    for (parts, kind, offset, rotation, color) in placements {
+        let srgb = color.to_srgba();
+        let mut m = StandardMaterial::from_color(color);
+        m.emissive = bevy::color::LinearRgba::rgb(srgb.red, srgb.green, srgb.blue) * 0.15;
+        for part in parts {
+            commands.spawn((
+                Name::new(format!("cosmetic-{kind:?}").to_lowercase()),
+                CosmeticLayerKind(kind),
+                Mesh3d(meshes.add(build_shape_mesh(part))),
+                MeshMaterial3d(materials.add(m.clone())),
+                Transform::from_translation(offset).with_rotation(rotation),
+                Visibility::Hidden,
+                ChildOf(player_root),
+            ));
+        }
+    }
+}
+
+/// Shows layers per the current `CosmeticLayers.mode`.
+pub fn sync_cosmetic_layers(
+    state: Option<Res<CosmeticLayers>>,
+    mut layers: Query<(&CosmeticLayerKind, &mut Visibility)>,
+) {
+    for (kind, mut vis) in &mut layers {
+        let mode = state.as_ref().map(|s| s.mode).unwrap_or_default();
+        let on = match (mode, kind.0) {
+            (CosmeticMode::None, _) => false,
+            (CosmeticMode::Hat, CosmeticAssetType::Hat) => true,
+            (CosmeticMode::Aura, CosmeticAssetType::Aura) => true,
+            (CosmeticMode::Both, _) => true,
+            _ => false,
+        };
+        *vis = if on { Visibility::Visible } else { Visibility::Hidden };
+    }
+}
+
+/// J cycles through cosmetic layer modes.
+pub fn toggle_cosmetic_layers(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut state: ResMut<CosmeticLayers>,
+) {
+    if keys.just_pressed(KeyCode::KeyJ) {
+        state.mode = next_cosmetic_mode(state.mode);
+    }
+}
+
+
+#[cfg(test)]
+mod cosmetic_tests {
+    use super::*;
+    use bevy::app::App;
+
+    #[test]
+    fn mode_cycles_through_all_states() {
+        let mut mode = CosmeticMode::None;
+        let seen = vec![CosmeticMode::Hat, CosmeticMode::Aura, CosmeticMode::Both, CosmeticMode::None];
+        for expected in seen {
+            mode = next_cosmetic_mode(mode);
+            assert_eq!(mode, expected);
+        }
+    }
+
+    #[test]
+    fn sync_shows_only_selected_layers() {
+        let mut app = App::new();
+        app.insert_resource(CosmeticLayers::default());
+        app.insert_resource(Assets::<Mesh>::default());
+        app.insert_resource(Assets::<StandardMaterial>::default());
+        let root = app.world_mut().spawn_empty().id();
+        let mut commands = app.world_mut().commands();
+        let mut spawn = |kind: CosmeticAssetType, y: f32| {
+            commands.spawn((
+                CosmeticLayerKind(kind),
+                Transform::from_xyz(0.0, y, 0.0),
+                Visibility::Hidden,
+                ChildOf(root),
+            ));
+        };
+        spawn(CosmeticAssetType::Hat, 1.5);
+        spawn(CosmeticAssetType::Aura, 1.0);
+        app.add_systems(Update, sync_cosmetic_layers);
+        app.update();
+        {
+            let mut layers = app.world_mut().query::<(&CosmeticLayerKind, &Visibility)>();
+            for (kind, vis) in layers.iter(app.world()) {
+                assert_eq!(*vis, Visibility::Hidden, "{kind:?} should be hidden");
+            }
+        }
+        app.world_mut()
+            .resource_mut::<CosmeticLayers>()
+            .mode = CosmeticMode::Hat;
+        app.update();
+        {
+            let mut layers = app.world_mut().query::<(&CosmeticLayerKind, &Visibility)>();
+            for (kind, vis) in layers.iter(app.world()) {
+                let expect = matches!(kind.0, CosmeticAssetType::Hat);
+                assert_eq!(*vis == Visibility::Visible, expect, "{kind:?} mismatch");
+            }
+        }
+    }
+
+    #[test]
+    fn sync_no_ops_without_state() {
+        // Res<CosmeticLayers> missing: system must be skipped gracefully.
+        let mut app = App::new();
+        app.insert_resource(Assets::<Mesh>::default());
+        app.insert_resource(Assets::<StandardMaterial>::default());
+        app.world_mut().spawn((CosmeticLayerKind(CosmeticAssetType::Hat), Visibility::Hidden));
+        app.add_systems(Update, sync_cosmetic_layers);
+        app.update();
+    }
+}
+

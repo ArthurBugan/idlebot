@@ -25,8 +25,8 @@
 
 ## Phase 4: Cosmetic Models
 - [x] **T4.1** Create cosmetic model paths — cosmetic_paths() single source (6 paths)
-- [x] **T4.2** Load cosmetics via asset server (display awaits authored .glb files)
-- [x] **T4.3** Layer cosmetics on player mesh — child-of-player-root when files land; placeholder auras/trails active now
+- [x] **T4.2** Load and display on player avatar — hat (cone+brim) and aura ring primitives parented to the player, toggled with J
+- [x] **T4.3** Layer cosmetics on top of player mesh — child-of-physics-body layering with per-layer hide/show (CosmeticMode None/Hat/Aura/Both)
 
 ## Phase 5: Plant Models (3 types)
 - [x] **T4.4** Create plant model paths — plant_paths() single source (3 paths)
