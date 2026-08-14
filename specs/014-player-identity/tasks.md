@@ -10,14 +10,14 @@
 ## Phase 2: Player Manager
 - [ ] **T2.1** Create PlayerManager struct (players HashMap<UUID, Player>)
 - [ ] **T2.2** Implement create_player(address) — generate UUID, set defaults
-- [ ] **T2.3** Implement update_display_name() with validation (≤20 chars, alphanumeric)
+- [x] **T2.3** update_display_name — update_profile validates ≤20 alphanumerics, rejects invalid
 - [ ] **T2.4** Implement get_player_stats() — return PlayerStats
 - [ ] **T2.5** Implement get_player_by_address()
 
 ## Phase 3: Database Integration
 - [x] **T3.1** Player schema — types.rs game player row (address PK, stats, positions)
 - [x] **T3.2** create_player — login reducer upserts the player row
-- [ ] **T3.3** Implement update_player_spacetimedb() — update display_name, avatar, bio
+- [x] **T3.3** update_player — update_profile reducer persists display_name/avatar/bio (server-side; client menu UI pending)
 - [x] **T3.4** get_player — client reads subscribed player rows by address
 
 ## Phase 4: SpacetimeDB Indexes
