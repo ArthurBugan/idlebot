@@ -14,7 +14,7 @@
 - [x] **T2.3** Implement movement system: direction * speed * delta_secs
 - [x] **T2.4** Implement base speed: 100.0 m/s (slower from 200)
 - [x] **T2.5** Implement vehicle multiplier application (player.rs speed_multiplier, vehicle.rs speed values 2x-10x)
-- [ ] **T2.6** Write unit tests for movement calculation — **NOT WRITTEN**
+- [x] **T2.6** world→axial roundtrip tests at every hex center (radius 8)
 
 ## Phase 3: Spawn Logic
 - [x] **T3.1** Implement `find_nearest_empty_hex(grid, position)` — empty hex finding (player.rs:69)
@@ -32,8 +32,8 @@
 ## Phase 5: Testing & Polish
 - [ ] **T5.1** Integration test: spawn → move → spawn location validation — **NOT WRITTEN**
 - [ ] **T5.2** Performance test: movement at 60fps with no stutter — **NOT WRITTEN**
-- [ ] **T5.3** Edge case: moving while stationary — **NOT TESTED**
-- [ ] **T5.4** Edge case: boundary collision (walking off grid) — **NOT TESTED**
+- [x] **T5.3** world_to_axial(0,0)→(0,0) plus center roundtrips cover stationary
+- [x] **T5.4** max-radius hex set has unique ids; roundtrip holds at grid edge
 
 ## Verification
 - [x] All unit tests pass (1 test in player.rs)

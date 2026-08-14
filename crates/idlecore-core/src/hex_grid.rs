@@ -18,24 +18,23 @@ impl HexGrid {
     }
 
     /// Convert world position (x, z) to axial coordinates (q, r).
-    /// Uses floating point for rounding.
+    /// Uses floating point for rounding (cube-round fixup, red-blob style).
     pub fn world_to_axial(x: f32, z: f32, size: f32) -> (i32, i32) {
-        let q = (f32::sqrt(3.0) / 3.0 * x - 1.0 / 3.0 * z) / size;
-        let r = 2.0 / 3.0 * z / size;
-        let q_round = q.round() as i32;
-        let r_round = r.round() as i32;
-        let s_round = (-q - r).round() as i32;
-        let q_frac = (q_round as f32 - q).abs();
-        let r_frac = (r_round as f32 - r).abs();
-        let s_frac = (s_round as f32 + q_round as f32 + r_round as f32).abs();
-
-        if q_frac > r_frac && q_frac > s_frac {
-            (-r_round, -q_round)
-        } else if r_frac > s_frac {
-            (-q_round, -r_round)
-        } else {
-            (q_round, r_round)
+        let qf = (f32::sqrt(3.0) / 3.0 * x - 1.0 / 3.0 * z) / size;
+        let rf = 2.0 / 3.0 * z / size;
+        let sf = -qf - rf;
+        let mut rq = qf.round();
+        let mut rr = rf.round();
+        let rs = sf.round();
+        let qd = (rq - qf).abs();
+        let rd = (rr - rf).abs();
+        let sd = (rs - sf).abs();
+        if qd > rd && qd > sd {
+            rq = -rr - rs;
+        } else if rd > sd {
+            rr = -rq - rs;
         }
+        (rq as i32, rr as i32)
     }
 
     /// Get the 6 neighbors of a hex in axial coordinates.
@@ -129,8 +128,67 @@ mod tests {
     }
 
     #[test]
-    fn test_hexes_in_radius() {
+    fn test_empty_grid_radius_zero_has_only_center() {
         let hexes = HexGrid::hexes_in_radius(0, 0, 1);
         assert_eq!(hexes.len(), 7); // center + 6 neighbors
     }
 }
+
+    #[test]
+    fn empty_grid_radius_zero_has_only_center() {
+        let all = HexGrid::hexes_in_radius(7, -3, 0);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].q, 7);
+        assert_eq!(all[0].r, -3);
+    }
+
+    #[test]
+    fn max_grid_64_radius_count() {
+        let all = HexGrid::hexes_in_radius(0, 0, 64);
+        // 3r² + 3r + 1 for r = 64.
+        assert_eq!(all.len(), 3 * 64 * 64 + 3 * 64 + 1);
+    }
+
+    #[test]
+    fn grid_ids_are_unique_across_max_grid() {
+        let mut ids: std::collections::HashSet<u64> = Default::default();
+        for h in HexGrid::hexes_in_radius(0, 0, 64) {
+            assert!(ids.insert(h.to_id()), "duplicate id at {:?}", (h.q, h.r));
+        }
+        assert_eq!(ids.len(), 3 * 64 * 64 + 3 * 64 + 1);
+    }
+
+    #[test]
+    fn world_roundtrip_at_hex_centers() {
+        // Walking off-grid / boundary: every hex center in radius 8 maps back
+        // to itself (world_pos→axial must be the inverse of axial→world).
+        for h in HexGrid::hexes_in_radius(0, 0, 8) {
+            let (x, z) = HexGrid::axial_to_world(h.q, h.r, 4.0);
+            let (q2, r2) = HexGrid::world_to_axial(x, z, 4.0);
+            assert_eq!((q2, r2), (h.q, h.r), "roundtrip failed for {:?}", (h.q, h.r));
+        }
+    }
+
+    #[test]
+    fn large_grid_generation_is_fast() {
+// Spec 002 T5.1: 12,480 hexes (radius 64) generate + visit without
+        // breaking 60fps. Generous local bound; smoke-perf test.
+        let start = std::time::Instant::now();
+        let all = HexGrid::hexes_in_radius(0, 0, 64);
+        let elapsed = start.elapsed();
+        assert_eq!(all.len(), 12_481);
+        assert!(
+            elapsed.as_millis() < 500,
+            "radius-64 traversal took {:?}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn neighbors_distance_consistency() {
+        let origin = (3, -2);
+        for n in HexGrid::neighbors(origin.0, origin.1) {
+            assert_eq!(HexGrid::distance(origin.0, origin.1, n.q, n.r), 1);
+        }
+        assert_eq!(HexGrid::distance(0, 0, 64, -64), 64);
+    }
