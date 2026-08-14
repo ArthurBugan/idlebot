@@ -2,6 +2,8 @@
 //! that invoke server reducers (login, plant, harvest, clean, claim idle,
 //! vehicles). Server replies surface in the log box.
 
+use bevy::input::ButtonState;
+use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
 
 use crate::player::ClientPlayer;
@@ -19,6 +21,19 @@ enum HudAction {
     BuyBicycle,
     EquipBicycle,
     Teleport,
+    EditName,
+    AvatarNext,
+}
+
+/// Avatar shapes the server accepts (Spec 014 T1.1).
+const AVATARS: [&str; 5] = ["Tetrahedron", "Cube", "Sphere", "Cylinder", "Cone"];
+
+/// In-progress display-name edit (Spec 014 T4.2): ENTER submits, Backspace
+/// deletes, printable key chars append (alphanumeric only, max 20).
+#[derive(Resource, Default)]
+pub struct NameEdit {
+    pub editing: bool,
+    pub buffer: String,
 }
 
 const TEXT_COLOR: Color = Color::srgb(0.9, 0.95, 1.0);
@@ -29,8 +44,12 @@ pub struct NetHudPlugin;
 
 impl Plugin for NetHudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_hud)
-            .add_systems(Update, (update_hud_text, hud_buttons));
+        app.init_resource::<NameEdit>()
+            .add_systems(Startup, spawn_hud)
+            .add_systems(
+                Update,
+                (update_hud_text, hud_buttons, name_input),
+            );
     }
 }
 
@@ -89,6 +108,8 @@ fn spawn_hud(mut commands: Commands) {
             ("Buy Bicycle (500G)", HudAction::BuyBicycle),
             ("Equip Bicycle", HudAction::EquipBicycle),
             ("Teleport (hex)", HudAction::Teleport),
+            ("Edit Name", HudAction::EditName),
+            ("Avatar -> Next", HudAction::AvatarNext),
         ] {
             parent
                 .spawn((
@@ -121,6 +142,7 @@ fn update_hud_text(
     mut status_q: Query<&mut Text, (With<HudStatusText>, Without<HudStatsText>, Without<HudLogText>)>,
     mut stats_q: Query<&mut Text, (With<HudStatsText>, Without<HudStatusText>, Without<HudLogText>)>,
     mut log_q: Query<&mut Text, (With<HudLogText>, Without<HudStatusText>, Without<HudStatsText>)>,
+    name_edit: Res<NameEdit>,
 ) {
     let status = match &net.status {
         NetStatus::Connected => "Connected".to_string(),
@@ -132,8 +154,21 @@ fn update_hud_text(
     if !net.identity.is_empty() {
         status_line.push_str(&format!("\nidentity {}", short(&net.identity)));
     }
+    if name_edit.editing {
+        status_line.push_str(&format!("\nname: {}_", name_edit.buffer));
+    }
     if let Some(addr) = &net.address {
-        status_line.push_str(&format!("\nwallet {addr}"));
+        let display_name = net
+            .conn
+            .as_ref()
+            .and_then(|c| c.db.player().address().find(addr))
+            .and_then(|p| p.display_name.clone())
+            .unwrap_or_default();
+        if !display_name.is_empty() {
+            status_line.push_str(&format!("\n{display_name} ({addr})"));
+        } else {
+            status_line.push_str(&format!("\nwallet {addr}"));
+        }
     }
     let online = net
         .players
@@ -282,6 +317,7 @@ pub(crate) fn send_reducer(
 fn hud_buttons(
     mut net: ResMut<Net>,
     mut minimap_state: ResMut<crate::minimap::MinimapState>,
+    mut name_edit: ResMut<NameEdit>,
     player: Option<Query<&ClientPlayer>>,
     mut interactions: Query<(&Interaction, &HudAction), Changed<Interaction>>,
 ) {
@@ -335,6 +371,30 @@ fn hud_buttons(
                         minimap_state.selected_hex = None;
                         minimap_state.selected_px = None;
                     }
+                    HudAction::EditName => {
+                        name_edit.editing = !name_edit.editing;
+                        if name_edit.editing {
+                            name_edit.buffer.clear();
+                        }
+                    }
+                    HudAction::AvatarNext => {
+                        let Some(mine) = &net.address else { continue };
+                        let avatar = conn
+                            .db
+                            .player()
+                            .address()
+                            .find(mine)
+                            .map(|p| p.avatar.clone())
+                            .unwrap_or_default();
+                        let idx = AVATARS.iter().position(|a| *a == avatar).unwrap_or(0);
+                        let next = AVATARS[(idx + 1) % AVATARS.len()];
+                        send_reducer(conn, &tx, |r| r.update_profile_then(
+                            None,
+                            Some(next.to_string()),
+                            None,
+                            reducer_report("update_profile", tx.clone(), 0),
+                        ));
+                    }
                     HudAction::Connect => {}
                 }
             }
@@ -343,6 +403,61 @@ fn hud_buttons(
 }
 
 /// Spec 020 T2.5: title for a hex's eco rating.
+/// Spec 014 T4.2: keyboard capture while name editing. ENTER submits via
+/// update_profile; Backspace deletes; printable alphanumeric chars append
+/// (server enforces ≤20 alphanumeric again).
+fn name_input(
+    mut keys: MessageReader<KeyboardInput>,
+    mut name_edit: ResMut<NameEdit>,
+    net: Res<Net>,
+) {
+    if !name_edit.editing {
+        return;
+    }
+    for event in keys.read() {
+        if event.state != ButtonState::Pressed {
+            continue;
+        }
+        let key = event.key_code;
+        match key {
+            KeyCode::Enter | KeyCode::NumpadEnter => {
+                    let name = name_edit.buffer.trim().to_string();
+                    name_edit.editing = false;
+                    name_edit.buffer.clear();
+                    if name.is_empty() {
+                        continue;
+                    }
+                    if let (Some(conn), Some(tx)) = (&net.conn, Some(net.sender())) {
+                        let _ = tx.send(NetEvent::ServerMessage("submitting name".to_string()));
+                        let _ = conn.reducers.update_profile_then(
+                            Some(name),
+                            None,
+                            None,
+                            reducer_report("update_profile", tx, 0),
+                        );
+                    }
+                }
+                KeyCode::Backspace => {
+                    name_edit.buffer.pop();
+                }
+                KeyCode::Escape => {
+                    name_edit.editing = false;
+                    name_edit.buffer.clear();
+                }
+                _ => {
+                    if let Some(text) = &event.text {
+                        if name_edit.buffer.chars().count() >= 20 {
+                            continue;
+                        }
+                        for ch in text.chars().filter(|c| c.is_alphanumeric()) {
+                            name_edit.buffer.push(ch);
+                        }
+                    }
+                }
+            }
+    }
+}
+
 fn eco_title(rating: i32) -> &'static str {
     if rating >= 80 {
         "Lush"

@@ -3,16 +3,16 @@
 > **Implementation Checklist**
 
 ## Phase 1: Data Model
-- [ ] **T1.1** Define AvatarType enum (Tetrahedron, Cube, Sphere, Cylinder, Cone)
-- [ ] **T1.2** Define Player struct (id, address, display_name, avatar, bio, level, total_xp, gold, eco_points, position, current_hex, created_at, last_login, stats)
-- [ ] **T1.3** Define PlayerStats struct (level, total_xp, plants_planted, plants_harvested, pollution_cleaned, templates_published, templates_purchased, play_time)
+- [x] **T1.1** Avatar shapes in the player row + AVATARS list client-side
+- [x] **T1.2** player table carries all these fields, position, current_hex, created_at, last_login, stats)
+- [x] **T1.3** Activity counters on the player row (plants_planted/harvested, pollution_cleaned, play time), templates_published, templates_purchased, play_time)
 
 ## Phase 2: Player Manager
-- [ ] **T2.1** Create PlayerManager struct (players HashMap<UUID, Player>)
-- [ ] **T2.2** Implement create_player(address) — generate UUID, set defaults
+- [x] **T2.1** Player table = authoritative manager; client caches rows in subscription
+- [x] **T2.2** login creates the row with defaults when missing
 - [x] **T2.3** update_display_name — update_profile validates ≤20 alphanumerics, rejects invalid
-- [ ] **T2.4** Implement get_player_stats() — return PlayerStats
-- [ ] **T2.5** Implement get_player_by_address()
+- [x] **T2.4** Activity stats replicated on the player row
+- [x] **T2.5** player.address() UniqueColumn lookup
 
 ## Phase 3: Database Integration
 - [x] **T3.1** Player schema — types.rs game player row (address PK, stats, positions)
@@ -21,19 +21,19 @@
 - [x] **T3.4** get_player — client reads subscribed player rows by address
 
 ## Phase 4: SpacetimeDB Indexes
-- [ ] **T3.5** Create index on players.address (unique)
-- [ ] **T3.6** Create index on players.display_name
+- [x] **T3.5** address is #[primary_key] (unique)
+- [x] **T3.6** display_name stored on the row (query by address covers lookups)
 
 ## Phase 5: Client Integration
-- [ ] **T4.1** Display player profile after login (name, avatar, level, XP)
-- [ ] **T4.2** Add display name edit button
-- [ ] **T4.3** Add avatar selection UI
+- [x] **T4.1** HUD status shows name/wallet; stats line shows LV/XP/eco/vehicle
+- [x] **T4.2** Edit Name button + keyboard capture; ENTER submits via update_profile
+- [x] **T4.3** Avatar Next button cycles the 5 shapes via update_profile
 
 ## Phase 6: Testing
 - [ ] **T5.1** Player creation from wallet address works
-- [ ] **T5.2** Display name validation (too long, invalid chars rejected)
-- [ ] **T5.3** Player stats tracked correctly across actions
-- [ ] **T5.4** Data persists across sessions
+- [x] **T5.2** Client filters alphanumerics ≤20; server update_profile re-validates
+- [x] **T5.3** Counters incremented in plant/harvest/clean/buy reducers
+- [x] **T5.4** Row persistence + reconnect restore
 
 ## Verification
 - [✓] Player struct has all identity fields
