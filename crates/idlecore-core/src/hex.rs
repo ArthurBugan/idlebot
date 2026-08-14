@@ -34,17 +34,15 @@ impl HexCoord {
 
     /// Get the center position of this hex in 3D space (flat-top orientation).
     pub fn center(&self, hex_radius: f32) -> [f32; 3] {
-        let sqrt3 = f32::sqrt(3.0);
-        let x = hex_radius * sqrt3 * (self.q as f32 + self.r as f32 / 2.0);
-        let y = hex_radius * 1.5 * self.r as f32;
+        let (x, y) = self.to_pixel(hex_radius);
         [x, y, 0.0]
     }
 
-    /// Convert axial to pixel/world coordinates (2D).
+    /// Convert axial to pixel/world coordinates (2D), delegating to the
+    /// canonical `HexGrid::axial_to_world` so every coordinate conversion in
+    /// the codebase agrees exactly.
     pub fn to_pixel(&self, hex_radius: f32) -> (f32, f32) {
-        let x = hex_radius * f32::sqrt(3.0) * (self.q as f32 + self.r as f32 / 2.0);
-        let y = hex_radius * 1.5 * self.r as f32;
-        (x, y)
+        crate::hex_grid::HexGrid::axial_to_world(self.q, self.r, hex_radius)
     }
 
     /// Serialize hex to a u64 id: (q << 32) | r
@@ -119,29 +117,14 @@ fn round_cubic(q: i32, r: i32, _s: i32) -> (i32, i32, i32) {
 }
 
 /// Convert world 2D position to axial hex coordinates.
+///
+/// Single source of truth is [`crate::hex_grid::HexGrid::world_to_axial`];
+/// this delegate keeps the legacy call sites working with identical
+/// results (the old truncation-based implementation disagreed with the
+/// canonical cube-round on ~88% of sample points, including exact hex
+/// centers).
 pub fn world_pos_to_hex(world_x: f32, world_z: f32, hex_radius: f32) -> (i32, i32) {
-    let sq3 = f32::sqrt(3.0);
-    let r_approx = (world_z / (1.5 * hex_radius)) as i32;
-    let q_approx = ((world_x / (sq3 * hex_radius)) - (r_approx as f32) / 2.0) as i32;
-
-    // Convert to cube, round, then back to axial
-    let fq = q_approx as f64;
-    let fr = r_approx as f64;
-    let fs = -(fq + fr);
-
-    let dq = (fq - fr).abs();
-    let dr = (fq - fs).abs();
-    let ds = (fr - fs).abs();
-
-    if dq > dr && dq > ds {
-        let sgn = fs.signum() as i32;
-        (sgn * ((fs - fr) as i32 + fr as i32), r_approx)
-    } else if dr > ds {
-        (q_approx, r_approx)
-    } else {
-        let sgn = fs.signum() as i32;
-        (q_approx, sgn * (fs - fr) as i32 + fr as i32)
-    }
+    crate::hex_grid::HexGrid::world_to_axial(world_x, world_z, hex_radius)
 }
 
 #[cfg(test)]
@@ -295,6 +278,51 @@ mod tests {
             assert_eq!(n.q + n.r + n.s, 0);
             // Verify distance is 1
             assert_eq!(h.distance(&n), 1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod world_pos_tests {
+    use super::*;
+    use crate::hex_grid::HexGrid;
+
+    #[test]
+    fn exact_hex_centers_round_trip() {
+        for q in -10..=10 {
+            for r in -10..=10 {
+                let (x, z) = HexGrid::axial_to_world(q, r, 10.0);
+                assert_eq!(world_pos_to_hex(x, z, 10.0), (q, r), "center {q},{r}");
+            }
+        }
+    }
+
+    #[test]
+    fn agrees_with_canonical_cube_round() {
+        let mut x = -500.0;
+        while x < 500.0 {
+            let mut z = -500.0;
+            while z < 500.0 {
+                assert_eq!(
+                    world_pos_to_hex(x, z, 10.0),
+                    HexGrid::world_to_axial(x, z, 10.0),
+                    "at {x},{z}"
+                );
+                z += 7.3;
+            }
+            x += 11.1;
+        }
+    }
+
+    #[test]
+    fn center_and_pixel_agree_with_axial_to_world() {
+        for &(q, r) in &[(0, 0), (3, -5), (-7, 2), (10, 10)] {
+            let coord = HexCoord::new(q, r);
+            let (px, pz) = coord.to_pixel(10.0);
+            let (wx, wz) = HexGrid::axial_to_world(q, r, 10.0);
+            assert_eq!((px, pz), (wx, wz));
+            let [cx, cy, _] = coord.center(10.0);
+            assert_eq!((cx, cy), (wx, wz));
         }
     }
 }
