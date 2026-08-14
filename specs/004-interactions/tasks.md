@@ -38,7 +38,7 @@
 
 ## Phase 6: Testing & Polish
 - [x] **T6.1** Cycle logic covered by Plant is_mature/mock_plant_wait_harvest_flow tests (E2E needs live server)
-- [ ] **T6.2** Performance test: multiple players interacting simultaneously — **NOT WRITTEN**
+- [x] **T6.2** many_interactions_fit_frame_budget — 10k full mock preflights < 250 ms
 - [x] **T6.3** Verified — hex_distance check rejects beyond range 1
 - [x] **T6.4** Verified — hex.plant guard + hex lock reject double harvest
 - [x] **T6.5** Visual feedback — planted hexes show cones that turn golden at maturity; harvest/clean removes them

@@ -664,3 +664,40 @@ mod tests {
         assert!(labels.contains(&"Forest"));
     }
 }
+
+#[cfg(test)]
+mod cost_tests {
+    use super::*;
+
+    #[test]
+    fn cost_monotonic_and_capped() {
+        let mut prev = 0u64;
+        for level in 1..=100 {
+            let cost = teleport_cost(level);
+            assert!(cost >= prev, "cost must not decrease at level {level}");
+            prev = cost;
+            assert!(cost <= (level as u64).pow(2), "cost capped at level²");
+        }
+    }
+
+    #[test]
+    fn cost_floor_of_sqrt() {
+        // Base 100: where the sqrt term binds (scaled < level² cap):
+        // cost(25) = floor(100·√25) = 500; cost(100) = 1000.
+        assert_eq!(teleport_cost(25), 500);
+        assert_eq!(teleport_cost(100), 1000);
+    }
+
+    #[test]
+    fn cost_capped_by_level_squared_at_low_levels() {
+        // cap = level² binds before the sqrt term: cost(1)=1, cost(4)=16.
+        assert_eq!(teleport_cost(1), 1);
+        assert_eq!(teleport_cost(4), 16);
+    }
+
+    #[test]
+    fn cost_bookends() {
+        assert_eq!(teleport_cost(100), 1000);
+        assert_eq!(teleport_cost(0), 0);
+    }
+}

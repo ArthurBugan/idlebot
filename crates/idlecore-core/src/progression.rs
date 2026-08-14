@@ -68,3 +68,39 @@ mod tests {
         assert_eq!(super::xp_remaining_for_next_level(2, 500), 0);
     }
 }
+
+#[cfg(test)]
+mod additional_tests {
+    use super::*;
+
+    #[test]
+    fn threshold_exactness() {
+        // 100 + 400 = 500 XP reaches exactly level 3.
+        assert_eq!(calculate_level(0), 1);
+        assert_eq!(calculate_level(99), 1);
+        assert_eq!(calculate_level(100), 2);
+        assert_eq!(calculate_level(499), 2);
+        assert_eq!(calculate_level(500), 3);
+        assert_eq!(calculate_level(501), 3);
+    }
+
+    #[test]
+    fn level_cap_at_100() {
+        let huge = xp_for_next_level(99);
+        let total = (1u32..=99).map(|l| xp_for_next_level(l)).sum::<u64>();
+        assert_eq!(calculate_level(total - 1), 99);
+        assert_eq!(calculate_level(total), 100);
+        // No hard cap in the formula: very large XP keeps leveling.
+        assert!(calculate_level(u64::MAX / 1000) > 100);
+    }
+
+    #[test]
+    fn xp_remaining_boundaries() {
+        assert_eq!(xp_remaining_for_next_level(1, 0), 100);
+        assert_eq!(xp_remaining_for_next_level(1, 99), 1);
+        assert_eq!(xp_remaining_for_next_level(1, 100), 0);
+        // Level 3 needs 900 XP; with 600 total (100 past the 500 threshold),
+        // 800 remain.
+        assert_eq!(xp_remaining_for_next_level(3, 600), 800);
+    }
+}

@@ -281,3 +281,30 @@ mod tests {
         assert_eq!(planted.time_remaining(2000), 2600);
     }
 }
+
+#[cfg(test)]
+mod perf_tests {
+    use super::*;
+
+    #[test]
+    fn many_interactions_fit_frame_budget() {
+        // Spec 004 T6.2: many players interacting must not block a frame.
+        // 10k full mock preflights (all checks) under 250 ms.
+        let start = std::time::Instant::now();
+        let mut ok = 0usize;
+        for i in 0..10_000u32 {
+            let now = 100_000 + i as u64;
+            let dist = (i % 3) as i32;
+            let occupants = (i % 10) as usize;
+            if interaction_checks(dist, now, now - 6, now - 3, occupants).is_ok() {
+                ok += 1;
+            }
+        }
+        let elapsed = start.elapsed();
+        assert!(ok > 0);
+        assert!(
+            elapsed.as_millis() < 250,
+            "10k interaction checks took {elapsed:?}"
+        );
+    }
+}

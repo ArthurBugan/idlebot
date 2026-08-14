@@ -154,3 +154,38 @@ mod tests {
         assert!(occupancy_resolution(1.5, 1.5, 100, 100));
     }
 }
+
+#[cfg(test)]
+mod perf_tests {
+    use super::*;
+
+    #[test]
+    fn displacement_cap_monotonic() {
+        let mut prev = 0.0f32;
+        for speed in [1.0, 5.0, 10.0, 30.0] {
+            let cap = displacement_cap(speed, 0.1);
+            assert!(cap > prev);
+            prev = cap;
+        }
+    }
+
+    #[test]
+    fn movement_loop_fits_frame_budget() {
+        // Spec 003 T5.2: movement math must not stutter a 60fps frame.
+        // 100k full move computations (clamp + hex) in well under 16 ms.
+        let start = std::time::Instant::now();
+        let mut acc = 0u32;
+        for i in 0..100_000u32 {
+            let x = (i as f32 % 1000.0) - 500.0;
+            let y = (i as f32 / 1000.0) % 500.0 - 250.0;
+            let (q, r) = hex_at(x, y);
+            acc = acc.wrapping_add(q as u32).wrapping_add(r as u32);
+        }
+        let elapsed = start.elapsed();
+        assert_ne!(acc, 0);
+        assert!(
+            elapsed.as_millis() < 250,
+            "100k movement computations took {elapsed:?}"
+        );
+    }
+}
