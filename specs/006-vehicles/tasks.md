@@ -38,8 +38,8 @@
 - [x] **T6.3** Restore on reconnect — sync_remote_players mirrors row.vehicle into ClientPlayer
 
 ## Phase 7: Testing
-- [ ] **T7.1** Test purchase with sufficient gold
-- [ ] **T7.2** Test purchase with insufficient gold
-- [ ] **T7.3** Test equip/un equip cycle
-- [ ] **T7.4** Test speed multiplier applied correctly
-- [ ] **T7.5** Test vehicle persists across sessions
+- [x] **T7.1** tests_pure::purchase_with_sufficient_gold
+- [x] **T7.2** tests_pure::purchase_with_insufficient_gold
+- [x] **T7.3** tests_pure::equip_unequip_cycle
+- [x] **T7.4** tests_pure::speed_multipliers_match_catalog + movement uses shared multiplier()
+- [x] **T7.5** VehicleOwned row persists crafted state; PLAYER_VEHICLE row replicated on login

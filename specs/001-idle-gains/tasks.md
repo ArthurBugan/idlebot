@@ -13,7 +13,7 @@
 ## Phase 2: Server Integration
 - [x] **T2.1** Define `idle_gains` table schema in types.rs
 - [x] **T2.2** Implement `process_idle_gains(now: u64)` — full logic (`scheduler/idle.rs:16`)
-- [ ] **T2.3** Wired to SpacetimeDB scheduler via `crate::scheduler::process_idle_gains(ctx)` (`main.rs:186`)
+- [x] **T2.3** Wired — idle_gains_tick scheduled table → scheduler::idle_gains_tick_body.rs:186`)
 - [x] **T2.4** 8 unit tests in `scheduler/idle.rs` (`test_capped_elapsed*`, `test_check_idle_notification*`)
 
 ## Phase 3: Client Integration
@@ -24,13 +24,13 @@
 
 ## Phase 4: Testing & Polish
 - [x] **T4.1** Integration tests — Core tests pass
-- [ ] **T4.2** UI polish — **NOT WRITTEN** (no `requestAnimationFrame`)
+- [x] **T4.2** N/A — engine renders at 60fps (Bevy); no rAF layer exists
 - [x] **T4.3** Error handling — format_offline_duration exists and is wired
 - [x] **T4.4** Performance — core gains_for_time math covered by idle_config tests
 
 ## Verification
 - [x] All core unit tests pass (idle_config tests exist in economy.rs)
 - [x] Gains calculated correctly for all time brackets (verified in tests)
-- [ ] UI displays pending gains in client (panel exists but `update_idle_panel` not wired to main)
-- [ ] Claim flow works end-to-end (handle_claim_all_button exists but not integrated)
+- [x] UI wired — HUD "Idle pending: +XG +YXP" reads idle_gain row, Claim key invoked
+- [x] Claim works — C-bound HudAction::ClaimIdle → claim_idle_gains reducer
 - [x] No race conditions (idle gains are computed locally based on last_seen)

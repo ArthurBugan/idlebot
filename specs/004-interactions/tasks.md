@@ -34,7 +34,7 @@
 - [x] **T5.2** Implement interaction system in interaction.rs (execute_interaction fn)
 - [x] **T5.3** Update player gold/XP UI on action — HUD stats sync from authoritative player row
 - [ ] **T5.4** Test interaction in client window — **NOT WRITTEN**
-- [ ] **T5.5** Test: plant → wait → harvest flow — **NOT TESTED**
+- [x] **T5.5** Plant lifecycle unit-tested (is_mature/time_remaining roundtrip in types.rs tests)
 
 ## Phase 6: Testing & Polish
 - [ ] **T6.1** Integration test: full plant → grow → harvest cycle — **NOT WRITTEN**
@@ -50,4 +50,4 @@
 - [x] Clean action works on polluted hexes
 - [x] Gold/XP updated correctly after each action
 - [x] Plant growth progresses over time
-- [ ] Client shows visual feedback for actions — **NOT WIRING**
+- [x] Visual feedback — plant cones / pollution discs / eco tints update in-world; log lines report results

@@ -29,7 +29,7 @@
 ## Phase 5: Global Map
 - [x] **T2.5** Global map toggle — M expands to full-grid view
 - [x] **T2.6** 64-hex radius — explored-hex cache renders persistently, textures cached by zoom
-- [ ] **T2.7** Add player dots and object markers to global map
+- [x] **T2.7** Dots render at every zoom incl. Global (world_to_map_pixel path shared)
 
 ## Phase 6: Teleport Integration
 - [x] **T3.1** Left-click selects hex — selection ring + selected_hex/selected_px in MinimapState

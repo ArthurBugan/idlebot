@@ -40,14 +40,7 @@ pub fn move_player(
     let _ = dt;
 
     // Speed cap: base × vehicle multiplier × (delta time handled below).
-    let multiplier = match p.vehicle.as_str() {
-        "Bicycle" => 2.0,
-        "Scooter" => 3.0,
-        "Motorcycle" => 5.0,
-        "Boat" => 4.0,
-        "Airplane" => 10.0,
-        _ => 1.0,
-    };
+    let multiplier = crate::vehicles::multiplier(&p.vehicle);
     let max_speed = BASE_SPEED * multiplier;
     let speed = intended_speed.clamp(0.0, max_speed);
 
