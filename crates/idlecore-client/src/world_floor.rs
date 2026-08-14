@@ -20,9 +20,7 @@ use crate::plugins::world::StreamingWorldResource;
 
 /// Marker for the parent entity of a rendered chunk.
 #[derive(Component)]
-pub struct WorldChunk {
-    pub coord: (i32, i32),
-}
+pub struct WorldChunk;
 
 /// Tracks spawned chunk entities so we only (re)create on changes.
 #[derive(Resource, Default)]
@@ -98,8 +96,6 @@ fn build_mesh(cm: &ChunkMesh) -> Mesh {
 /// Average color of a chunk's terrain (unused; kept minimal).
 /// `biome_definition` color mix by cell — replaced by the shared terrain
 /// material; remove if per-biome chunk tinting is desired.
-fn _chunk_terrain_color_ref() {}
-
 /// Ensure the two shared materials exist (created lazily on first run).
 fn ensure_materials(floor: &mut WorldFloor, materials: &mut Assets<StandardMaterial>) {
     if floor.terrain_material.is_none() {
@@ -205,7 +201,7 @@ pub fn update_world_floor(
 
         let mut parent = commands.spawn((
             Name::new(format!("WorldChunk({cq},{cr})")),
-            WorldChunk { coord: (*cq, *cr) },
+            WorldChunk,
             Transform::default(),
             GlobalTransform::default(),
         ));
@@ -271,9 +267,7 @@ pub struct ParsedPlant {
 
 /// Root entity rendering a plant or pollution marker on one hex.
 #[derive(Component)]
-pub struct HexPlantVisual {
-    pub hex_id: u64,
-}
+pub struct HexPlantVisual;
 
 /// Spec 016 T4.6: per-plant-type young/mature colors. Unknown types fall
 /// back to None (caller uses the default young/mature pair).
@@ -451,7 +445,7 @@ pub fn update_plant_visuals(
                 }
                 let mut root = commands.spawn((
                     Name::new(format!("hex-visual-{}", row.hex_id)),
-                    HexPlantVisual { hex_id: row.hex_id },
+                    HexPlantVisual,
                     Transform::from_xyz(wx, 0.0, wz),
                     Visibility::Visible,
                 ));

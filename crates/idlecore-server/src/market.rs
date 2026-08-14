@@ -251,7 +251,7 @@ pub fn cleanup(ctx: &ReducerContext) {
 
     let listing_ids: Vec<u64> = ctx.db.market_listing().iter().map(|l| l.listing_id).collect();
     for id in listing_ids {
-        let Some(mut l) = ctx.db.market_listing().listing_id().find(id) else {
+        let Some(l) = ctx.db.market_listing().listing_id().find(id) else {
             continue;
         };
         if !l.is_sold && l.expires_at + LISTING_GRACE_SECS < now {

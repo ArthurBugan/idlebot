@@ -1,6 +1,6 @@
 //! IdleBot — Bevy 0.19 hex grid single-player client.
 
-#![allow(dead_code)]
+#![allow(clippy::type_complexity)]
 
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
@@ -8,14 +8,11 @@ use crate::player::{Player, PlayerTransform};
 use plugins::camera::CameraZoom;
 use plugins::world::StreamingWorldResource;
 
-mod progression;
 mod player;
-mod debug_panel;
 mod idle;
 mod minimap;
 mod plugins;
 mod skins;
-mod inventory;
 mod net;
 mod fps_counter;
 mod world_floor;
@@ -39,11 +36,9 @@ fn main() {
         .insert_resource(CameraZoom::default())
         .insert_resource(plugins::world::StreamingWorldResource::default())
         .insert_resource(minimap::MinimapState::default())
-        .insert_resource(minimap::MinimapConfig::default())
         .insert_resource(minimap::MinimapWaypoints::default())
         .insert_resource(minimap::MinimapMarkers::default())
         .insert_resource(minimap::HexEntityMap::default())
-        .insert_resource(minimap::HexFogMap::default())
         .insert_resource(minimap::ExploredHexes::default())
         .insert_resource(minimap::WaypointEntityMap::default())
         .insert_resource(minimap::ChunkLoadState::default())
@@ -52,13 +47,11 @@ fn main() {
         .add_plugins(plugins::camera::CameraPlugin)
         .add_plugins(plugins::world::WorldPlugin)
         .add_plugins(skins::SkinsPlugin)
-        // .add_plugins(inventory::InventoryPlugin)
         .add_plugins(fps_counter::FpsCounterPlugin)
         .add_plugins(net::plugin::NetPlugin)
         .add_plugins(net::hud::NetHudPlugin)
         .add_plugins(net::market::MarketPlugin)
         .insert_resource(PlayerTransform::default())
-        .insert_resource(debug_panel::DebugPanelOpen(false))
         .insert_resource(idle::IdleGainsState::default())
         .insert_resource(world_floor::FloorPlantState::default())
         .insert_resource(world_floor::FloorPlantAssets::default())
@@ -101,6 +94,7 @@ fn main() {
         ))
         .add_systems(Update, (
             assets::track_asset_loading,
+            assets::spawn_cosmetic_layers,
             assets::sync_vehicle_model,
             assets::sync_cosmetic_layers,
             assets::toggle_cosmetic_layers,
@@ -178,9 +172,6 @@ fn setup(
             level: 1,
             eco_points: 0,
             owned_vehicle: None,
-            equipped_cosmetics: Vec::new(),
-            last_login_time: 0,
-            time_offline: None,
         },
     ));
 

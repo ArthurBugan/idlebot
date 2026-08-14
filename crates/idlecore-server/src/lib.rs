@@ -6,7 +6,7 @@
 //! (marketplace + escrow + disputes), 013/014 (wallet auth), 015 (schedulers),
 //! 017 (progression), 019 (schema), 020 (eco).
 
-#![allow(dead_code)]
+
 
 pub mod types;
 pub mod world;

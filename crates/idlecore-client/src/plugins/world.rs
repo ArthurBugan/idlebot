@@ -3,8 +3,7 @@
 //! This plugin manages the game world state and runs the game loop.
 
 use bevy::prelude::*;
-use idlecore_core::world_gen::{ChunkManager, HierarchicalGen, WorldGenConfig};
-use idlecore_core::world_persist::WorldModDB;
+use idlecore_core::world_gen::{ChunkManager, WorldGenConfig};
 
 // ---------------------------------------------------------------------------
 // Plugins
@@ -48,9 +47,7 @@ pub enum GameState {
 #[derive(Resource)]
 pub struct StreamingWorldResource {
     pub config: WorldGenConfig,
-    pub gen: HierarchicalGen,
     pub chunks: ChunkManager,
-    pub mods: WorldModDB,
 }
 
 impl Default for StreamingWorldResource {
@@ -60,7 +57,6 @@ impl Default for StreamingWorldResource {
             world_radius: 100,
             flat: true,
         };
-        let gen = HierarchicalGen::new(config);
         let chunks = ChunkManager::new(
             WorldGenConfig::CHUNK_SIZE,
             4, // active radius in chunks
@@ -68,9 +64,7 @@ impl Default for StreamingWorldResource {
         );
         Self {
             config,
-            gen,
             chunks,
-            mods: WorldModDB::new(),
         }
     }
 }

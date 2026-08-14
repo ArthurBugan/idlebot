@@ -82,15 +82,6 @@ impl MinimapZoom {
         }
     }
 
-    pub fn label(&self) -> &'static str {
-        match self {
-            MinimapZoom::Local => "Zoom: Local",
-            MinimapZoom::Area => "Zoom: Area",
-            MinimapZoom::World => "Zoom: World",
-            MinimapZoom::Close => "Zoom: Close",
-            MinimapZoom::Max => "Zoom: Max",
-        }
-    }
 }
 
 const SQRT_3: f32 = 1.7320508075688772;
@@ -99,31 +90,12 @@ const SQRT_3: f32 = 1.7320508075688772;
 // Configuration & State Resources
 // ============================================================================
 
-/// Static minimap configuration (set once at startup).
-#[derive(Resource)]
-pub struct MinimapConfig {
-    pub vision_radius: f32,
-    pub border_softness: f32,
-    pub fog_color: Color,
-}
-
-impl Default for MinimapConfig {
-    fn default() -> Self {
-        Self {
-            vision_radius: 1500.0,
-            border_softness: 300.0,
-            fog_color: Color::srgba(0.04, 0.05, 0.065, 0.95),
-        }
-    }
-}
-
 /// Runtime minimap state.
 #[derive(Resource)]
 pub struct MinimapState {
     pub zoom: MinimapZoom,
     pub rotation: RotationMode,
     pub expanded: bool,
-    pub visible: bool,
     pub player_pos: Option<Vec2>,
     pub facing_angle: f32,
     /// Click-to-teleport target: axial (q, r) of the last left-clicked hex.
@@ -144,7 +116,6 @@ impl Default for MinimapState {
             zoom: MinimapZoom::Local,
             rotation: RotationMode::NorthUp,
             expanded: false,
-            visible: true,
             player_pos: None,
             facing_angle: 0.0,
             selected_hex: None,
@@ -166,19 +137,9 @@ impl MinimapState {
         self.zoom.pixel_scale()
     }
 
-    /// Vision radius in minimap pixels.
-    pub fn vision_radius_px(&self) -> f32 {
-        1500.0 * self.pixel_scale()
-    }
-
-    /// Soft border width in minimap pixels.
-    pub fn softness_px(&self) -> f32 {
-        300.0 * self.pixel_scale()
-    }
-
-    /// Render radius (vision + softness) in minimap pixels.
+    /// Render radius (vision + soft border) in minimap pixels.
     pub fn render_radius_px(&self) -> f32 {
-        self.vision_radius_px() + self.softness_px()
+        (1500.0 + 300.0) * self.pixel_scale()
     }
 }
 
@@ -193,7 +154,6 @@ pub struct MinimapWaypoints {
 pub struct Waypoint {
     pub id: u64,
     pub position: Vec2,
-    pub label: Option<String>,
 }
 
 /// Navigation POI markers (objectives, landmarks, etc.).
@@ -205,21 +165,15 @@ pub struct MinimapMarkers {
 #[derive(Debug, Clone)]
 pub struct NavMarker {
     pub position: Vec2,
-    pub label: String,
     pub color: Color,
 }
 
 /// Cached image handles for minimap textures.
 #[derive(Resource)]
 pub struct MinimapAssets {
-    pub fog_texture: Option<Handle<Image>>,
-    pub fog_last_key: Option<(u32, f32, f32)>,
-    pub arrow_texture: Handle<Image>,
     pub dot_texture: Handle<Image>,
     /// Cached hexagon tile textures: (width_px, height_px, terrain) → image.
     pub hex_tiles: HashMap<(u32, u32, idlecore_core::terrain::TerrainType), Handle<Image>>,
-    /// Cached hexagon fog textures: (width_px, height_px) → image.
-    pub hex_fog_tiles: HashMap<(u32, u32), Handle<Image>>,
 }
 
 /// Track tile entities for proper despawn lifecycle.
@@ -240,12 +194,6 @@ pub struct ExploredCell {
 #[derive(Resource, Default)]
 pub struct ExploredHexes {
     pub explored: HashMap<u64, ExploredCell>,
-}
-
-/// Track fog tile entities so discovered fog can be cleared/persisted.
-#[derive(Resource, Default)]
-pub struct HexFogMap {
-    pub fog_entities: HashMap<u64, Entity>,
 }
 
 /// Track waypoint entities for proper despawn lifecycle.
@@ -271,31 +219,17 @@ pub struct MinimapRoot;
 #[derive(Component)]
 pub struct MapContent;
 
-/// Fog overlay image node (covers entire minimap, centered on player).
-#[derive(Component)]
-pub struct FogOverlayNode;
-
 /// Player direction marker at the center of the minimap.
 #[derive(Component)]
 pub struct PlayerArrow;
 
 /// A single hex tile rendered in the minimap.
 #[derive(Component)]
-pub struct MapTileNode {
-    pub hex_id: u64,
-}
-
-/// A fog-tile covering an undiscovered hex on the minimap.
-#[derive(Component)]
-pub struct HexFogTile {
-    pub hex_id: u64,
-}
+pub struct MapTileNode;
 
 /// A waypoint marker node.
 #[derive(Component)]
-pub struct WaypointNode {
-    pub id: u64,
-}
+pub struct WaypointNode;
 
 /// A navigation marker node.
 #[derive(Component)]
@@ -317,50 +251,6 @@ pub struct SelectionMarker;
 
 /// Create a fog overlay texture: circular gradient transparent at center,
 /// opaque at edges, with a soft transition at the vision boundary.
-fn create_fog_image(
-    size: u32,
-    vision_radius_px: f32,
-    softness_px: f32,
-    fog_color: Color,
-) -> Image {
-    let mut pixels = vec![0u8; (size * size * 4) as usize];
-    let center = size as f32 / 2.0;
-    let srgba = fog_color.to_srgba();
-    let fog_r = (srgba.red * 255.0) as u8;
-    let fog_g = (srgba.green * 255.0) as u8;
-    let fog_b = (srgba.blue * 255.0) as u8;
-
-    for y in 0..size {
-        for x in 0..size {
-            let dx = x as f32 - center;
-            let dy = y as f32 - center;
-            let dist = (dx * dx + dy * dy).sqrt();
-            let idx = ((y * size + x) * 4) as usize;
-
-            let alpha = if dist < vision_radius_px {
-                0.0
-            } else if dist < vision_radius_px + softness_px {
-                let t = (dist - vision_radius_px) / softness_px;
-                t * srgba.alpha * 0.9
-            } else {
-                srgba.alpha * 0.9
-            };
-
-            pixels[idx] = fog_r;
-            pixels[idx + 1] = fog_g;
-            pixels[idx + 2] = fog_b;
-            pixels[idx + 3] = (alpha * 255.0) as u8;
-        }
-    }
-
-    Image::new(
-        Extent3d { width: size, height: size, depth_or_array_layers: 1 },
-        TextureDimension::D2,
-        pixels,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::default(),
-    )
-}
 
 /// Create a triangle texture pointing upward, for the player marker.
 fn create_arrow_image(size: u32, color: Color) -> Image {
@@ -504,21 +394,6 @@ fn hex_tile_handle(
 }
 
 /// Get (or create) a fog-colored hexagon tile texture for the current zoom.
-fn hex_fog_handle(
-    minimap_assets: &mut MinimapAssets,
-    images: &mut Assets<Image>,
-    width: u32,
-    height: u32,
-    color: Color,
-) -> Handle<Image> {
-    let key = (width, height);
-    if let Some(handle) = minimap_assets.hex_fog_tiles.get(&key) {
-        return handle.clone();
-    }
-    let handle = images.add(create_hexagon_image(width, height, color));
-    minimap_assets.hex_fog_tiles.insert(key, handle.clone());
-    handle
-}
 
 /// Create a filled-circle texture for remote player dots.
 fn create_dot_image(size: u32, color: Color) -> Image {
@@ -570,23 +445,9 @@ pub fn spawn_minimap_ui(
     let dot_img = create_dot_image(16, Color::srgba(0.95, 0.55, 0.2, 0.95));
     let dot_texture = images.add(dot_img);
 
-    let transparent_pixels: Vec<u8> = vec![0, 0, 0, 0];
-    let transparent_img = Image::new(
-        Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-        TextureDimension::D2,
-        transparent_pixels,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::default(),
-    );
-    let transparent_handle = images.add(transparent_img);
-
     commands.insert_resource(MinimapAssets {
-        fog_texture: Some(transparent_handle.clone()),
-        fog_last_key: None,
-        arrow_texture: arrow_texture.clone(),
         dot_texture: dot_texture.clone(),
         hex_tiles: HashMap::new(),
-        hex_fog_tiles: HashMap::new(),
     });
 
     let mm_size = COMPACT_SIZE;
@@ -636,20 +497,6 @@ pub fn spawn_minimap_ui(
             UiTransform::IDENTITY,
         ));
 
-        // Fog overlay
-        parent.spawn((
-            Name::new("fog-overlay"),
-            FogOverlayNode,
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(0.0),
-                top: Val::Px(0.0),
-                width: Val::Px(mm_size),
-                height: Val::Px(mm_size),
-                ..default()
-            },
-            ImageNode::new(transparent_handle),
-        ));
 
         // Player marker (fixed at center)
         parent.spawn((
@@ -852,7 +699,6 @@ pub fn handle_input(
             minimap_waypoints.waypoints.push(Waypoint {
                 id: new_id,
                 position: Vec2::new(world_x, world_y),
-                label: None,
             });
             minimap_waypoints.next_id += 1;
         }
@@ -910,15 +756,11 @@ pub fn render_visible_tiles(
     mut minimap_state: ResMut<MinimapState>,
     streaming_world: Res<StreamingWorldResource>,
     mut hex_entity_map: ResMut<HexEntityMap>,
-    mut hex_fog_map: ResMut<HexFogMap>,
     mut explored_hexes: ResMut<ExploredHexes>,
     map_content_query: Query<Entity, With<MapContent>>,
     mut minimap_assets: ResMut<MinimapAssets>,
     mut images: ResMut<Assets<Image>>,
-    mut tile_query: Query<
-        (&mut Node, &mut ImageNode),
-        (With<MapTileNode>, Without<HexFogTile>),
-    >,
+    mut tile_query: Query<(&mut Node, &mut ImageNode), With<MapTileNode>>,
 ) {
     let Some(player_pos) = minimap_state.player_pos else { return };
 
@@ -997,7 +839,7 @@ pub fn render_visible_tiles(
         } else {
             let entity = commands.spawn((
                 Name::new("minimap-tile"),
-                MapTileNode { hex_id },
+                MapTileNode,
                 Node {
                     position_type: PositionType::Absolute,
                     left: Val::Px(tile_left),
@@ -1043,46 +885,11 @@ pub fn render_visible_tiles(
                 terrain: cell.terrain,
             });
 
-            // Fog-of-war is disabled: hexes are never covered with black fog
-            // tiles. Clear any leftover fog kept from before it was disabled.
-            if let Some(fog_entity) = hex_fog_map.fog_entities.remove(&hex_id) {
-                commands.entity(fog_entity).despawn();
-            }
         }
     }
 }
 
-// ============================================================================
-// Fog Overlay
-// ============================================================================
-
 /// Create or update the fog-of-war overlay texture.
-pub fn update_fog_overlay(
-    minimap_config: Res<MinimapConfig>,
-    minimap_state: Res<MinimapState>,
-    mut minimap_assets: ResMut<MinimapAssets>,
-    mut images: ResMut<Assets<Image>>,
-    mut fog_query: Query<&mut ImageNode, With<FogOverlayNode>>,
-) {
-    let size = minimap_state.mm_size() as u32;
-    let vision_px = minimap_state.vision_radius_px();
-    let softness_px = minimap_state.softness_px();
-    let fog_key = (size, vision_px, softness_px);
-
-    if minimap_assets.fog_last_key.as_ref() == Some(&fog_key) {
-        return;
-    }
-
-    let image = create_fog_image(size, vision_px, softness_px, minimap_config.fog_color);
-    let handle = images.add(image);
-
-    if let Ok(mut fog_node) = fog_query.single_mut() {
-        fog_node.image = handle.clone();
-    }
-
-    minimap_assets.fog_last_key = Some(fog_key);
-    minimap_assets.fog_texture = Some(handle);
-}
 
 /// Rotate the player arrow marker to indicate facing direction.
 pub fn update_player_marker(
@@ -1148,7 +955,7 @@ pub fn render_waypoints(
             let marker_size = 12.0;
             let entity = commands.spawn((
                 Name::new("waypoint-marker"),
-                WaypointNode { id: wp.id },
+                WaypointNode,
                 Node {
                     position_type: PositionType::Absolute,
                     left: Val::Px(screen_x - marker_size / 2.0),
@@ -1241,16 +1048,10 @@ pub fn resize_minimap_container(
         (
             &mut Node,
             Option<&MinimapRoot>,
-            Option<&FogOverlayNode>,
             Option<&MapContent>,
             Option<&PlayerArrow>,
         ),
-        Or<(
-            With<MinimapRoot>,
-            With<FogOverlayNode>,
-            With<MapContent>,
-            With<PlayerArrow>,
-        )>,
+        Or<(With<MinimapRoot>, With<MapContent>, With<PlayerArrow>)>,
     >,
 ) {
     if !minimap_state.is_changed() {
@@ -1260,8 +1061,8 @@ pub fn resize_minimap_container(
     let mm_size = minimap_state.mm_size();
     let mm_center = mm_size / 2.0;
 
-    for (mut node, root, fog, map, arrow) in query.iter_mut() {
-        if root.is_some() || fog.is_some() || map.is_some() {
+    for (mut node, root, map, arrow) in query.iter_mut() {
+        if root.is_some() || map.is_some() {
             node.width = Val::Px(mm_size);
             node.height = Val::Px(mm_size);
         }

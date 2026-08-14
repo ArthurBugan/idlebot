@@ -33,7 +33,7 @@ pub fn move_player(
     dt: f32,
 ) -> Result<(f32, f32, u64, bool), String> {
     let now = now_secs(ctx);
-    let mut p = crate::economy::find_player(ctx, &address.to_lowercase())
+    let p = crate::economy::find_player(ctx, &address.to_lowercase())
         .ok_or_else(|| "Player not found".to_string())?;
 
     let elapsed = (now.saturating_sub(p.last_seen)).max(1) as f32;

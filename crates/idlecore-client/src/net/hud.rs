@@ -38,7 +38,6 @@ pub struct NameEdit {
 
 const TEXT_COLOR: Color = Color::srgb(0.9, 0.95, 1.0);
 const BUTTON_COLOR: Color = Color::srgb(0.15, 0.3, 0.55);
-const BUTTON_HOVER: Color = Color::srgb(0.2, 0.4, 0.7);
 
 pub struct NetHudPlugin;
 

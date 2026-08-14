@@ -10,7 +10,6 @@ pub struct IdleGainsState {
     pub pending_xp: u64,
     pub pending_gold: u64,
     pub time_offline: Option<Duration>,
-    pub claimed: bool,
     /// XP earned per second while playing
     pub xp_rate: u64,
     /// Gold earned per second while playing
@@ -24,16 +23,6 @@ pub struct XpText;
 /// Marker for the Gold TextSpan child
 #[derive(Component)]
 pub struct GoldText;
-
-/// Debug system to check panel size
-pub fn debug_panel_size(
-    panel_query: Query<(&Name, &ComputedNode), With<XpText>>,
-) {
-    for (_name, node) in &panel_query {
-        eprintln!("[IDLE DEBUG] Panel size: {:?}", node.size());
-        eprintln!("[IDLE DEBUG] Panel content_size: {:?}", node.content_size());
-    }
-}
 
 /// Spawn the idle gains panel as Bevy UI (black rounded square + XP/Gold text)
 pub fn spawn_idle_panel(mut commands: Commands, asset_server: Res<AssetServer>) {
@@ -133,12 +122,4 @@ pub fn update_idle_gains_panel(
     if let Some(mut span) = ps.p1().iter_mut().next() {
         **span = format!("Gold: {}", idle_state.pending_gold);
     }
-}
-
-/// Reset idle state after claiming
-pub fn reset_idle_gains(idle_state: &mut IdleGainsState) {
-    idle_state.pending_xp = 0;
-    idle_state.pending_gold = 0;
-    idle_state.time_offline = None;
-    idle_state.claimed = true;
 }

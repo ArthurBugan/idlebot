@@ -1,6 +1,6 @@
 //! Core types shared between client, server, and blockchain.
 
-#![allow(dead_code)]
+
 
 use serde::{Deserialize, Serialize};
 use crate::cosmetic::CosmeticCategory;

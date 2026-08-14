@@ -138,16 +138,6 @@ impl HuddData {
         items.join("\n")
     }
 
-    fn cooldown_str(&self) -> String {
-        let secs = self.cooldown_remaining;
-        let mins = secs / 60;
-        let secs_rem = secs % 60;
-        if mins > 0 {
-            format!("{}m {:02}s", mins, secs_rem)
-        } else {
-            format!("{}s", secs_rem)
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

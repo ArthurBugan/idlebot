@@ -51,13 +51,8 @@ pub enum NetStatus {
 /// Snapshot of another player's authoritative state (for markers/HUD).
 #[derive(Debug, Clone, Default)]
 pub struct ServerPlayerSnapshot {
-    pub address: String,
     pub x: f32,
     pub y: f32,
-    pub hex_id: u64,
-    pub level: u32,
-    pub vehicle: String,
-    pub cosmetics: String,
     pub online: bool,
 }
 
@@ -74,8 +69,6 @@ pub struct Net {
     pub players: HashMap<String, ServerPlayerSnapshot>,
     /// Recent server/connection messages for the HUD log.
     pub log: VecDeque<String>,
-    /// Timestamp of the last reducer send (movement throttling).
-    last_move_send: std::time::Instant,
     /// Version counter bumped by SDK row callbacks; the per-frame
     /// `sync_remote_players` rebuild early-outs while it is unchanged.
     players_dirty: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -94,7 +87,6 @@ impl Default for Net {
             identity: String::new(),
             players: HashMap::new(),
             log: VecDeque::new(),
-            last_move_send: std::time::Instant::now(),
             players_dirty: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             players_dirty_last: 0,
             tx,
@@ -248,30 +240,6 @@ impl Net {
             .subscribe_to_all_tables();
 
         self.conn = Some(conn);
-    }
-
-    /// Best-effort send of a reducer; result arrives as `NetEvent::ReducerResult`.
-    pub fn invoke(&self, f: impl FnOnce(&RemoteReducers) -> Result<(), spacetimedb_sdk::Error>) {
-        if let Some(conn) = &self.conn {
-            let _ = f(&conn.reducers);
-        }
-    }
-
-    /// Send movement to the server at most every ~0.75 s (throttled).
-    pub fn sync_movement(&mut self, dir_x: f32, dir_y: f32, speed: f32) {
-        if self.last_move_send.elapsed().as_secs_f32() < 0.75 {
-            return;
-        }
-        self.last_move_send = std::time::Instant::now();
-        if self.address.is_none() {
-            return;
-        }
-        self.mark_players_dirty();
-        if let Some(conn) = &self.conn {
-            let _ = conn
-                .reducers
-                .move_player_then(dir_x, dir_y, speed, 0.75, |_ctx, _res| {});
-        }
     }
 
     /// Mark the replicated `player` set as changed (called after any reducer
@@ -524,13 +492,8 @@ fn sync_remote_players(
         net.players.insert(
             row.address.clone(),
             ServerPlayerSnapshot {
-                address: row.address.clone(),
                 x: row.position_x,
                 y: row.position_y,
-                hex_id: row.hex_id,
-                level: row.level,
-                vehicle: row.vehicle.clone(),
-                cosmetics: row.cosmetics.clone(),
                 online: row.status == "online",
             },
         );
@@ -640,16 +603,13 @@ impl LatencyWindow {
         Some(self.samples.iter().sum::<f32>() / self.samples.len() as f32)
     }
 
-    pub fn latest_ms(&self) -> Option<f32> {
-        self.samples.back().copied()
-    }
-
     pub fn sample_count(&self) -> usize {
         self.samples.len()
     }
 
-    pub fn clear(&mut self) {
-        self.samples.clear();
+    /// Most recent measured RTT (used by tests).
+    pub fn latest_ms(&self) -> Option<f32> {
+        self.samples.back().copied()
     }
 }
 

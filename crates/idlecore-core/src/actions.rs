@@ -58,8 +58,6 @@ impl std::fmt::Display for ActionError {
 // ---------------------------------------------------------------------------
 
 const PLANT_COST: u64 = 10;
-const HARVEST_GOLD: u64 = 15;
-const HARVEST_XP: u64 = 10;
 const CLEAN_COST: u64 = 20;
 const CLEAN_GOLD_REWARD: u64 = 20;
 const CLEAN_XP_REWARD: u64 = 15;

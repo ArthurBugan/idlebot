@@ -11,8 +11,10 @@ use bevy::world_serialization::WorldAsset;
 use bevy::time::Time;
 use idlecore_core::assets::{
     AssetManager, CosmeticAssetType, VehicleAssetType, cosmetic_paths, cosmetic_shape,
-    plant_paths, vehicle_animation_clips, vehicle_material_spec, vehicle_paths, vehicle_shape,
+    plant_paths, vehicle_material_spec, vehicle_paths, vehicle_shape,
 };
+#[cfg(test)]
+use idlecore_core::assets::vehicle_animation_clips;
 use idlecore_core::Vehicle;
 
 use crate::plugins::player::{PhysicsBody, VehicleIndicator};
@@ -116,6 +118,7 @@ pub fn track_asset_loading(
 /// model's `AnimationGraph`; procedural placeholders have no graph, so the
 /// playback starts the moment a real glTF animation player is wired with the
 /// graph node — until then this is a safe no-op.
+#[cfg(test)]
 #[allow(clippy::result_unit_err)]
 pub fn play_vehicle_animation(
     root: Entity,
@@ -501,9 +504,14 @@ pub struct CosmeticLayerKind(pub CosmeticAssetType);
 pub fn spawn_cosmetic_layers(
     mut commands: Commands,
     bodies: Query<Entity, With<PhysicsBody>>,
+    already_spawned: Query<(), With<CosmeticLayerKind>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    if !already_spawned.is_empty() {
+        return;
+    }
+    // Player root may not exist on the first frames; retry until it does.
     let Ok(player_root) = bodies.single() else { return };
     let hat = cosmetic_shape(CosmeticAssetType::Hat);
     let placements: [(&[ShapePart], CosmeticAssetType, Vec3, Quat, Color); 2] = [
