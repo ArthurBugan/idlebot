@@ -1,0 +1,8 @@
+# macOS ld64 hits its 16 MB __eh_frame cap when linking the spacetimedb
+# cdylib against Bevy's debug info; -no_compact_unwind is the documented
+# workaround for this exact error.
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-no_compact_unwind"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-no_compact_unwind"]

@@ -608,6 +608,7 @@ impl LatencyWindow {
     }
 
     /// Most recent measured RTT (used by tests).
+    #[cfg(test)]
     pub fn latest_ms(&self) -> Option<f32> {
         self.samples.back().copied()
     }
