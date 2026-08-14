@@ -27,6 +27,9 @@ pub struct ClientPlayer {
     pub level: u32,
     pub eco_points: u64,
     pub owned_vehicle: Option<idlecore_core::Vehicle>,
+    /// Server-side avatar name ("Tetrahedron" | "Cube" | "Sphere" |
+    /// "Cylinder" | "Cone"); drives the character's 3D shape.
+    pub avatar: String,
 }
 
 /// Player transform resource for camera/minimap follow

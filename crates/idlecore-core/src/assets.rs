@@ -424,6 +424,10 @@ pub enum ShapePart {
     Cone { radius: f32, height: f32, segments: u32 },
     /// (min_y, max_y, radius, segments)
     Capsule { min_y: f32, max_y: f32, radius: f32, segments: u32 },
+    /// Regular tetrahedron; `size` is the base circumradius, apex at 1.63×size.
+    Tetrahedron { size: f32 },
+    /// UV sphere; (radius, segments)
+    Sphere { radius: f32, segments: u32 },
 }
 
 impl ShapePart {
@@ -439,6 +443,8 @@ impl ShapePart {
             ShapePart::Box { .. } => 12,
             ShapePart::Cone { segments, .. } => segments * 3,
             ShapePart::Capsule { segments, .. } => segments * 10,
+            ShapePart::Tetrahedron { .. } => 4,
+            ShapePart::Sphere { segments, .. } => segments * segments * 2,
         }
     }
 }

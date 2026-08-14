@@ -58,7 +58,9 @@ fn main() {
         .add_systems(Startup, (
             setup,
             assets::load_all_assets,
-            assets::spawn_vehicle_models,
+            // Must run after `setup` spawns the physics body (deferred
+            // commands flush only between Startup systems).
+            assets::spawn_vehicle_models.after(setup),
             minimap::spawn_minimap_ui,
             idle::spawn_idle_panel,
         ))
@@ -96,6 +98,7 @@ fn main() {
             assets::track_asset_loading,
             assets::spawn_cosmetic_layers,
             assets::sync_vehicle_model,
+            assets::sync_avatar_visual,
             assets::sync_cosmetic_layers,
             assets::toggle_cosmetic_layers,
             assets::apply_vehicle_material,
@@ -172,6 +175,7 @@ fn setup(
             level: 1,
             eco_points: 0,
             owned_vehicle: None,
+            avatar: "Tetrahedron".to_string(),
         },
     ));
 

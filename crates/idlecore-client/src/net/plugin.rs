@@ -473,6 +473,8 @@ fn sync_remote_players(
                 p.eco_points = row.eco_points as u64;
                 // Spec 006 T6.3: restore equipped vehicle from the authoritative row.
                 p.owned_vehicle = vehicle_from_str(&row.vehicle);
+                // Spec 014 FR4: avatar drives the local character's shape.
+                p.avatar = row.avatar.clone();
                 if row.level > old_level {
                     let _ = tx.send(NetEvent::ServerMessage(format!(
                         "LEVEL UP! Now level {}",

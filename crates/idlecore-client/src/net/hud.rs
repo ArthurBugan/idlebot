@@ -332,7 +332,10 @@ pub(crate) fn send_reducer(
     net: &mut Net,
     f: impl FnOnce(&RemoteReducers) -> Result<(), spacetimedb_sdk::Error>,
 ) {
-    let Some(conn) = net.conn.as_ref() else { return };
+    let Some(conn) = net.conn.as_ref() else {
+        let _ = net.sender().send(NetEvent::ServerMessage("not connected — click Connect first".to_string()));
+        return;
+    };
     let tx = net.sender();
     match f(&conn.reducers) {
         Ok(()) => net.mark_players_dirty(),
@@ -364,7 +367,12 @@ fn hud_buttons(
                 net.connect();
             }
             _ => {
-                let Some(conn) = net.conn.as_ref() else { continue };
+                let Some(conn) = net.conn.as_ref() else {
+                    let _ = net.sender().send(NetEvent::ServerMessage(
+                        "not connected — click Connect first".to_string(),
+                    ));
+                    continue;
+                };
                 match action {
                     HudAction::Plant => {
                         let Some(pos) = player.as_ref().and_then(|q| q.single().ok()).map(|p| p.position) else { continue };
