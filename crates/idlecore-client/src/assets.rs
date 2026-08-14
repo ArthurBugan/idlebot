@@ -18,7 +18,7 @@ use idlecore_core::assets::vehicle_animation_clips;
 use idlecore_core::Vehicle;
 
 use crate::plugins::player::{PhysicsBody, VehicleIndicator};
-use crate::player::{ClientPlayer, Player};
+use crate::player::ClientPlayer;
 
 
 /// Maps a server `Vehicle` to the asset pipeline's `VehicleAssetType`.
@@ -456,92 +456,6 @@ pub fn sync_vehicle_model(
     }
 }
 
-/// The character's current avatar primitive (Spec 014 FR4). Stored as a
-/// string so rebuilds only happen when the authoritative row actually
-/// changes the avatar.
-#[derive(Component, Debug, PartialEq, Eq)]
-pub struct AvatarMeshKind(pub String);
-
-/// Procedural shape + color for each selectable avatar. Sizes are in
-/// visual-root space (the root scales 13×), so these end up ~1.5-2 units
-/// tall on the ground.
-fn avatar_visual(avatar: &str) -> Option<(ShapePart, Color)> {
-    use ShapePart as S;
-    match avatar {
-        "Tetrahedron" => Some((S::Tetrahedron { size: 1.05 }, Color::srgb(0.95, 0.5, 0.2))),
-        "Cube" => Some((S::Box { x: 1.7, y: 1.7, z: 1.7 }, Color::srgb(0.2, 0.72, 0.85))),
-        "Sphere" => Some((S::Sphere { radius: 0.9, segments: 16 }, Color::srgb(0.45, 0.8, 0.35))),
-        "Cylinder" => Some((S::Cylinder { radius: 0.75, height: 1.9, segments: 16 }, Color::srgb(0.6, 0.4, 0.85))),
-        "Cone" => Some((S::Cone { radius: 0.95, height: 2.0, segments: 16 }, Color::srgb(0.95, 0.85, 0.25))),
-        _ => None,
-    }
-}
-
-/// Renders the local character as the avatar primitive and hides the
-/// placeholder glTF scene, so avatar changes are visible immediately.
-pub fn sync_avatar_visual(
-    player: Query<&ClientPlayer, With<PhysicsBody>>,
-    roots: Query<Entity, (With<Player>, Without<PhysicsBody>)>,
-    avatar_meshes: Query<(Entity, &AvatarMeshKind)>,
-    mut child_meshes: Query<(Entity, &mut Visibility, Option<&AvatarMeshKind>), With<Mesh3d>>,
-    parents: Query<&ChildOf>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    let Ok(player) = player.single() else { return };
-    let Ok(root) = roots.single() else { return };
-
-    let desired = avatar_visual(&player.avatar);
-    let spawned = avatar_meshes
-        .iter()
-        .map(|(_, k)| k.0.clone())
-        .collect::<Vec<_>>();
-    let needs_rebuild = match &desired {
-        Some(_) => spawned.len() != 1 || spawned[0] != player.avatar,
-        None => !spawned.is_empty(),
-    };
-    if needs_rebuild {
-        for (entity, _) in avatar_meshes.iter() {
-            commands.entity(entity).despawn();
-        }
-        if let Some((part, color)) = desired {
-            let mut m = StandardMaterial::from_color(color);
-            m.metallic = 0.15;
-            m.perceptual_roughness = 0.6;
-            commands.spawn((
-                Name::new(format!("avatar-{}", player.avatar).to_lowercase()),
-                AvatarMeshKind(player.avatar.clone()),
-                Mesh3d(meshes.add(build_shape_mesh(&part))),
-                MeshMaterial3d(materials.add(m)),
-                Visibility::Visible,
-                ChildOf(root),
-            ));
-        }
-    }
-
-    // Keep the avatar mesh visible and hide every other mesh under the
-    // player root (the placeholder glTF body), however deep it is nested.
-    for (entity, mut vis, kind) in child_meshes.iter_mut() {
-        if kind.as_ref().is_some_and(|k| k.0 == player.avatar) {
-            *vis = Visibility::Visible;
-            continue;
-        }
-        let mut ancestor = parents.get(entity).ok().map(|p| p.parent());
-        let mut under_root = false;
-        while let Some(e) = ancestor {
-            if e == root {
-                under_root = true;
-                break;
-            }
-            ancestor = parents.get(e).ok().map(|p| p.parent());
-        }
-        if under_root {
-            *vis = Visibility::Hidden;
-        }
-    }
-}
-
 #[cfg(test)]
 mod vehicle_mesh_tests {
     use super::*;
@@ -572,9 +486,9 @@ mod vehicle_mesh_tests {
     }
 
     #[test]
-    fn avatar_shapes_build() {
+    fn primitive_shapes_build() {
         use ShapePart as S;
-        for (avatar, part) in [
+        for (name, part) in [
             ("Tetrahedron", S::Tetrahedron { size: 1.05 }),
             ("Cube", S::Box { x: 1.7, y: 1.7, z: 1.7 }),
             ("Sphere", S::Sphere { radius: 0.9, segments: 16 }),
@@ -582,14 +496,9 @@ mod vehicle_mesh_tests {
             ("Cone", S::Cone { radius: 0.95, height: 2.0, segments: 16 }),
         ] {
             let mesh = build_shape_mesh(&part);
-            assert!(
-                tri_count(&mesh) > 0,
-                "{avatar} produced an empty mesh"
-            );
-            assert!(mesh.count_vertices() > 0, "{avatar} has no vertices");
-            assert!(avatar_visual(avatar).is_some(), "{avatar} has no visual");
+            assert!(tri_count(&mesh) > 0, "{name} produced an empty mesh");
+            assert!(mesh.count_vertices() > 0, "{name} has no vertices");
         }
-        assert!(avatar_visual("Goblin").is_none());
     }
 
     #[test]

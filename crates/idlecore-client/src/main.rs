@@ -98,7 +98,6 @@ fn main() {
             assets::track_asset_loading,
             assets::spawn_cosmetic_layers,
             assets::sync_vehicle_model,
-            assets::sync_avatar_visual,
             assets::sync_cosmetic_layers,
             assets::toggle_cosmetic_layers,
             assets::apply_vehicle_material,
