@@ -109,6 +109,11 @@ fn main() {
             assets::update_trail_vfx,
             assets::expire_trail_particles,
         ))
+        .add_systems(Update, (
+            assets::update_burst_vfx,
+            assets::apply_burst_expansion,
+            assets::expire_burst_particles,
+        ))
         .run();
 }
 

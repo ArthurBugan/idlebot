@@ -388,6 +388,7 @@ fn auto_connect(mut net: ResMut<Net>) {
 /// Move events off the queue before other systems read the resource.
 fn net_drain(
     mut net: ResMut<Net>,
+    mut burst: ResMut<crate::assets::BurstFx>,
     mut bodies: Query<
         (&mut Transform, &mut Velocity, &mut crate::player::ClientPlayer),
         With<crate::plugins::player::PhysicsBody>,
@@ -411,6 +412,7 @@ fn net_drain(
         velocity.linear = Vec3::ZERO;
         player.position = Vec3::new(wx, y, wz);
         player.current_hex = Some(crate::player::CurrentHex { q, r });
+        burst.request(Vec3::new(wx, y, wz));
     }
 }
 

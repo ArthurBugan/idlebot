@@ -41,7 +41,7 @@
 ## Phase 7: Particle Effects (Phase 3)
 - [x] **T5.4** eco-aura PointLight gated by eco rank (aura_config) + tests
 - [x] **T5.5** Create trail VFX — update_trail_vfx emits emissive quads behind moving rider, expire_trail_particles despawns; per-vehicle trail config in spec
-- [ ] **T5.6** Create explosion VFX (optional)
+- [x] **T5.6** Create explosion VFX — 8-quad expanding ring spawned on teleport arrival (BurstFx + update/apply/expire systems + math tests)
 
 ## Phase 8: Testing
 - [x] **T6.1** Per-vertex minimap_color baked into chunk meshes

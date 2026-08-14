@@ -629,3 +629,156 @@ mod cosmetic_tests {
     }
 }
 
+
+// ============================================================================
+// Burst / explosion VFX (Spec 016 T5.6 — optional, done on teleport arrival)
+// ============================================================================
+
+/// One expanding quad of a teleport burst.
+#[derive(Component)]
+pub struct ExpandingParticle {
+    pub t: f32,
+    pub life: f32,
+    pub dir: Vec3,
+}
+
+/// Progress 0..1 of a burst particle's lifetime (pure).
+pub fn burst_step(t: f32, life: f32) -> f32 {
+    (t / life).clamp(0.0, 1.0)
+}
+
+/// Size multiplier while an expanding particle lives: 1.0 → 3.0.
+pub fn burst_scale(progress: f32) -> f32 {
+    1.0 + 2.0 * progress
+}
+
+/// Pending burst requests (filled by net_drain on teleport/explosion).
+#[derive(Resource, Default)]
+pub struct BurstFx {
+    pub pending: Vec<Vec3>,
+}
+
+impl BurstFx {
+    pub fn request(&mut self, at: Vec3) {
+        self.pending.push(at);
+    }
+}
+
+const BURST_PARTICLES: usize = 8;
+const BURST_LIFE: f32 = 0.6;
+const BURST_SPREAD: f32 = 1.2;
+
+/// Consumes pending requests and spawns an 8-quad expanding ring.
+pub fn update_burst_vfx(
+    mut burst: ResMut<BurstFx>,
+    time: Res<Time>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut commands: Commands,
+) {
+    let quad = meshes.add(Plane3d::default().mesh().size(0.9, 0.9));
+    let mut emissive = StandardMaterial::from_color(Color::srgb(1.0, 0.8, 0.2));
+    emissive.emissive = bevy::color::LinearRgba::rgb(1.0, 0.8, 0.2) * 0.8;
+    let material = materials.add(emissive);
+    for at in burst.pending.drain(..) {
+        for k in 0..BURST_PARTICLES {
+            let angle = k as f32 * std::f32::consts::TAU / BURST_PARTICLES as f32;
+            let dir = Vec3::new(angle.cos(), 0.35, angle.sin());
+            commands.spawn((
+                Name::new("burst-particle"),
+                Mesh3d(quad.clone()),
+                MeshMaterial3d(material.clone()),
+                Transform::from_xyz(at.x, at.y + 0.3, at.z),
+                ExpandingParticle { t: 0.0, life: BURST_LIFE, dir },
+            ));
+        }
+    }
+    let _ = time;
+}
+
+/// Ages and despawns burst particles; expansion is applied by
+/// `apply_burst_expansion` (separate system, borrow-clean).
+pub fn expire_burst_particles(
+    mut commands: Commands,
+    mut particles: Query<(Entity, &mut ExpandingParticle)>,
+    time: Res<Time>,
+) {
+    let dt = time.delta_secs();
+    for (entity, mut p) in &mut particles {
+        p.t += dt;
+        if p.t >= p.life {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+/// Applies outward expansion + scale growth to living burst particles.
+pub fn apply_burst_expansion(
+    mut particles: Query<(&ExpandingParticle, &mut Transform)>,
+) {
+    for (p, mut t) in &mut particles {
+        let progress = burst_step(p.t, p.life);
+        let scale = burst_scale(progress);
+        let offset = p.dir * BURST_SPREAD * progress;
+        t.translation += offset;
+        t.scale = Vec3::splat(scale);
+    }
+}
+
+#[cfg(test)]
+mod burst_tests {
+    use super::*;
+    use bevy::app::App;
+    use bevy::time::TimePlugin;
+
+    #[test]
+    fn burst_math_is_monotonic() {
+        for i in 0..10u32 {
+            let t = i as f32;
+            let p = i as f32 / 10.0;
+            assert!((burst_step(t, 10.0) - p).abs() < 1e-6);
+            assert!(burst_scale(0.0) >= 1.0);
+        }
+        assert!((burst_scale(1.0) - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn requests_accumulate_until_drained() {
+        let mut fx = BurstFx::default();
+        assert!(fx.pending.is_empty());
+        fx.request(Vec3::new(1.0, 2.0, 3.0));
+        fx.request(Vec3::new(4.0, 5.0, 6.0));
+        assert_eq!(fx.pending.len(), 2);
+    }
+
+    #[test]
+    fn update_spawns_ring_and_consumes_requests() {
+        let mut app = App::new();
+        app.add_plugins(TimePlugin);
+        app.init_resource::<BurstFx>();
+        app.insert_resource(Assets::<Mesh>::default());
+        app.insert_resource(Assets::<StandardMaterial>::default());
+        app.world_mut().resource_mut::<BurstFx>().request(Vec3::ZERO);
+        app.add_systems(Update, update_burst_vfx);
+        app.update();
+        assert!(app.world_mut().resource::<BurstFx>().pending.is_empty());
+        let count = app.world_mut().query::<&ExpandingParticle>().iter(app.world()).count();
+        assert_eq!(count, BURST_PARTICLES);
+    }
+
+    #[test]
+    fn expire_removes_old_particles() {
+        let mut app = App::new();
+        app.add_plugins(TimePlugin);
+        app.insert_resource(Assets::<Mesh>::default());
+        app.insert_resource(Assets::<StandardMaterial>::default());
+        app.world_mut().spawn((
+            ExpandingParticle { t: 5.0, life: 1.0, dir: Vec3::Y },
+            Transform::default(),
+        ));
+        app.add_systems(Update, expire_burst_particles);
+        app.update();
+        let count = app.world_mut().query::<&ExpandingParticle>().iter(app.world()).count();
+        assert_eq!(count, 0);
+    }
+}
