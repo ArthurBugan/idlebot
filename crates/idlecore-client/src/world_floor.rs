@@ -30,6 +30,8 @@ pub struct WorldFloor {
     pub entities: std::collections::HashMap<(i32, i32), Entity>,
     pub terrain_material: Option<Handle<StandardMaterial>>,
     pub water_material: Option<Handle<StandardMaterial>>,
+    /// Chunk coord of the last rebuilt render set; unchanged → skip the pass.
+    pub last_player_chunk: Option<(i32, i32)>,
 }
 
 /// Chunk radius around the player that is rendered.
@@ -136,6 +138,13 @@ pub fn update_world_floor(
 
     let (hq, hr) = world_pos_to_hex(px, pz, WorldGenConfig::HEX_SIZE);
     let (ccq, ccr) = hex_to_chunk_coord(hq, hr, WorldGenConfig::CHUNK_SIZE);
+
+    // Perf: chunk membership only changes when the player crosses a chunk
+    // boundary (streaming is gated the same way), so skip otherwise.
+    if !floor.entities.is_empty() && Some((ccq, ccr)) == floor.last_player_chunk {
+        return;
+    }
+    floor.last_player_chunk = Some((ccq, ccr));
 
     // Determine the set of chunks we want rendered.
     let mut wanted: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
@@ -244,8 +253,21 @@ pub fn update_world_floor(
 #[derive(Resource, Default)]
 pub struct FloorPlantState {
     pub visuals: HashMap<u64, Entity>,
-    pub stage: HashMap<u64, (bool, Option<String>, bool, i8)>,
+    pub stage: HashMap<u64, (bool, bool, i8)>,
+    /// Last raw `plant` JSON per hex, so unchanged rows skip re-parsing.
+    pub raw: HashMap<u64, String>,
+    /// Last parsed plant descriptor per hex (maturity flips over time without
+    /// the row changing, so the parse is cached but `mature` recomputed).
+    pub parsed: HashMap<u64, ParsedPlant>,
 }
+
+/// Cached result of parsing a hex's `plant` JSON column.
+#[derive(Clone)]
+pub struct ParsedPlant {
+    kind_name: String,
+    mature_at: u64,
+}
+
 
 /// Root entity rendering a plant or pollution marker on one hex.
 #[derive(Component)]
@@ -324,7 +346,7 @@ pub fn update_plant_visuals(
     mut commands: Commands,
     net: Res<crate::net::plugin::Net>,
     player_transform: Res<crate::player::PlayerTransform>,
-    streaming_world: Res<StreamingWorldResource>,
+    _streaming_world: Res<StreamingWorldResource>,
     mut state: ResMut<FloorPlantState>,
     mut assets: ResMut<FloorPlantAssets>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -350,7 +372,11 @@ pub fn update_plant_visuals(
     let (hq, hr) = world_pos_to_hex(px, pz, WorldGenConfig::HEX_SIZE);
     let max_dist = RENDER_RADIUS_HEXES / WorldGenConfig::HEX_SIZE + 2.0;
 
-    let mut seen: Vec<u64> = Vec::new();
+    let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     for row in crate::net::gen::HexTileTableAccess::hex_tile(&conn.db).iter() {
         let dq = (row.hex_q - hq).abs() as f32;
         let dr = (row.hex_r - hr).abs() as f32;
@@ -358,10 +384,9 @@ pub fn update_plant_visuals(
         if dq.max(dr).max(ds) > max_dist {
             continue;
         }
-        seen.push(row.hex_id);
+        seen.insert(row.hex_id);
 
         let is_polluted = row.is_polluted;
-        let plant_json = row.plant.clone();
 
         // Determine desired visual: pollution disc, plant cone, or nothing.
         let mut kind: Option<(Option<Handle<Mesh>>, Handle<StandardMaterial>)> = None;
@@ -369,28 +394,41 @@ pub fn update_plant_visuals(
             kind = Some((Some(disc.clone()), pollution.clone()));
         }
         let mut mature = false;
-        if let Some(json) = &plant_json {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let kind_name: String = if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
-                let planted_at = v.get("planted_at").and_then(|x| x.as_u64()).unwrap_or(0);
-                let growth = v
-                    .get("growth_time")
-                    .and_then(|x| x.as_u64())
-                    .unwrap_or(3600);
-                mature = now >= planted_at + growth;
-                v.get("plant_type").and_then(|x| x.as_str()).unwrap_or("").to_string()
-            } else {
-                String::new()
-            };
-            // Spec 016 T4.6: per-type color, per-maturity shade.
-            let (young_h, mature_h) = match assets.plant_mats.get(kind_name.as_str()) {
-                Some(pair) => pair.clone(),
-                None => (pollution.clone(), pollution.clone()),
-            };
-            let use_tall = matches!(kind_name.as_str(), "Tree" | "Corn" | "RareHerb");
+        // Perf: skip the serde_json parse entirely when the raw column is
+        // unchanged; only maturity (a pure time comparison) is recomputed.
+        let raw_changed = state.raw.get(&row.hex_id).map(String::as_str) != row.plant.as_deref();
+        if raw_changed {
+            let parsed = row.plant.as_deref().and_then(|json| {
+                serde_json::from_str::<serde_json::Value>(json).ok().map(|v| {
+                    let planted_at = v.get("planted_at").and_then(|x| x.as_u64()).unwrap_or(0);
+                    let growth = v.get("growth_time").and_then(|x| x.as_u64()).unwrap_or(3600);
+                    let kind_name = v.get("plant_type").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    ParsedPlant { kind_name, mature_at: planted_at + growth }
+                })
+            });
+            match parsed {
+                Some(p) => {
+                    state.raw.insert(row.hex_id, row.plant.clone().unwrap_or_default());
+                    state.parsed.insert(row.hex_id, p.clone());
+                    kind = Some((
+                        Some(if matches!(p.kind_name.as_str(), "Tree" | "Corn" | "RareHerb") { tall.clone() } else { cone.clone() }),
+                        // Spec 016 T4.6: per-type color, per-maturity shade; cached below.
+                        if now >= p.mature_at {
+                            assets.plant_mats.get(&p.kind_name).map(|(_, h)| h.clone()).unwrap_or(pollution.clone())
+                        } else {
+                            assets.plant_mats.get(&p.kind_name).map(|(h, _)| h.clone()).unwrap_or(pollution.clone())
+                        },
+                    ));
+                }
+                None => {
+                    state.raw.remove(&row.hex_id);
+                    state.parsed.remove(&row.hex_id);
+                }
+            }
+        } else if let Some(p) = state.parsed.get(&row.hex_id) {
+            mature = now >= p.mature_at;
+            let (young_h, mature_h) = assets.plant_mats.get(&p.kind_name).cloned().unwrap_or((pollution.clone(), pollution.clone()));
+            let use_tall = matches!(p.kind_name.as_str(), "Tree" | "Corn" | "RareHerb");
             kind = Some((
                 Some(if use_tall { tall.clone() } else { cone.clone() }),
                 if mature { mature_h.clone() } else { young_h.clone() },
@@ -399,7 +437,7 @@ pub fn update_plant_visuals(
 
         let cached = state.stage.get(&row.hex_id).cloned();
         let band = eco_band(row.eco_rating);
-        if cached == Some((is_polluted, plant_json.clone(), mature, band)) {
+        if cached == Some((is_polluted, mature, band)) {
             continue;
         }
 
@@ -436,7 +474,7 @@ pub fn update_plant_visuals(
                     ));
                 }
                 state.visuals.insert(row.hex_id, root.id());
-                state.stage.insert(row.hex_id, (is_polluted, plant_json, mature, band));
+                state.stage.insert(row.hex_id, (is_polluted, mature, band));
             }
             None => {
                 if let Some(entity) = existing {
@@ -455,11 +493,23 @@ pub fn update_plant_visuals(
         .filter(|k| !seen.contains(k))
         .copied()
         .collect();
+    let stale_parsed: Vec<u64> = state
+        .parsed
+        .keys()
+        .filter(|k| !seen.contains(k))
+        .copied()
+        .collect();
     for hex_id in stale {
         if let Some(entity) = state.visuals.remove(&hex_id) {
             commands.entity(entity).despawn();
         }
         state.stage.remove(&hex_id);
+        state.raw.remove(&hex_id);
+        state.parsed.remove(&hex_id);
+    }
+    for hex_id in stale_parsed {
+        state.raw.remove(&hex_id);
+        state.parsed.remove(&hex_id);
     }
 }
 

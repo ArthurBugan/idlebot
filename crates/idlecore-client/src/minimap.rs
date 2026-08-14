@@ -130,6 +130,12 @@ pub struct MinimapState {
     pub selected_hex: Option<(i32, i32)>,
     /// Pixel position (minimap-space) at which to draw the selection ring.
     pub selected_px: Option<(f32, f32)>,
+    /// Last rendered selection ring position; respawn is skipped when equal.
+    pub last_selection_px: Option<(f32, f32)>,
+    /// Key of the last tile render; `render_visible_tiles` skips a frame when
+    /// nothing about the view (position/zoom/rotation/discovery/streaming)
+    /// changed, so standing still costs nothing.
+    pub last_tiles_key: Option<(f32, f32, f32, f32, u8, bool, usize, usize)>,
 }
 
 impl Default for MinimapState {
@@ -143,6 +149,8 @@ impl Default for MinimapState {
             facing_angle: 0.0,
             selected_hex: None,
             selected_px: None,
+            last_selection_px: None,
+            last_tiles_key: None,
         }
     }
 }
@@ -212,12 +220,6 @@ pub struct MinimapAssets {
     pub hex_tiles: HashMap<(u32, u32, idlecore_core::terrain::TerrainType), Handle<Image>>,
     /// Cached hexagon fog textures: (width_px, height_px) → image.
     pub hex_fog_tiles: HashMap<(u32, u32), Handle<Image>>,
-}
-
-/// Track minimap dot entities, keyed by remote player address.
-#[derive(Resource, Default)]
-pub struct RemoteDotEntityMap {
-    pub dots: HashMap<String, Entity>,
 }
 
 /// Track tile entities for proper despawn lifecycle.
@@ -737,15 +739,18 @@ pub fn sync_player_state(
     orientation: Res<crate::player::PlayerOrientation>,
     mut minimap_state: ResMut<MinimapState>,
 ) {
-    if let Some(transform) = player_query.iter().next() {
-        minimap_state.player_pos = Some(Vec2::new(
-            transform.translation.x,
-            transform.translation.z,
-        ));
-    } else {
-        minimap_state.player_pos = None;
+    // Perf: only write when the value changed, so downstream systems that
+    // run off `ResMut::is_changed` (resize, render gates) skip idle frames.
+    let new_pos = player_query
+        .iter()
+        .next()
+        .map(|transform| Vec2::new(transform.translation.x, transform.translation.z));
+    if new_pos != minimap_state.player_pos {
+        minimap_state.player_pos = new_pos;
     }
-    minimap_state.facing_angle = orientation.facing_angle;
+    if orientation.facing_angle != minimap_state.facing_angle {
+        minimap_state.facing_angle = orientation.facing_angle;
+    }
 }
 
 // ============================================================================
@@ -902,7 +907,7 @@ fn get_minimap_mouse_pos(windows: &Query<&Window>, mm_size: f32) -> Option<(f32,
 /// Spawn/despawn/update minimap tile nodes based on loaded chunks and player position.
 pub fn render_visible_tiles(
     mut commands: Commands,
-    minimap_state: Res<MinimapState>,
+    mut minimap_state: ResMut<MinimapState>,
     streaming_world: Res<StreamingWorldResource>,
     mut hex_entity_map: ResMut<HexEntityMap>,
     mut hex_fog_map: ResMut<HexFogMap>,
@@ -931,6 +936,24 @@ pub fn render_visible_tiles(
     // width = √3·R, height = 2R in world units, scaled to pixels.
     let tile_w = (SQRT_3 * HEX_SIZE * pixel_scale).ceil().max(3.0);
     let tile_h = (2.0 * HEX_SIZE * pixel_scale).ceil().max(3.0);
+
+    // Perf: skip the whole pass when the view is unchanged since last frame
+    // (standing still → zero work; any movement/zoom/rotation/discovery
+    // changes the key and re-renders everything correctly).
+    let key = (
+        player_pos.x,
+        player_pos.y,
+        pixel_scale,
+        minimap_state.mm_size(),
+        minimap_state.rotation as u8,
+        minimap_state.expanded,
+        explored_hexes.explored.len(),
+        streaming_world.chunks.chunks.len(),
+    );
+    if minimap_state.last_tiles_key == Some(key) {
+        return;
+    }
+    minimap_state.last_tiles_key = Some(key);
 
     // ---- Phase 1: discover hexes from currently-streamed chunks ----
 
@@ -1014,14 +1037,11 @@ pub fn render_visible_tiles(
             // Any hex within the rendered area shows on the map immediately —
             // no small vision radius gate, so there's no pop-in delay after
             // walking onto a new hex.
-            let discovered = dist_sq <= render_radius_world * render_radius_world;
-            if discovered {
-                explored_hexes.explored.entry(hex_id).or_insert(ExploredCell {
-                    center_x,
-                    center_y,
-                    terrain: cell.terrain,
-                });
-            }
+            explored_hexes.explored.entry(hex_id).or_insert(ExploredCell {
+                center_x,
+                center_y,
+                terrain: cell.terrain,
+            });
 
             // Fog-of-war is disabled: hexes are never covered with black fog
             // tiles. Clear any leftover fog kept from before it was disabled.
@@ -1257,21 +1277,18 @@ pub fn resize_minimap_container(
 // ============================================================================
 
 /// Spawn/despawn dots for other players on the minimap (Spec 009 T2.3/T4.3).
-/// Rebuilt each frame; dots are cheap and few.
+/// In-place diff: existing dots are repositioned, only new players spawn and
+/// only gone players despawn (replaces the per-frame rebuild).
 pub fn render_remote_players(
     minimap_state: Res<MinimapState>,
     net: Res<crate::net::plugin::Net>,
     minimap_assets: Res<MinimapAssets>,
     mut commands: Commands,
     map_content_query: Query<Entity, With<MapContent>>,
-    dot_query: Query<Entity, With<RemotePlayerDot>>,
+    mut dot_query: Query<(Entity, &RemotePlayerDot, &mut Node)>,
 ) {
     let Some(player_pos) = minimap_state.player_pos else { return };
     let Ok(map_content_entity) = map_content_query.single() else { return };
-
-    for entity in dot_query.iter() {
-        commands.entity(entity).despawn();
-    }
 
     let pixel_scale = minimap_state.pixel_scale();
     let mm_center = minimap_state.mm_size() / 2.0;
@@ -1279,18 +1296,46 @@ pub fn render_remote_players(
     let mm_w = minimap_state.mm_size() + 64.0;
     let dot_size = 8.0;
 
-    for (address, snap) in &net.players {
-        if !snap.online {
-            continue;
+    let active: Vec<(String, Vec2)> = net
+        .players
+        .iter()
+        .filter(|(_, snap)| snap.online)
+        .filter_map(|(address, snap)| {
+            let (x, y) = world_to_map_pixel(
+                (snap.x, snap.y),
+                (player_pos.x, player_pos.y),
+                pixel_scale,
+                mm_center,
+                rotation,
+            );
+            if x < -64.0 || x > mm_w || y < -64.0 || y > mm_w {
+                return None;
+            }
+            Some((address.clone(), Vec2::new(x, y)))
+        })
+        .collect();
+
+    let mut kept: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (entity, dot, mut node) in dot_query.iter_mut() {
+        match active.iter().find(|(a, _)| *a == dot.address) {
+            Some((_, pos)) => {
+                let left = Val::Px(pos.x - dot_size / 2.0);
+                let top = Val::Px(pos.y - dot_size / 2.0);
+                if node.left != left {
+                    node.left = left;
+                }
+                if node.top != top {
+                    node.top = top;
+                }
+                kept.insert(dot.address.clone());
+            }
+            None => {
+                commands.entity(entity).despawn();
+            }
         }
-        let (screen_x, screen_y) = world_to_map_pixel(
-            (snap.x, snap.y),
-            (player_pos.x, player_pos.y),
-            pixel_scale,
-            mm_center,
-            rotation,
-        );
-        if screen_x < -64.0 || screen_x > mm_w || screen_y < -64.0 || screen_y > mm_w {
+    }
+    for (address, pos) in &active {
+        if kept.contains(address) {
             continue;
         }
         commands.entity(map_content_entity).with_children(|parent| {
@@ -1301,8 +1346,8 @@ pub fn render_remote_players(
                     position_type: PositionType::Absolute,
                     width: Val::Px(dot_size),
                     height: Val::Px(dot_size),
-                    left: Val::Px(screen_x - dot_size / 2.0),
-                    top: Val::Px(screen_y - dot_size / 2.0),
+                    left: Val::Px(pos.x - dot_size / 2.0),
+                    top: Val::Px(pos.y - dot_size / 2.0),
                     ..default()
                 },
                 UiTransform::IDENTITY,
@@ -1317,17 +1362,26 @@ pub fn render_remote_players(
 // ============================================================================
 
 /// Render a ring around the last left-clicked hex (Spec 009 T3.1).
+/// Only respawns when the selection actually changed.
 pub fn render_selection_marker(
-    minimap_state: Res<MinimapState>,
+    mut minimap_state: ResMut<MinimapState>,
     mut commands: Commands,
     map_content_query: Query<Entity, With<MapContent>>,
     marker_query: Query<Entity, With<SelectionMarker>>,
 ) {
+    let Ok(map_content_entity) = map_content_query.single() else { return };
+    if minimap_state.selected_px == minimap_state.last_selection_px {
+        return;
+    }
+    let previous = minimap_state.last_selection_px;
+    minimap_state.last_selection_px = minimap_state.selected_px;
     for entity in marker_query.iter() {
         commands.entity(entity).despawn();
     }
-    let Some(px) = minimap_state.selected_px else { return };
-    let Ok(map_content_entity) = map_content_query.single() else { return };
+    let Some(px) = minimap_state.selected_px else {
+        let _ = previous;
+        return;
+    };
     let size = 22.0;
     commands.entity(map_content_entity).with_children(|parent| {
         parent.spawn((

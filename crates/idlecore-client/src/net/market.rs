@@ -62,7 +62,7 @@ fn button_style(width: f32, height: f32) -> Node {
 }
 
 fn spawn_market_panel(mut commands: Commands, asset_server: Res<AssetServer>) {
-    let font: Handle<Font> = asset_server.load("fonts/FiraSans-Bold.ttf");
+    let _font: Handle<Font> = asset_server.load("fonts/FiraSans-Bold.ttf");
 
     commands
         .spawn((
@@ -237,7 +237,7 @@ fn market_buttons(
             continue;
         }
         let tx = net.sender();
-        let Some(conn) = net.conn.as_ref() else { continue };
+        if net.conn.is_none() { continue; }
 
         if let Some(b) = buy {
             // Spec 011: bank takes 5% of the price, seller payout is escrowed 48 h.
@@ -246,7 +246,7 @@ fn market_buttons(
                 "buy listing {} -> escrow, fee {}%",
                 b.listing_id, fee_percent
             )));
-            send_reducer(conn, &tx, |reducers| {
+            send_reducer(&mut net, |reducers| {
                 reducers.buy_listing_then(
                     b.listing_id,
                     reducer_report("buy_listing", tx.clone(), 0),
@@ -258,7 +258,7 @@ fn market_buttons(
             let title = format!("{} pack #{}", p.category, now_unix() % 10000);
             let github_url =
                 format!("https://github.com/example/agent-pack-{}", p.category.to_lowercase());
-            send_reducer(conn, &tx, |reducers| {
+            send_reducer(&mut net, |reducers| {
                 reducers.publish_listing_then(
                     title,
                     "Generated client preset".to_string(),

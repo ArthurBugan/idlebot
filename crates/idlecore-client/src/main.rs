@@ -39,7 +39,6 @@ fn main() {
         .insert_resource(CameraZoom::default())
         .insert_resource(plugins::world::StreamingWorldResource::default())
         .insert_resource(minimap::MinimapState::default())
-        .insert_resource(minimap::RemoteDotEntityMap::default())
         .insert_resource(minimap::MinimapConfig::default())
         .insert_resource(minimap::MinimapWaypoints::default())
         .insert_resource(minimap::MinimapMarkers::default())

@@ -42,10 +42,25 @@ const BUTTON_HOVER: Color = Color::srgb(0.2, 0.4, 0.7);
 
 pub struct NetHudPlugin;
 
+/// Throttle the per-frame HUD text rebuild to keep idle frames cheap.
+#[derive(Resource)]
+pub(crate) struct HudThrottle {
+    last: std::time::Instant,
+}
+
+impl Default for HudThrottle {
+    fn default() -> Self {
+        Self { last: std::time::Instant::now() }
+    }
+}
+
+const HUD_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+
 impl Plugin for NetHudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NameEdit>()
             .init_resource::<super::plugin::ServerLatency>()
+            .init_resource::<HudThrottle>()
             .add_systems(Startup, spawn_hud)
             .add_systems(
                 Update,
@@ -137,6 +152,7 @@ fn spawn_hud(mut commands: Commands) {
 
 /// Refresh status/stats/log text every frame from `Net` + `ClientPlayer`.
 fn update_hud_text(
+    mut throttle: ResMut<HudThrottle>,
     net: Res<Net>,
     minimap_state: Res<crate::minimap::MinimapState>,
     latency: Res<super::plugin::ServerLatency>,
@@ -146,6 +162,10 @@ fn update_hud_text(
     mut log_q: Query<&mut Text, (With<HudLogText>, Without<HudStatusText>, Without<HudStatsText>)>,
     name_edit: Res<NameEdit>,
 ) {
+    if throttle.last.elapsed() < HUD_REFRESH_INTERVAL {
+        return;
+    }
+    throttle.last = std::time::Instant::now();
     let status = match &net.status {
         NetStatus::Connected => "Connected".to_string(),
         NetStatus::Connecting => "Connecting...".to_string(),
@@ -310,12 +330,16 @@ fn teleport_report(name: &'static str, tx: std::sync::mpsc::Sender<NetEvent>, q:
 
 /// Invoke a reducer, reporting local send failures to the HUD log.
 pub(crate) fn send_reducer(
-    conn: &DbConnection,
-    tx: &std::sync::mpsc::Sender<NetEvent>,
+    net: &mut Net,
     f: impl FnOnce(&RemoteReducers) -> Result<(), spacetimedb_sdk::Error>,
 ) {
-    if let Err(e) = f(&conn.reducers) {
-        let _ = tx.send(NetEvent::ServerMessage(format!("send failed: {e}")));
+    let Some(conn) = net.conn.as_ref() else { return };
+    let tx = net.sender();
+    match f(&conn.reducers) {
+        Ok(()) => net.mark_players_dirty(),
+        Err(e) => {
+            let _ = tx.send(NetEvent::ServerMessage(format!("send failed: {e}")));
+        }
     }
 }
 
@@ -346,26 +370,26 @@ fn hud_buttons(
                     HudAction::Plant => {
                         let Some(pos) = player.as_ref().and_then(|q| q.single().ok()).map(|p| p.position) else { continue };
                         let hex = Net::hex_id_at(pos.x, pos.z);
-                        send_reducer(conn, &tx, |r| r.plant_then(hex, "Wheat".to_string(), reducer_report("plant", tx.clone(), hex)));
+                        send_reducer(&mut net, |r| r.plant_then(hex, "Wheat".to_string(), reducer_report("plant", tx.clone(), hex)));
                     }
                     HudAction::Harvest => {
                         let Some(pos) = player.as_ref().and_then(|q| q.single().ok()).map(|p| p.position) else { continue };
                         let hex = Net::hex_id_at(pos.x, pos.z);
-                        send_reducer(conn, &tx, |r| r.harvest_then(hex, reducer_report("harvest", tx.clone(), hex)));
+                        send_reducer(&mut net, |r| r.harvest_then(hex, reducer_report("harvest", tx.clone(), hex)));
                     }
                     HudAction::Clean => {
                         let Some(pos) = player.as_ref().and_then(|q| q.single().ok()).map(|p| p.position) else { continue };
                         let hex = Net::hex_id_at(pos.x, pos.z);
-                        send_reducer(conn, &tx, |r| r.clean_then(hex, reducer_report("clean", tx.clone(), hex)));
+                        send_reducer(&mut net, |r| r.clean_then(hex, reducer_report("clean", tx.clone(), hex)));
                     }
                     HudAction::ClaimIdle => {
-                        send_reducer(conn, &tx, |r| r.claim_idle_gains_then(reducer_report("claim_idle_gains", tx.clone(), 0)));
+                        send_reducer(&mut net, |r| r.claim_idle_gains_then(reducer_report("claim_idle_gains", tx.clone(), 0)));
                     }
                     HudAction::BuyBicycle => {
-                        send_reducer(conn, &tx, |r| r.buy_vehicle_then("Bicycle".to_string(), reducer_report("buy_vehicle", tx.clone(), 0)));
+                        send_reducer(&mut net, |r| r.buy_vehicle_then("Bicycle".to_string(), reducer_report("buy_vehicle", tx.clone(), 0)));
                     }
                     HudAction::EquipBicycle => {
-                        send_reducer(conn, &tx, |r| r.equip_vehicle_then("Bicycle".to_string(), reducer_report("equip_vehicle", tx.clone(), 0)));
+                        send_reducer(&mut net, |r| r.equip_vehicle_then("Bicycle".to_string(), reducer_report("equip_vehicle", tx.clone(), 0)));
                     }
                     HudAction::Teleport => {
                         let Some((q, r)) = minimap_state.selected_hex else {
@@ -375,7 +399,7 @@ fn hud_buttons(
                             continue;
                         };
                         latency.note_request();
-                        send_reducer(conn, &tx, |reducers| reducers.teleport_player_then(q, r, teleport_report("teleport", tx.clone(), q, r)));
+                        send_reducer(&mut net, |reducers| reducers.teleport_player_then(q, r, teleport_report("teleport", tx.clone(), q, r)));
                         minimap_state.selected_hex = None;
                         minimap_state.selected_px = None;
                     }
@@ -396,7 +420,7 @@ fn hud_buttons(
                             .unwrap_or_default();
                         let idx = AVATARS.iter().position(|a| *a == avatar).unwrap_or(0);
                         let next = AVATARS[(idx + 1) % AVATARS.len()];
-                        send_reducer(conn, &tx, |r| r.update_profile_then(
+                        send_reducer(&mut net, |r| r.update_profile_then(
                             None,
                             Some(next.to_string()),
                             None,

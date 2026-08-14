@@ -76,6 +76,10 @@ pub struct Net {
     pub log: VecDeque<String>,
     /// Timestamp of the last reducer send (movement throttling).
     last_move_send: std::time::Instant,
+    /// Version counter bumped by SDK row callbacks; the per-frame
+    /// `sync_remote_players` rebuild early-outs while it is unchanged.
+    players_dirty: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    players_dirty_last: u64,
     tx: Sender<NetEvent>,
     rx: std::sync::Mutex<Receiver<NetEvent>>,
 }
@@ -91,6 +95,8 @@ impl Default for Net {
             players: HashMap::new(),
             log: VecDeque::new(),
             last_move_send: std::time::Instant::now(),
+            players_dirty: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            players_dirty_last: 0,
             tx,
             rx: std::sync::Mutex::new(rx),
         }
@@ -211,17 +217,23 @@ impl Net {
             }
         };
 
-        // Table callbacks → events.
+        // Table callbacks → events + a dirty counter so per-frame sync work
+        // only runs when the replicated set actually changed.
+        let dirty = self.players_dirty.clone();
         conn.db.player().on_insert({
             let tx = self.tx.clone();
+            let dirty = dirty.clone();
             move |_ctx, row| {
                 let _ = tx.send(NetEvent::ServerMessage(format!("player joined {}", row.address)));
+                dirty.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         });
         conn.db.player().on_delete({
             let tx = self.tx.clone();
+            let dirty = dirty.clone();
             move |_ctx, row| {
                 let _ = tx.send(NetEvent::ServerMessage(format!("player left {}", row.address)));
+                dirty.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         });
 
@@ -254,11 +266,26 @@ impl Net {
         if self.address.is_none() {
             return;
         }
+        self.mark_players_dirty();
         if let Some(conn) = &self.conn {
             let _ = conn
                 .reducers
                 .move_player_then(dir_x, dir_y, speed, 0.75, |_ctx, _res| {});
         }
+    }
+
+    /// Mark the replicated `player` set as changed (called after any reducer
+    /// we send that mutates player rows; SDK row-insert/delete also bump it).
+    pub fn mark_players_dirty(&mut self) {
+        self.players_dirty.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// True if the replicated `player` table changed since the last poll.
+    pub fn poll_players_dirty(&mut self) -> bool {
+        let version = self.players_dirty.load(std::sync::atomic::Ordering::Relaxed);
+        let changed = version != self.players_dirty_last;
+        self.players_dirty_last = version;
+        changed
     }
 
     /// The hex id (server encoding) at a world position.
@@ -323,7 +350,7 @@ struct HexPlant {
 /// harvest a mature crop, clean pollution, or plant Wheat on empty grass.
 fn interact_key_press(
     keyboard: Res<ButtonInput<KeyCode>>,
-    net: Res<Net>,
+    mut net: ResMut<Net>,
     player: Option<Query<&ClientPlayer>>,
 ) {
     if !keyboard.just_pressed(KeyCode::KeyE) {
@@ -348,7 +375,7 @@ fn interact_key_press(
                         .unwrap_or_default()
                         .as_secs();
                     if now >= plant.planted_at + plant.growth_time {
-                        super::hud::send_reducer(conn, &tx, |r| {
+                        super::hud::send_reducer(&mut net, |r| {
                             r.harvest_then(hex_id, super::hud::reducer_report("harvest", tx.clone(), hex_id))
                         });
                     } else {
@@ -362,11 +389,11 @@ fn interact_key_press(
                 Err(_) => net.push(NetEvent::ServerMessage("E: corrupt plant data".to_string())),
             }
         } else if hex.is_polluted {
-            super::hud::send_reducer(conn, &tx, |r| {
+            super::hud::send_reducer(&mut net, |r| {
                 r.clean_then(hex_id, super::hud::reducer_report("clean", tx.clone(), hex_id))
             });
         } else if hex.terrain == "Grass" || hex.terrain == "Forest" {
-            super::hud::send_reducer(conn, &tx, |r| {
+            super::hud::send_reducer(&mut net, |r| {
                 r.plant_then(
                     hex_id,
                     "Wheat".to_string(),
@@ -436,8 +463,15 @@ fn sync_remote_players(
     mut meshes: ResMut<Assets<Mesh>>,
     mut markers: Query<(Entity, &RemotePlayerMarker, &mut Transform)>,
 ) {
-    let Some(conn) = net.conn.as_ref() else { return };
     let Some(mine) = net.address.clone() else { return };
+
+    // Perf: rebuild is O(rows * markers); skip it entirely unless the
+    // replicated player set changed (row callbacks or reducers we sent).
+    // The first frame after connect always runs (players map is empty).
+    if !net.poll_players_dirty() && !net.players.is_empty() {
+        return;
+    }
+    let Some(conn) = net.conn.as_ref() else { return };
 
     // Spec 018 T2.4: only players within 3 hexes are visible.
     let own_hex: Option<(i32, i32)> = player
@@ -457,7 +491,8 @@ fn sync_remote_players(
     };
 
     let rows: Vec<Player> = conn.db.player().iter().collect();
-    let mut known: Vec<String> = Vec::new();
+    let tx = net.sender();
+    let mut known: std::collections::HashSet<String> = std::collections::HashSet::new();
     for row in &rows {
         if row.address == *mine {
             // Authoritative state for our own wallet → mirror into the local sim.
@@ -471,7 +506,7 @@ fn sync_remote_players(
                 // Spec 006 T6.3: restore equipped vehicle from the authoritative row.
                 p.owned_vehicle = vehicle_from_str(&row.vehicle);
                 if row.level > old_level {
-                    let _ = net.sender().send(NetEvent::ServerMessage(format!(
+                    let _ = tx.send(NetEvent::ServerMessage(format!(
                         "LEVEL UP! Now level {}",
                         row.level
                     )));
@@ -482,10 +517,10 @@ fn sync_remote_players(
         if !in_view(row.hex_id) {
             // Outside the view radius: don't light the marker, but keep the
             // row known so the marker despawn logic leaves it alone.
-            known.push(row.address.clone());
+            known.insert(row.address.clone());
             continue;
         }
-        known.push(row.address.clone());
+        known.insert(row.address.clone());
         net.players.insert(
             row.address.clone(),
             ServerPlayerSnapshot {

@@ -32,7 +32,7 @@ fn main() {
         .unwrap_or_else(|| format!("e2e-{}", std::process::id()));
     let wallet = format!("0x{tag}");
 
-    let mut conn = match gen::DbConnection::builder()
+    let conn = match gen::DbConnection::builder()
         .with_uri(URI)
         .with_database_name(DB)
         .build()
