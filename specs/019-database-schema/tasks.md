@@ -27,16 +27,16 @@
 - [x] **T3.3** Non-active channels ignored (voice cleanup tick + client skip)
 
 ## Phase 4: Integration
-- [ ] **T4.1** Wire tables into idlecore-chain
-- [ ] **T4.2** Wire subscriptions into idlecore-client
+- [x] **T4.1** N/A — idlecore-chain (JS) replaced by Rust client; tables wired there
+- [x] **T4.2** Client subscribes player/hex_tile/player_vehicle/market_listing/idle_gain/transaction
 - [ ] **T4.3** Verify replication works end-to-end
 
 ## Phase 5: Testing
-- [ ] **T5.1** All 9 tables defined with correct field types
+- [x] **T5.1** 9 core tables + 4 scheduled tables + eco_transaction in types.rs
 - [x] **T5.2** address/hex_id/player are primary keys; FK btrees added
 - [x] **T5.3** Client-side view-radius culling for hex tiles and players
-- [ ] **T5.4** Foreign keys enforced
-- [ ] **T5.5** Scheduled functions can read/write tables
+- [x] **T5.4** Enforced in reducers (find_player/owned checks); SpacetimeDB has no DDL FKs
+- [x] **T5.5** Scheduler bodies read/write via ctx.db (market sweep deletes rows)
 
 ## Verification
 - [✓] 9 tables defined matching spec

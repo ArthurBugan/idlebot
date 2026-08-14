@@ -22,10 +22,10 @@
 ## Phase 4: Scheduler Integration
 - [x] **T4.1** eco scheduler — hourly_eco_tick + weekly_audit in scheduler.rs
 - [x] **T4.2** Atomic — clamp + single row update in add_eco_points/spend_eco_points
-- [ ] **T4.3** Log scheduled action
+- [x] **T4.3** eco_maintenance_tick audited via scheduler::audit (scheduled_log)
 
 ## Phase 5: Transaction Logging
-- [ ] **T4.4** Create EcoTransaction struct (player_id, hex_id, action, points_earned, rating_before, rating_after)
+- [x] **T4.4** eco_transaction table + record_eco_tx on plant/harvest/clean
 - [x] **T4.5** Ledger — record() audit entry per eco change (seen in game log)
 
 ## Phase 6: Client Display

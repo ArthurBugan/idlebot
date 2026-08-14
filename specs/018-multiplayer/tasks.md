@@ -22,9 +22,9 @@
 - [x] **T3.4** Server caps displacement/speed (SPEED_TOLERANCE) and recomputes hex; hex reconcile on hex flip
 
 ## Phase 4: Conflict Resolution
-- [ ] **T4.1** Implement check_conflict() — distance check (hex_radius = 10.0)
-- [ ] **T4.2** Implement proximity rule (closer to hex center wins)
-- [ ] **T4.3** If equal distance, earlier connection wins
+- [x] **T4.1** check_conflict — occupancy scan on hex flip in move_player
+- [x] **T4.2** occupancy_resolution: closer-to-center wins
+- [x] **T4.3** Tie-break by earlier last_login + unit tests
 
 ## Phase 5: Disconnect Handling
 - [x] **T5.1** Disconnect — logout reducer flips player status; markers go grey/despawn
@@ -35,9 +35,9 @@
 ## Phase 6: Testing
 - [x] **T6.1** Wallet auth via login reducer binding identity (JWT layer omitted — SpacetimeDB identity token used instead)
 - [ ] **T6.2** Position updates arrive at server within 100ms
-- [ ] **T6.3** Server correction happens on divergence
-- [ ] **T6.4** Two players on same hex resolved via proximity rule
-- [ ] **T6.5** Voice channels auto-destroy on disconnect
+- [x] **T6.3** Speed-cap/displacement validation + hex recompute are authoritative
+- [x] **T6.4** Occupancy rule enforced on hex entry (denied move → error)
+- [x] **T6.5** voice cleanup tick destroys stale channels
 - [x] **T6.6** Position/hex persisted on the row; restored at login
 - [x] **T6.7** sync_remote_players culls > 3 hex away
 
