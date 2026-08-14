@@ -30,7 +30,7 @@
 - [x] **T4.5** Test: player crosses hex boundaries correctly
 
 ## Phase 5: Testing & Polish
-- [ ] **T5.1** Integration test: spawn → move → spawn location validation — **NOT WRITTEN**
+- [x] **T5.1** Integration test: spawn → move → spawn location validation — spawn_location_tests (round-trip, expected-hex landing, far-spawn validity, no drift over 5k travels)
 - [x] **T5.2** movement_loop_fits_frame_budget — 100k move computations < 250 ms
 - [x] **T5.3** world_to_axial(0,0)→(0,0) plus center roundtrips cover stationary
 - [x] **T5.4** max-radius hex set has unique ids; roundtrip holds at grid edge

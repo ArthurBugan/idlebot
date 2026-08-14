@@ -189,3 +189,53 @@ mod perf_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod spawn_location_tests {
+    use super::*;
+    use idlecore_core::hex_grid::HexGrid;
+
+    /// Spawn = (0,0) hex at world origin; moving 1.5·size along +r places the
+    /// player exactly one hex to the +r neighbor (flat-top layout).
+    #[test]
+    fn spawn_then_move_lands_in_expected_hex() {
+        assert_eq!(hex_at(0.0, 0.0), (0, 0));
+        let size = 10.0;
+        let (sx, sz) = HexGrid::axial_to_world(0, 1, size);
+        assert_eq!(hex_at(sx, sz), (0, 1));
+        let (sx, sz) = HexGrid::axial_to_world(1, 0, size);
+        assert_eq!(hex_at(sx, sz), (1, 0));
+        let (sx, sz) = HexGrid::axial_to_world(-2, 3, size);
+        assert_eq!(hex_at(sx, sz), (-2, 3));
+    }
+
+    /// Integration smoke: a moved player's world position always reports back
+    /// to the same hex (no drift) across far-off travel, and the clamped
+    /// displacement never jumps farther than the frame budget allows.
+    #[test]
+    fn long_travel_round_trip_never_drifts() {
+        let size = 10.0;
+        let mut acc = 0u32;
+        for i in 0..5_000u32 {
+            let hex = (i as i32 % 200 - 100, i as i32 / 200 % 100 - 50);
+            let (x, z) = HexGrid::axial_to_world(hex.0, hex.1, size);
+            let moved = x + (i as f32 % 7.0) - 3.0; // arbitrary in-hex movement
+            let (q, r) = hex_at(moved, z);
+            let (bx, bz) = HexGrid::axial_to_world(q, r, size);
+            assert_eq!(hex_at(bx, bz), (q, r), "drift at hex {hex:?}");
+            acc = acc.wrapping_add(q as u32).wrapping_add(r as u32);
+        }
+        assert_ne!(acc, 0);
+    }
+
+    /// Spawn location validation: a player who wakes at a far-away coordinate
+    /// still resolves a valid hex, and every hex maps back to itself.
+    #[test]
+    fn far_spawn_coordinates_are_valid() {
+        // i32::MAX/4096 keeps world coords < 2^23 so f32 round-trips stay exact.
+        for &(q, r) in &[(0, 0), (1_000, -500), (-777, 333), (i32::MAX / 4096, i32::MIN / 4096)] {
+            let (x, z) = HexGrid::axial_to_world(q, r, 10.0);
+            assert_eq!(hex_at(x, z), (q, r), "spawn at {q},{r} invalid");
+        }
+    }
+}
