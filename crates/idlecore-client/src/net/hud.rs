@@ -180,6 +180,12 @@ fn update_hud_text(
                 }
             }
         }
+        // Spec 020 T2.5/T3.2: eco rank by player EP, with next-unlock hint.
+        let (rank, next) = eco_rank(p.eco_points);
+        stats.push_str(&format!("\nEco rank: {rank} ({} EP)", p.eco_points));
+        if let Some(unlock_at) = next {
+            stats.push_str(&format!(" next at {unlock_at}"));
+        }
         // Spec 020 T2.4: eco rating of the hex under the player.
         if let Some(conn) = &net.conn {
             let hex_id = crate::net::plugin::Net::hex_id_at(p.position.x, p.position.z);
@@ -329,7 +335,7 @@ fn hud_buttons(
     }
 }
 
-/// Spec 020 T2.5-ish: title for a hex's eco rating.
+/// Spec 020 T2.5: title for a hex's eco rating.
 fn eco_title(rating: i32) -> &'static str {
     if rating >= 80 {
         "Lush"
@@ -339,5 +345,18 @@ fn eco_title(rating: i32) -> &'static str {
         "Strained"
     } else {
         "Degraded"
+    }
+}
+
+/// Spec 020 T2.5/T3.2: player eco rank by EP, plus the next unlock threshold.
+fn eco_rank(ep: u64) -> (&'static str, Option<u64>) {
+    if ep >= 1000 {
+        ("Eco Legend", None)
+    } else if ep >= 500 {
+        ("Eco Warrior", Some(1000))
+    } else if ep >= 100 {
+        ("Eco Enthusiast", Some(500))
+    } else {
+        ("Eco Scout", Some(100))
     }
 }

@@ -468,3 +468,49 @@ pub fn market_cleanup_tick(ctx: &ReducerContext, _row: ScheduledMarketCleanup) {
 pub fn eco_maintenance_tick(ctx: &ReducerContext, _row: ScheduledEcoMaintenance) {
     crate::scheduler::eco_maintenance_tick_body(ctx);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plant_json_round_trip() {
+        let p = Plant {
+            plant_type: "Wheat".into(),
+            planted_at: 1234,
+            growth_time: 3600,
+        };
+        let s = p.to_json();
+        let back = Plant::from_json(&s).expect("parse own output");
+        assert_eq!(back.plant_type, "Wheat");
+        assert_eq!(back.planted_at, 1234);
+        assert_eq!(back.growth_time, 3600);
+    }
+
+    #[test]
+    fn plant_json_tolerates_legacy_missing_growth_time() {
+        let s = r#"{"plant_type":"Tree","planted_at":42}"#;
+        let p = Plant::from_json(s).expect("tolerant parse");
+        assert_eq!(p.plant_type, "Tree");
+        assert_eq!(p.growth_time, Plant::growth_seconds("Tree"));
+    }
+
+    #[test]
+    fn plant_json_rejects_garbage() {
+        assert!(Plant::from_json("not json").is_none());
+        assert!(Plant::from_json(r#"{"planted_at":1}"#).is_none());
+    }
+
+    #[test]
+    fn plant_maturity_window() {
+        let p = Plant {
+            plant_type: "Wheat".into(),
+            planted_at: 1000,
+            growth_time: 3600,
+        };
+        assert!(!p.is_mature(3000), "not yet grown");
+        assert!(p.is_mature(1000 + 3600), "fully grown");
+        assert!(p.is_mature(9000), "overgrown stays mature");
+        assert_eq!(p.time_remaining(1000), 3600);
+    }
+}

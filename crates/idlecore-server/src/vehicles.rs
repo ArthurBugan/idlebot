@@ -120,3 +120,41 @@ pub fn charge_daily_maintenance(ctx: &ReducerContext, epoch_day: u32) {
         tracing::info!("MAINTENANCE: charged {charged}G total this cycle");
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::VEHICLE_MAINTENANCE_PER_HOUR;
+
+    #[test]
+    fn catalog_has_five_unique_vehicles() {
+        let c = catalog();
+        assert_eq!(c.len(), 5);
+        let mut names: Vec<&str> = c.iter().map(|(n, _, _)| *n).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), 5);
+    }
+
+    #[test]
+    fn catalog_costs_and_speeds_sane() {
+        for (name, speed, cost) in catalog() {
+            assert!(speed > 1.0, "{name} must be faster than walking");
+            assert!(speed <= 10.0, "{name} speed bounded");
+            assert!(cost > 0, "{name} must cost gold");
+        }
+    }
+
+    #[test]
+    fn faster_vehicles_cost_more() {
+        let c = catalog();
+        let airplane = c.iter().find(|(n, _, _)| *n == "Airplane").unwrap();
+        let bicycle = c.iter().find(|(n, _, _)| *n == "Bicycle").unwrap();
+        assert!(airplane.1 > bicycle.1, "airplane faster");
+        assert!(airplane.2 > bicycle.2, "airplane costs more");
+    }
+
+    #[test]
+    fn maintenance_rate_positive() {
+        assert!(VEHICLE_MAINTENANCE_PER_HOUR > 0);
+    }
+}

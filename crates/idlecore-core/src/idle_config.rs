@@ -98,3 +98,56 @@ pub fn format_offline_duration(seconds: u64) -> String {
         format!("{}m", minutes)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gains(secs: u64) -> IdleGains {
+        gains_for_time(Duration::from_secs(secs))
+    }
+
+    #[test]
+    fn nothing_before_one_minute() {
+        let g = gains(60);
+        assert_eq!((g.xp, g.gold), (0, 0));
+        let g = gains(0);
+        assert_eq!((g.xp, g.gold), (0, 0));
+    }
+
+    #[test]
+    fn bracket_one_hour() {
+        let g = gains(61);
+        assert_eq!((g.xp, g.gold), (10, 5));
+    }
+
+    #[test]
+    fn bracket_six_hours() {
+        let g = gains(3600);
+        assert_eq!((g.xp, g.gold), (60, 30));
+        let g = gains(21_599);
+        assert_eq!((g.xp, g.gold), (60, 30));
+    }
+
+    #[test]
+    fn bracket_twelve_hours() {
+        let g = gains(21_600);
+        assert_eq!((g.xp, g.gold), (100, 50));
+        let g = gains(43_199);
+        assert_eq!((g.xp, g.gold), (100, 50));
+    }
+
+    #[test]
+    fn bracket_twenty_four_hours() {
+        let g = gains(43_200);
+        assert_eq!((g.xp, g.gold), (150, 75));
+    }
+
+    #[test]
+    fn capped_after_24h() {
+        let at_cap = gains(MAX_IDLE_SECONDS);
+        let beyond = gains(MAX_IDLE_SECONDS + 10 * 24 * 3600);
+        assert_eq!((at_cap.xp, at_cap.gold), (150, 75));
+        assert_eq!((beyond.xp, beyond.gold), (at_cap.xp, at_cap.gold));
+    }
+}

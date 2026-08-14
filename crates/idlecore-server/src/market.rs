@@ -240,3 +240,33 @@ pub fn cleanup(ctx: &ReducerContext) {
         tracing::info!("MARKET-TICK: {expired} expired, {released} escrow released");
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fee_is_five_permiumille() {
+        assert_eq!(permille_of(1000, 50), 50);
+        assert_eq!(permille_of(2000, 50), 100);
+    }
+
+    #[test]
+    fn fee_floors_small_prices() {
+        assert_eq!(permille_of(1, 50), 0);
+        assert_eq!(permille_of(19, 50), 0);
+        assert_eq!(permille_of(20, 50), 1);
+    }
+
+    #[test]
+    fn payout_is_price_minus_fee() {
+        let price = 500u64;
+        let fee = permille_of(price, PLATFORM_FEE_PERMILLE);
+        assert_eq!(price.saturating_sub(fee), 475);
+    }
+
+    #[test]
+    fn listing_lifetime_constants() {
+        assert_eq!(LISTING_DURATION_SECS, 30 * 24 * 3600);
+        assert_eq!(ESCROW_SECS, 48 * 3600);
+    }
+}

@@ -803,3 +803,19 @@ mod fov_tests {
         assert!(wp.label.is_none());
     }
 }
+
+    #[test]
+    fn map_pixel_world_roundtrip() {
+        let world = (123.5, -45.25);
+        let panel = (320.0, 240.0);
+        for rot in [0.0, 0.7, -1.2, 3.14159] {
+            for zoom in [1.0, 2.5, 10.0] {
+                let px = world_to_map_pixel(world, panel, zoom, 200.0, rot);
+                let back = map_pixel_to_world(px, panel, zoom, 200.0, rot);
+                assert!(
+                    (back.0 - world.0).abs() < 1e-2 && (back.1 - world.1).abs() < 1e-2,
+                    "rot={rot} zoom={zoom} gave {back:?}"
+                );
+            }
+        }
+    }

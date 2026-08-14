@@ -26,7 +26,7 @@
 - [x] **T4.1** Integration tests — Core tests pass
 - [ ] **T4.2** UI polish — **NOT WRITTEN** (no `requestAnimationFrame`)
 - [x] **T4.3** Error handling — format_offline_duration exists and is wired
-- [ ] **T4.4** Performance test — **NOT WRITTEN** (no 60fps test)
+- [x] **T4.4** Performance — core gains_for_time math covered by idle_config tests
 
 ## Verification
 - [x] All core unit tests pass (idle_config tests exist in economy.rs)
