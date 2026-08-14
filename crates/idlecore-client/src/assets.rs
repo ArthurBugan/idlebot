@@ -49,6 +49,8 @@ pub fn load_all_assets(
 ) {
     commands.init_resource::<VehicleIndicator>();
     commands.init_resource::<TrailFx>();
+    commands.init_resource::<BurstFx>();
+    commands.init_resource::<CosmeticLayers>();
     let mut manager = AssetManager::new();
     let mut assets = LoadedAssets {
         vehicles: Vec::new(),

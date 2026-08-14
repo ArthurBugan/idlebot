@@ -24,7 +24,10 @@ pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<AuraLight>()
+        // Init at build time so Startup systems that consume it don't race
+        // other plugins' Startup command flushes (missing resource → panic).
+        app.init_resource::<VehicleIndicator>()
+            .init_resource::<AuraLight>()
             .add_systems(Update, (
                 player_movement.after(PhysicsSet::Writeback),
                 sync_visual_to_physics.after(player_movement),
@@ -338,8 +341,10 @@ fn update_vehicle_indicator(
     body: Query<(&Transform, &crate::player::ClientPlayer), With<PhysicsBody>>,
     indicator: Option<Res<VehicleIndicator>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut plates: Query<(&mut Transform, &mut Visibility), Without<Text2d>>,
-    mut labels: Query<(&mut Transform, &mut Visibility, &mut Text2d), Without<Mesh3d>>,
+    mut entities: ParamSet<(
+        Query<(&mut Transform, &mut Visibility), (Without<Text2d>, Without<PhysicsBody>)>,
+        Query<(&mut Transform, &mut Visibility, &mut Text2d), (Without<Mesh3d>, Without<PhysicsBody>)>,
+    )>,
 ) {
     let Some(indicator) = indicator else { return };
     let Ok((body_t, player)) = body.single() else { return };
@@ -350,7 +355,7 @@ fn update_vehicle_indicator(
         .filter(|v| **v != idlecore_core::Vehicle::None);
 
     if let Some(entity) = indicator.plate {
-        if let Ok((mut t, mut vis)) = plates.get_mut(entity) {
+        if let Ok((mut t, mut vis)) = entities.p0().get_mut(entity) {
             match vehicle {
                 Some(v) => {
                     *t = Transform::from_xyz(body_t.translation.x, 0.15, body_t.translation.z);
@@ -369,7 +374,7 @@ fn update_vehicle_indicator(
         }
     }
     if let Some(entity) = indicator.label {
-        if let Ok((mut t, mut vis, mut text)) = labels.get_mut(entity) {
+        if let Ok((mut t, mut vis, mut text)) = entities.p1().get_mut(entity) {
             match vehicle {
                 Some(v) => {
                     *t = Transform::from_xyz(

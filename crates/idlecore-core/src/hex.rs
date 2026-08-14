@@ -55,10 +55,16 @@ impl HexCoord {
     }
 
     /// Parse a hex id back into a HexCoord.
+    ///
+    /// Row data can carry sentinel/garbage ids (e.g. a fresh player row with
+    /// `hex_id = 0`), which would decode to coordinates near ±i32::MAX and
+    /// overflow the `s = -q - r` invariant. Clamp to a band far wider than
+    /// any real world (radius 100) so decoding can never panic.
     pub fn from_id(id: u64) -> Self {
         const OFFSET: i64 = i32::MAX as i64;
-        let q = ((id >> 32) as i64) - OFFSET;
-        let r = ((id & 0xFFFFFFFF) as i64) - OFFSET;
+        const LIMIT: i64 = 1_000_000_000;
+        let q = (((id >> 32) as i64) - OFFSET).clamp(-LIMIT, LIMIT);
+        let r = (((id & 0xFFFFFFFF) as i64) - OFFSET).clamp(-LIMIT, LIMIT);
         Self::new(q as i32, r as i32)
     }
 
@@ -323,6 +329,35 @@ mod world_pos_tests {
             assert_eq!((px, pz), (wx, wz));
             let [cx, cy, _] = coord.center(10.0);
             assert_eq!((cx, cy), (wx, wz));
+        }
+    }
+}
+
+#[cfg(test)]
+mod from_id_tests {
+    use super::*;
+
+    #[test]
+    fn sentinel_zero_id_does_not_overflow() {
+        let h = HexCoord::from_id(0);
+        let _ = h.s;
+    }
+
+    #[test]
+    fn garbage_id_does_not_panic() {
+        for id in [u64::MAX, 1, 0xFFFFFFFF, 0x80000000_00000000] {
+            let h = HexCoord::from_id(id);
+            assert!(h.q.abs() <= 1_000_000_000 && h.r.abs() <= 1_000_000_000);
+        }
+    }
+
+    #[test]
+    fn round_trip_within_world_radius() {
+        for q in -200..=200 {
+            for r in -200..=200 {
+                let h = HexCoord::new(q, r);
+                assert_eq!(HexCoord::from_id(h.to_id()), h);
+            }
         }
     }
 }
