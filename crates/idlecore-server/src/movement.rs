@@ -6,7 +6,7 @@
 //! equipped vehicle allows for the elapsed time, then recomputes the hex and
 //! persists it. Heartbeat refreshes `last_seen` (Spec 021 FR6).
 
-use spacetimedb::ReducerContext;
+use spacetimedb::{ReducerContext, Table};
 use crate::types::{hex_id_of, now_secs, player};
 use crate::player::update_hex;
 
@@ -68,9 +68,53 @@ pub fn move_player(
 
     let (q, r) = hex_at(x, y);
     let corrected = (q, r) != (p.hex_q, p.hex_r);
+    if corrected {
+        // Spec 018 T4.x: occupancy conflict — the hex belongs to whoever is
+        // closer to its center; ties go to the earlier connection (login).
+        let (cx, cy) = idlecore_core::hex_grid::HexGrid::axial_to_world(q, r, 10.0);
+        let my_d2 = (x - cx).powi(2) + (y - cy).powi(2);
+        let mut occupant: Option<(f32, u64)> = None;
+        for other in ctx.db.player().iter() {
+            if other.address == p.address || other.status != "online" {
+                continue;
+            }
+            if other.hex_q == q && other.hex_r == r {
+                let d2 = (other.position_x - cx).powi(2) + (other.position_y - cy).powi(2);
+                let entry = (d2, other.last_login);
+                occupant = Some(match occupant {
+                    Some(best) if best <= entry => best,
+                    _ => entry,
+                });
+            }
+        }
+        if let Some((their_d2, their_login)) = occupant {
+            if !occupancy_resolution(my_d2, their_d2, p.last_login, their_login) {
+                tracing::info!("OCCUPANCY: {} denied hex ({q},{r})", p.address);
+                return Err("Hex occupied — closer player wins".to_string());
+            }
+        }
+    }
     update_hex(ctx, &p.address, q, r, x, y, now);
 
     Ok((x, y, hex_id_of(q, r), corrected))
+}
+
+/// Pure occupancy rule (Spec 018 T4.1-4.3): does `mine` win the contested
+/// hex? Closer to the hex center wins; on equal distance the player who
+/// connected earlier wins.
+fn occupancy_resolution(
+    my_dist_to_center: f32,
+    their_dist_to_center: f32,
+    my_connected_at: u64,
+    their_connected_at: u64,
+) -> bool {
+    if their_dist_to_center < my_dist_to_center {
+        return false;
+    }
+    if my_dist_to_center == their_dist_to_center {
+        return my_connected_at <= their_connected_at;
+    }
+    true
 }
 
 /// Flat-top axial hex containing a world position (PROPOSAL 9.1).
@@ -88,4 +132,25 @@ pub fn heartbeat(ctx: &ReducerContext, address: &str) -> Result<(), String> {
     p.last_seen = now;
     ctx.db.player().address().update(p);
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closer_player_wins() {
+        assert!(occupancy_resolution(0.0, 5.0, 100, 100));
+        assert!(!occupancy_resolution(5.0, 0.0, 100, 100));
+    }
+
+    #[test]
+    fn equal_distance_earlier_connection_wins() {
+        assert!(occupancy_resolution(2.0, 2.0, 100, 200));
+        assert!(!occupancy_resolution(2.0, 2.0, 200, 100));
+    }
+
+    #[test]
+    fn identical_claim_returns_true() {
+        assert!(occupancy_resolution(1.5, 1.5, 100, 100));
+    }
 }

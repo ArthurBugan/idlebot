@@ -307,6 +307,29 @@ pub struct ScheduledLog {
 }
 
 // ---------------------------------------------------------------------------
+// 10. eco_transactions — per-action eco ledger (Spec 020 T4.4/T6.7)
+// ---------------------------------------------------------------------------
+
+/// One eco point change with the hex rating before/after.
+#[derive(Clone, Debug)]
+#[spacetimedb::table(
+    accessor = eco_transaction,
+    public,
+    index(accessor = eco_tx_by_player, btree(columns = [player]))
+)]
+pub struct EcoTransaction {
+    #[primary_key]
+    #[auto_inc]
+    pub tx_id: u64,
+    pub player: String,
+    pub hex_id: u64,
+    pub action: String, // plant | harvest | clean | spend
+    pub points_earned: i64,
+    pub rating_before: i32,
+    pub rating_after: i32,
+}
+
+// ---------------------------------------------------------------------------
 // Internal scheduler tables (SpacetimeDB recurring reducers)
 // ---------------------------------------------------------------------------
 

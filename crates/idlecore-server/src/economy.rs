@@ -4,7 +4,7 @@
 
 use spacetimedb::{ReducerContext, Table};
 use crate::types::{
-    now_secs, player, transaction, Player, Transaction,
+    eco_transaction, now_secs, player, transaction, Player, Transaction,
 };
 
 /// Spend gold. Returns Err(reason) if the balance is insufficient.
@@ -51,6 +51,30 @@ pub fn add_xp(ctx: &ReducerContext, p: &mut Player, amount: u64, action: &str) -
     record(ctx, p, action, 0, amount as i64, 0);
     ctx.db.player().address().update(p.clone());
     leveled
+}
+
+/// Spec 020 T4.4/T6.7: per-action eco audit row (points + hex rating before/after).
+pub fn record_eco_tx(
+    ctx: &ReducerContext,
+    player: &str,
+    hex_id: u64,
+    action: &str,
+    points: i64,
+    rating_before: i32,
+    rating_after: i32,
+) {
+    if points == 0 {
+        return;
+    }
+    ctx.db.eco_transaction().insert(crate::types::EcoTransaction {
+        tx_id: 0,
+        player: player.to_string(),
+        hex_id,
+        action: action.to_string(),
+        points_earned: points,
+        rating_before,
+        rating_after,
+    });
 }
 
 /// Add eco points (coerced to i32 range; never negative).

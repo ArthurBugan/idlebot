@@ -5,7 +5,7 @@
 //! harvest rewards, 5 s action cooldown, max 8 players per hex.
 
 use spacetimedb::ReducerContext;
-use crate::economy::{add_eco_points, add_gold, add_xp, spend_gold};
+use crate::economy::{add_eco_points, add_gold, add_xp, record_eco_tx, spend_gold};
 use crate::types::{player, hex_tile,
     now_secs, Plant, HexTile, ACTION_COOLDOWN_SECS, CLEAN_COST, CLEAN_GOLD_REWARD,
     CLEAN_XP_REWARD, ECO_FOR_CLEAN, ECO_FOR_HARVEST_TREE, ECO_FOR_PLANT_TREE,
@@ -108,9 +108,11 @@ pub fn plant_at(ctx: &ReducerContext, address: &str, hex_id: u64, plant_type: &s
         growth_time: Plant::growth_seconds(plant_type),
     };
     let mut hex = hex;
+    let rating_before = hex.eco_rating;
     hex.plant = Some(plant.to_json());
     hex.planted_by = Some(p.address.clone());
-    hex.eco_rating = (hex.eco_rating + RATING_FOR_PLANT).min(100);
+    hex.eco_rating = (rating_before + RATING_FOR_PLANT).min(100);
+    let after = hex.eco_rating;
     commit_hex(ctx, hex, now);
 
     p.plants_planted = p.plants_planted.saturating_add(1);
@@ -118,6 +120,7 @@ pub fn plant_at(ctx: &ReducerContext, address: &str, hex_id: u64, plant_type: &s
     // Spec 020: planting a tree earns eco points.
     if plant_type == "Tree" {
         add_eco_points(ctx, &mut p, ECO_FOR_PLANT_TREE, "plant_tree");
+        record_eco_tx(ctx, &p.address, hex_id, "plant_tree", ECO_FOR_PLANT_TREE, rating_before, after);
     }
     ctx.db.player().address().update(p);
 
@@ -155,9 +158,11 @@ pub fn harvest(ctx: &ReducerContext, address: &str, hex_id: u64) -> Outcome {
     }
 
     let mut hex = hex;
+    let rating_before = hex.eco_rating;
     hex.plant = None;
     hex.planted_by = None;
-    hex.eco_rating = (hex.eco_rating + RATING_FOR_HARVEST).min(100);
+    hex.eco_rating = (rating_before + RATING_FOR_HARVEST).min(100);
+    let after = hex.eco_rating;
     commit_hex(ctx, hex, now);
 
     p.plants_harvested = p.plants_harvested.saturating_add(1);
@@ -165,6 +170,7 @@ pub fn harvest(ctx: &ReducerContext, address: &str, hex_id: u64) -> Outcome {
     add_xp(ctx, &mut p, HARVEST_XP_REWARD, "harvest");
     if plant.plant_type == "Tree" {
         add_eco_points(ctx, &mut p, ECO_FOR_HARVEST_TREE, "harvest_tree");
+        record_eco_tx(ctx, &p.address, hex_id, "harvest_tree", ECO_FOR_HARVEST_TREE, rating_before, after);
     }
     ctx.db.player().address().update(p);
 
@@ -193,14 +199,17 @@ pub fn clean(ctx: &ReducerContext, address: &str, hex_id: u64) -> Outcome {
     add_gold(ctx, &mut p, CLEAN_GOLD_REWARD, "clean");
 
     let mut hex = hex;
+    let rating_before = hex.eco_rating;
     hex.is_polluted = false;
-    hex.eco_rating = (hex.eco_rating + RATING_FOR_CLEAN).min(100);
+    hex.eco_rating = (rating_before + RATING_FOR_CLEAN).min(100);
     hex.cleaned_at = Some(now);
+    let after = hex.eco_rating;
     commit_hex(ctx, hex, now);
 
     p.pollution_cleaned = p.pollution_cleaned.saturating_add(1);
     add_xp(ctx, &mut p, CLEAN_XP_REWARD, "clean");
     add_eco_points(ctx, &mut p, ECO_FOR_CLEAN, "clean");
+    record_eco_tx(ctx, &p.address, hex_id, "clean", ECO_FOR_CLEAN, rating_before, after);
     ctx.db.player().address().update(p);
 
     Outcome::ok(format!(
