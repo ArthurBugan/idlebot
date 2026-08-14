@@ -351,6 +351,7 @@ fn hud_buttons(
     mut minimap_state: ResMut<crate::minimap::MinimapState>,
     mut name_edit: ResMut<NameEdit>,
     mut latency: ResMut<super::plugin::ServerLatency>,
+    mut skins: ResMut<crate::skins::PlayerSkins>,
     player: Option<Query<&ClientPlayer>>,
     mut interactions: Query<(&Interaction, &HudAction), Changed<Interaction>>,
 ) {
@@ -417,6 +418,9 @@ fn hud_buttons(
                         }
                     }
                     HudAction::AvatarNext => {
+                        // Visible effect, same as the ] key: cycle the skin
+                        // painted on the model.
+                        crate::skins::cycle_skin_dir(&mut skins, 1);
                         let Some(mine) = &net.address else { continue };
                         let avatar = conn
                             .db

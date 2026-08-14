@@ -133,7 +133,12 @@ fn cycle_skin(
     }) else {
         return;
     };
+    cycle_skin_dir(&mut skins, dir);
+}
 
+/// Advance the current skin by `dir` (±1, wrapping) and flag a re-bake.
+/// Shared by the [ / ] keys and the HUD "Avatar -> Next" button.
+pub(crate) fn cycle_skin_dir(skins: &mut PlayerSkins, dir: isize) {
     if skins.textures.is_empty() {
         return;
     }
