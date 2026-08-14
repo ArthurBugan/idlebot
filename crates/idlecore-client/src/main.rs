@@ -19,6 +19,7 @@ mod inventory;
 mod net;
 mod fps_counter;
 mod world_floor;
+mod assets;
 
 
 // --- Main Entry ---
@@ -64,6 +65,7 @@ fn main() {
         .insert_resource(world_floor::FloorPlantAssets::default())
         .add_systems(Startup, (
             setup,
+            assets::load_all_assets,
             minimap::spawn_minimap_ui,
             idle::spawn_idle_panel,
         ))
@@ -96,6 +98,10 @@ fn main() {
             world_floor::update_world_floor
                 .after(minimap::sync_player_state)
                 .after(minimap::load_nearby_chunks),
+            assets::track_asset_loading,
+            assets::apply_vehicle_material,
+            assets::update_trail_vfx,
+            assets::expire_trail_particles,
         ))
         .run();
 }

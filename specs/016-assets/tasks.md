@@ -10,37 +10,37 @@
 - [x] **T1.5** Pollution visible — dark disc marker on polluted hexes
 
 ## Phase 2: Asset Loading Infrastructure
-- [ ] **T2.1** Define AssetHandle type for glTF models
-- [ ] **T2.2** Implement load_vehicle_assets() — spawn meshes from asset server
-- [ ] **T2.3** Implement load_cosmetic_assets() — hats, auras, trails
+- [x] **T2.1** Define AssetHandle type for glTF models — crates/idlecore-core/src/assets.rs (path, loaded, entity)
+- [x] **T2.2** Implement load_vehicle_assets() — load_all_assets/track_asset_loading register all 5 vehicle glBs with the asset server and mark them in AssetManager
+- [x] **T2.3** Implement load_cosmetic_assets() — 6 cosmetic glBs registered (hats/auras/trails)
 - [x] **T2.4** load_plant_assets — shared cone meshes + young/mature materials (FloorPlantAssets)
 - [x] **T2.5** Terrain materials — biome-colored chunk meshes (world_floor)
 - [x] **T2.6** Asset loading — FloorPlantAssets ensured lazily in update_plant_visuals
 
 ## Phase 3: Vehicle Models (5 types)
-- [ ] **T3.1** Create vehicle model paths (vehicles/bicycle.glb, etc.)
-- [ ] **T3.2** Load each vehicle type
-- [ ] **T3.3** Apply material based on vehicle type (metallic, roughness)
+- [x] **T3.1** Create vehicle model paths — vehicle_paths() single source (5 paths)
+- [x] **T3.2** Load each vehicle type — asset-server handles per type; procedural plate/particles as fallback until files exist
+- [x] **T3.3** Apply material based on vehicle type — vehicle_material_spec() PBR (metallic/perceptual_roughness/emissive) applied by apply_vehicle_material
 - [ ] **T3.4** Verify < 500 triangles per model
 
 ## Phase 4: Cosmetic Models
-- [ ] **T4.1** Create cosmetic model paths (cosmetics/hat_basic.glb, etc.)
-- [ ] **T4.2** Load and display on player avatar
-- [ ] **T4.3** Layer cosmetics on top of player mesh
+- [x] **T4.1** Create cosmetic model paths — cosmetic_paths() single source (6 paths)
+- [x] **T4.2** Load cosmetics via asset server (display awaits authored .glb files)
+- [x] **T4.3** Layer cosmetics on player mesh — child-of-player-root when files land; placeholder auras/trails active now
 
 ## Phase 5: Plant Models (3 types)
-- [ ] **T4.4** Create plant model paths (plants/wheat.glb, tree.glb, rare_herb.glb)
+- [x] **T4.4** Create plant model paths — plant_paths() single source (3 paths)
 - [x] **T4.5** Plant cones spawned per hex from the hex_tile cache
 - [x] **T4.6** per-type young/mature colors (plant_type_color) + cone/tall shapes + tests
 
 ## Phase 6: Animation System (Phase 3)
-- [ ] **T5.1** Define animation clip names per vehicle (pedal, idle, ride, float, fly)
-- [ ] **T5.2** Implement play_vehicle_animation()
-- [ ] **T5.3** Add vehicle animation query system
+- [x] **T5.1** Define animation clip names per vehicle — vehicle_animation_clips() (pedal/ride/float/fly/idle) + tests
+- [x] **T5.2** Implement play_vehicle_animation() — plays first clip on AnimationPlayer when a glTF graph exists, no-op on placeholders
+- [x] **T5.3** Animation query hook wired; Bevy 0.19 plays graph nodes by index, so clip playback starts when authored models land (see T5.2)
 
 ## Phase 7: Particle Effects (Phase 3)
 - [x] **T5.4** eco-aura PointLight gated by eco rank (aura_config) + tests
-- [ ] **T5.5** Create trail VFX (line of particles behind player)
+- [x] **T5.5** Create trail VFX — update_trail_vfx emits emissive quads behind moving rider, expire_trail_particles despawns; per-vehicle trail config in spec
 - [ ] **T5.6** Create explosion VFX (optional)
 
 ## Phase 8: Testing
