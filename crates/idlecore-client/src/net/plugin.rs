@@ -389,6 +389,7 @@ fn auto_connect(mut net: ResMut<Net>) {
 fn net_drain(
     mut net: ResMut<Net>,
     mut burst: ResMut<crate::assets::BurstFx>,
+    mut latency: ResMut<ServerLatency>,
     mut bodies: Query<
         (&mut Transform, &mut Velocity, &mut crate::player::ClientPlayer),
         With<crate::plugins::player::PhysicsBody>,
@@ -413,6 +414,7 @@ fn net_drain(
         player.position = Vec3::new(wx, y, wz);
         player.current_hex = Some(crate::player::CurrentHex { q, r });
         burst.request(Vec3::new(wx, y, wz));
+        latency.resolve();
     }
 }
 
@@ -568,5 +570,108 @@ fn short_addr(s: &str) -> String {
         format!("{}...{}", &s[..5], &s[s.len() - 4..])
     } else {
         s.to_string()
+    }
+}
+
+// ============================================================================
+// Server latency instrumentation (Spec 018 T6.2)
+// ============================================================================
+
+/// Rolling window of server round-trip samples in milliseconds.
+#[derive(Debug, Clone)]
+pub struct LatencyWindow {
+    samples: VecDeque<f32>,
+    max: usize,
+}
+
+impl Default for LatencyWindow {
+    fn default() -> Self {
+        Self { samples: VecDeque::new(), max: 60 }
+    }
+}
+
+impl LatencyWindow {
+    pub fn push_ms(&mut self, ms: f32) {
+        if self.samples.len() == self.max {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(ms);
+    }
+
+    pub fn avg_ms(&self) -> Option<f32> {
+        if self.samples.is_empty() {
+            return None;
+        }
+        Some(self.samples.iter().sum::<f32>() / self.samples.len() as f32)
+    }
+
+    pub fn latest_ms(&self) -> Option<f32> {
+        self.samples.back().copied()
+    }
+
+    pub fn sample_count(&self) -> usize {
+        self.samples.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.samples.clear();
+    }
+}
+
+/// RTT of a teleport round trip: request sent → server-confirmed arrival.
+#[derive(Resource, Default)]
+pub struct ServerLatency {
+    pub window: LatencyWindow,
+    request_sent_at: Option<std::time::Instant>,
+}
+
+impl ServerLatency {
+    /// Call when the teleport reducer is invoked (request timestamp).
+    pub fn note_request(&mut self) {
+        self.request_sent_at = Some(std::time::Instant::now());
+    }
+
+    /// Call when the server-confirmed teleport arrives; returns the sample.
+    pub fn resolve(&mut self) -> Option<f32> {
+        let sent = self.request_sent_at.take()?;
+        let ms = sent.elapsed().as_secs_f32() * 1000.0;
+        self.window.push_ms(ms);
+        Some(ms)
+    }
+}
+
+#[cfg(test)]
+mod latency_tests {
+    use super::*;
+
+    #[test]
+    fn window_averages_and_rolls_off() {
+        let mut w = LatencyWindow { max: 3, ..Default::default() };
+        w.push_ms(10.0);
+        w.push_ms(20.0);
+        w.push_ms(30.0);
+        assert_eq!(w.sample_count(), 3);
+        assert_eq!(w.avg_ms().unwrap(), 20.0);
+        assert_eq!(w.latest_ms().unwrap(), 30.0);
+        w.push_ms(60.0); // rolls off the 10.0
+        assert_eq!(w.sample_count(), 3);
+        assert_eq!(w.avg_ms().unwrap(), 110.0 / 3.0);
+    }
+
+    #[test]
+    fn empty_window_has_no_avg() {
+        let w = LatencyWindow::default();
+        assert_eq!(w.avg_ms(), None);
+        assert_eq!(w.latest_ms(), None);
+    }
+
+    #[test]
+    fn resolve_requires_request() {
+        let mut latency = ServerLatency::default();
+        assert_eq!(latency.resolve(), None);
+        latency.note_request();
+        assert!(latency.resolve().is_some());
+        assert_eq!(latency.resolve(), None); // second call has nothing pending
+        assert_eq!(latency.window.sample_count(), 1);
     }
 }

@@ -45,6 +45,7 @@ pub struct NetHudPlugin;
 impl Plugin for NetHudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NameEdit>()
+            .init_resource::<super::plugin::ServerLatency>()
             .add_systems(Startup, spawn_hud)
             .add_systems(
                 Update,
@@ -138,6 +139,7 @@ fn spawn_hud(mut commands: Commands) {
 fn update_hud_text(
     net: Res<Net>,
     minimap_state: Res<crate::minimap::MinimapState>,
+    latency: Res<super::plugin::ServerLatency>,
     player: Option<Query<&ClientPlayer>>,
     mut status_q: Query<&mut Text, (With<HudStatusText>, Without<HudStatsText>, Without<HudLogText>)>,
     mut stats_q: Query<&mut Text, (With<HudStatsText>, Without<HudStatusText>, Without<HudLogText>)>,
@@ -257,6 +259,10 @@ fn update_hud_text(
             None => {}
         }
     }
+    // Spec 018 T6.2: measured server round trip (teleport echo).
+    if let Some(avg) = latency.window.avg_ms() {
+        stats.push_str(&format!("\nNet: {:.0} ms avg ({} samples)", avg, latency.window.sample_count()));
+    }
     if let Ok(mut t) = stats_q.single_mut() {
         t.0 = stats;
     }
@@ -318,6 +324,7 @@ fn hud_buttons(
     mut net: ResMut<Net>,
     mut minimap_state: ResMut<crate::minimap::MinimapState>,
     mut name_edit: ResMut<NameEdit>,
+    mut latency: ResMut<super::plugin::ServerLatency>,
     player: Option<Query<&ClientPlayer>>,
     mut interactions: Query<(&Interaction, &HudAction), Changed<Interaction>>,
 ) {
@@ -367,6 +374,7 @@ fn hud_buttons(
                             ));
                             continue;
                         };
+                        latency.note_request();
                         send_reducer(conn, &tx, |reducers| reducers.teleport_player_then(q, r, teleport_report("teleport", tx.clone(), q, r)));
                         minimap_state.selected_hex = None;
                         minimap_state.selected_px = None;
