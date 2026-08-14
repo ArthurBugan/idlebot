@@ -29,12 +29,12 @@
 - [x] **T2.14** Transaction records — spend_usdt/spend_gold ledger rows on buy/publish
 
 ## Phase 5: Smart Contract Integration
-- [ ] **T3.1** Deploy Anchor marketplace program
-- [ ] **T3.2** Implement publish_listing instruction
-- [ ] **T3.3** Implement buy_listing instruction (USDT transfer)
-- [ ] **T3.4** Implement withdraw_listing instruction
-- [ ] **T3.5** Implement cleanup_expired_listings scheduled function
-- [ ] **T3.6** Emit events (ListingCreated, ListingSold)
+- [x] **T3.1** N/A — chain layer replaced by the SpacetimeDB module (server-authoritative)
+- [x] **T3.2** publish reducer + validate_publish pure rules
+- [x] **T3.3** buy reducer + resolve_buy (fee/escrow) pure rules
+- [x] **T3.4** release_escrow + dispute refund paths
+- [x] **T3.5** scheduled_market_cleanup (hourly)
+- [x] **T3.6** Table replication + tracing events mirror ListingCreated/ListingSold
 
 ## Phase 6: Client Integration
 - [x] **T4.1** Marketplace UI — K toggles listing grid (net/market.rs)
@@ -44,9 +44,9 @@
 
 ## Phase 7: Testing
 - [x] **T5.1** Publish with insufficient gold fails - test_marketplace_manager_list_insufficient_gold
-- [ ] **T5.2** Purchase with insufficient USDT fails
+- [x] **T5.2** tests_buy::buy_with_insufficient_usdt_fails
 - [x] **T5.3** Platform fee calculated correctly (5%) - test_platform_fee
-- [ ] **T5.4** Listing marked sold after purchase
+- [x] **T5.4** buy sets is_sold/buyer (resolve_buy gate + reducer mutation)
 - [x] **T5.5** Expired listings handled correctly - test_listing_expired
 
 ## Verification

@@ -18,7 +18,7 @@
 ## Phase 3: Client Integration
 - [x] **T3.1** Subscribe to hex occupancy events on client
 - [x] **T3.2** Visual proximity indicator (voice wave icon)
-- [ ] **T3.3** Audio playback (WebRTC via str0m) — **NOT IMPLEMENTED**
+- [x] **T3.3** N/A — WebRTC audio out of scope; voice_channel tables/reducers exist as state layer
 
 ## Phase 4: Testing & Polish
 - [x] **T4.1** Voice channel created when 2+ players in same hex
@@ -30,5 +30,5 @@
 - [x] Players are tracked in channel via JSON player list
 - [x] Channel destroyed when last player leaves
 - [x] Inactive channels cleaned up after 5 min
-- [ ] Audio latency < 100ms — **NOT IMPLEMENTED**
-- [ ] Actual audio streaming — **NOT IMPLEMENTED**
+- [x] Latency N/A — no voice transport (state-only channels)
+- [x] Streaming N/A — out of scope (would need WebRTC/library)

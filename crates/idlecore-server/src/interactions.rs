@@ -29,6 +29,30 @@ impl Outcome {
     }
 }
 
+/// Pure rule set used by preflight (Spec 004 FR1/NFR2/PROPOSAL 3.3) —
+/// extracted so the guards are unit-testable with mock values.
+fn interaction_checks(
+    dist_to_hex: i32,
+    now: u64,
+    last_action_at: u64,
+    hex_last_interaction: u64,
+    occupants: usize,
+) -> Result<(), String> {
+    if dist_to_hex > 1 {
+        return Err("Hex is out of interaction range (1 hex)".to_string());
+    }
+    if now.saturating_sub(last_action_at) < ACTION_COOLDOWN_SECS {
+        return Err(format!("Action cooldown ({}s)", ACTION_COOLDOWN_SECS));
+    }
+    if now.saturating_sub(hex_last_interaction) < HEX_LOCK_TIMEOUT_SECS && hex_last_interaction != 0 {
+        return Err("Hex busy — another player is acting on it".to_string());
+    }
+    if occupants >= MAX_PLAYERS_PER_HEX {
+        return Err("Hex full (max 8 players)".to_string());
+    }
+    Ok(())
+}
+
 /// Shared pre-checks: player exists, hex exists, within 1-hex interaction
 /// range, action cooldown respected, hex lock not held by someone else.
 fn preflight(
@@ -42,28 +66,20 @@ fn preflight(
 
     // Spec 004 FR1: interaction range is 1 hex.
     let (hq, hr) = crate::types::hex_coords_of(hex_id);
-    if crate::types::hex_distance(p.hex_q, p.hex_r, hq, hr) > 1 {
-        return Err("Hex is out of interaction range (1 hex)".to_string());
-    }
-
-    // Spec 004 NFR2 / PROPOSAL lock: 2 s to acquire the hex, 5 s action cooldown.
-    if now.saturating_sub(p.last_action_at) < ACTION_COOLDOWN_SECS {
-        return Err(format!("Action cooldown ({}s)", ACTION_COOLDOWN_SECS));
-    }
+    let dist = crate::types::hex_distance(p.hex_q, p.hex_r, hq, hr);
     let hex = ctx
         .db
         .hex_tile()
         .hex_id()
         .find(hex_id)
         .ok_or_else(|| "Hex not found".to_string())?;
-    if now.saturating_sub(hex.last_interaction) < HEX_LOCK_TIMEOUT_SECS && hex.last_interaction != 0 {
-        return Err("Hex busy — another player is acting on it".to_string());
-    }
-
-    // PROPOSAL 3.3: occupancy limit.
-    if players_in_hex(ctx, hex_id) >= MAX_PLAYERS_PER_HEX {
-        return Err("Hex full (max 8 players)".to_string());
-    }
+    interaction_checks(
+        dist,
+        now,
+        p.last_action_at,
+        hex.last_interaction,
+        players_in_hex(ctx, hex_id),
+    )?;
 
     p.last_action_at = now;
     Ok((p, hex))
@@ -222,4 +238,46 @@ pub fn clean(ctx: &ReducerContext, address: &str, hex_id: u64) -> Outcome {
 /// the lock timeout; called by the movement system when a player leaves.
 pub fn release_lock(_ctx: &ReducerContext, _hex_id: u64) {
     // Locks are timestamp-based; they expire naturally via last_interaction.
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mock_adjacent_hex_passes() {
+        assert!(interaction_checks(1, 1000, 990, 900, 1).is_ok());
+    }
+
+    #[test]
+    fn mock_non_adjacent_hex_rejected() {
+        let err = interaction_checks(2, 1000, 990, 900, 0).unwrap_err();
+        assert!(err.contains("out of interaction range"));
+    }
+
+    #[test]
+    fn mock_action_cooldown_rejected() {
+        let err = interaction_checks(1, 1000, 998, 900, 0).unwrap_err();
+        assert!(err.contains("cooldown"));
+    }
+
+    #[test]
+    fn mock_hex_lock_rejected() {
+        let err = interaction_checks(1, 1000, 990, 999, 0).unwrap_err();
+        assert!(err.contains("busy"));
+    }
+
+    #[test]
+    fn mock_full_hex_rejected() {
+        let err = interaction_checks(1, 1000, 990, 900, 8).unwrap_err();
+        assert!(err.contains("full"));
+    }
+
+    #[test]
+    fn mock_plant_wait_harvest_flow() {
+        // Plant → wait → harvest: maturity logic drives the wait (Spec 004 T5.5).
+        let planted = Plant { plant_type: "Wheat".into(), planted_at: 1000, growth_time: 3600 };
+        assert!(!planted.is_mature(2000));
+        assert!(planted.is_mature(4600));
+        assert_eq!(planted.time_remaining(2000), 2600);
+    }
 }

@@ -24,12 +24,14 @@ pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (
-            player_movement.after(PhysicsSet::Writeback),
-            sync_visual_to_physics.after(player_movement),
-            player_animation,
-            update_vehicle_indicator,
-        ));
+        app.init_resource::<AuraLight>()
+            .add_systems(Update, (
+                player_movement.after(PhysicsSet::Writeback),
+                sync_visual_to_physics.after(player_movement),
+                player_animation,
+                update_vehicle_indicator,
+                update_aura_light,
+            ));
         app.add_systems(Startup, (
             register_player_orientation,
             register_player_animations,
@@ -383,6 +385,68 @@ fn update_vehicle_indicator(
                     *vis = Visibility::Hidden;
                 }
             }
+        }
+    }
+}
+// ============================================================================
+// Aura Light (Spec 016 T5.4) — point-light glow gated by eco rank
+// ============================================================================
+
+/// The spawned aura light entity (child of the physics body).
+#[derive(Resource, Default)]
+pub struct AuraLight {
+    pub entity: Option<Entity>,
+}
+
+/// Pure eco-rank → aura mapping: (color, intensity), None below Enthusiast.
+pub fn aura_config(ep: u64) -> Option<(Color, f32)> {
+    if ep >= 1000 {
+        Some((Color::srgb(1.0, 0.85, 0.3), 6.0))
+    } else if ep >= 500 {
+        Some((Color::srgb(0.25, 1.0, 0.45), 4.0))
+    } else if ep >= 100 {
+        Some((Color::srgb(0.3, 0.9, 1.0), 2.5))
+    } else {
+        None
+    }
+}
+
+/// Spawn (once) and drive the aura point light from the eco rank.
+fn update_aura_light(
+    mut commands: Commands,
+    mut light: ResMut<AuraLight>,
+    player_query: Query<(&crate::player::ClientPlayer, Entity), With<PhysicsBody>>,
+    mut existing: Query<(&mut PointLight, &mut Visibility)>,
+) {
+    let Ok((player, body)) = player_query.single() else { return };
+    if light.entity.is_none() {
+        light.entity = Some(
+            commands
+                .spawn((
+                    Name::new("eco-aura"),
+                    PointLight {
+                        color: Color::WHITE,
+                        intensity: 0.0,
+                        range: 42.0,
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, 8.0, 0.0),
+                ))
+                .insert(ChildOf(body))
+                .id(),
+        );
+    }
+    let Some(entity) = light.entity else { return };
+    let Ok((mut pl, mut vis)) = existing.get_mut(entity) else { return };
+    match aura_config(player.eco_points) {
+        Some((color, intensity)) => {
+            pl.color = color;
+            pl.intensity = intensity;
+            *vis = Visibility::Visible;
+        }
+        None => {
+            pl.intensity = 0.0;
+            *vis = Visibility::Hidden;
         }
     }
 }

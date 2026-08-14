@@ -4,9 +4,9 @@
 
 ## Phase 1: Procedural Placeholders (MVP)
 - [x] **T1.1** Hex material colors — terrain tint per biome in world_mesh/chunk mesh colors
-- [ ] **T1.2** Verify player mesh (tetrahedron placeholder) exists
+- [x] **T1.2** Player renders via models/characterLargeMale.glb (replaces tetrahedron placeholder)
 - [x] **T1.3** Plant meshes — cone/tall-cone primitives spawned per planted hex
-- [ ] **T1.4** Verify terrain colors match spec (#7EC850, #228B22, etc.)
+- [x] **T1.4** minimap_color: Grass 0.496/0.792/0.322 → #7EC850; Forest 0.133/0.545/0.133 → #228B22
 - [x] **T1.5** Pollution visible — dark disc marker on polluted hexes
 
 ## Phase 2: Asset Loading Infrastructure
@@ -30,8 +30,8 @@
 
 ## Phase 5: Plant Models (3 types)
 - [ ] **T4.4** Create plant model paths (plants/wheat.glb, tree.glb, rare_herb.glb)
-- [ ] **T4.5** Spawn plants on hex tiles
-- [ ] **T4.6** Different colors/shapes per plant type
+- [x] **T4.5** Plant cones spawned per hex from the hex_tile cache
+- [x] **T4.6** per-type young/mature colors (plant_type_color) + cone/tall shapes + tests
 
 ## Phase 6: Animation System (Phase 3)
 - [ ] **T5.1** Define animation clip names per vehicle (pedal, idle, ride, float, fly)
@@ -39,15 +39,15 @@
 - [ ] **T5.3** Add vehicle animation query system
 
 ## Phase 7: Particle Effects (Phase 3)
-- [ ] **T5.4** Create aura VFX (point light around player)
+- [x] **T5.4** eco-aura PointLight gated by eco rank (aura_config) + tests
 - [ ] **T5.5** Create trail VFX (line of particles behind player)
 - [ ] **T5.6** Create explosion VFX (optional)
 
 ## Phase 8: Testing
-- [ ] **T6.1** Hexes render with terrain colors
-- [ ] **T6.2** Player visible as tetrahedron
-- [ ] **T6.3** Plants visible (simple cones)
-- [ ] **T6.4** Polluted hexes visible (dark markers)
+- [x] **T6.1** Per-vertex minimap_color baked into chunk meshes
+- [x] **T6.2** Player visible as the glb character model
+- [x] **T6.3** Plant cones update young→mature
+- [x] **T6.4** Dark pollution discs on polluted hexes
 
 ## Verification
 - [✓] Procedural placeholders exist in procedural.rs

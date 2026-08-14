@@ -17,6 +17,53 @@ fn permille_of(price: u64, permille: u64) -> u64 {
     (price as u128 * permille as u128 / 1000) as u64
 }
 
+/// Pure publish validation (Spec 011 FR1) — shared with tests.
+pub fn validate_publish(
+    title: &str,
+    github_url: &str,
+    price_usdt: u64,
+    category: &str,
+) -> Result<(), String> {
+    if title.trim().is_empty() || !title.chars().next().is_some_and(|c| c.is_alphanumeric()) {
+        return Err("Title must be non-empty".to_string());
+    }
+    if price_usdt == 0 {
+        return Err("Price must be > 0 USDT".to_string());
+    }
+    if !github_url.starts_with("https://github.com/") {
+        return Err("GitHub URL required (https://github.com/...)".to_string());
+    }
+    if !valid_category(category) {
+        return Err("Category must be Agent|Code|Template|Snippet".to_string());
+    }
+    Ok(())
+}
+
+/// Pure purchase decision (Spec 011 T5.2/T5.4): validates state and funds,
+/// returns (fee, seller_payout) when the sale may proceed.
+pub fn resolve_buy(
+    price_usdt: u64,
+    buyer_usdt: u64,
+    is_sold: bool,
+    expired: bool,
+    is_own: bool,
+) -> Result<(u64, u64), String> {
+    if is_sold {
+        return Err("Listing already sold".to_string());
+    }
+    if is_own {
+        return Err("Cannot buy your own listing".to_string());
+    }
+    if expired {
+        return Err("Listing expired".to_string());
+    }
+    if buyer_usdt < price_usdt {
+        return Err("Insufficient USDT".to_string());
+    }
+    let fee = permille_of(price_usdt, PLATFORM_FEE_PERMILLE);
+    Ok((fee, price_usdt - fee))
+}
+
 /// Spec 011 FR1/FR2: publish a listing. Costs 50G.
 pub fn publish(
     ctx: &ReducerContext,
@@ -27,18 +74,7 @@ pub fn publish(
     price_usdt: u64,
     category: String,
 ) -> Result<u64, String> {
-    if title.trim().is_empty() || !title.chars().next().is_some_and(|c| c.is_alphanumeric()) {
-        return Err("Title must be non-empty".to_string());
-    }
-    if price_usdt == 0 {
-        return Err("Price must be > 0 USDT".to_string());
-    }
-    if !github_url.starts_with("https://github.com/") {
-        return Err("GitHub URL required (https://github.com/...)".to_string());
-    }
-    if !valid_category(&category) {
-        return Err("Category must be Agent|Code|Template|Snippet".to_string());
-    }
+    validate_publish(&title, &github_url, price_usdt, &category)?;
 
     let mut p = crate::economy::find_player(ctx, &address.to_lowercase())
         .ok_or_else(|| "Player not found".to_string())?;
@@ -79,27 +115,20 @@ pub fn buy(ctx: &ReducerContext, buyer: &str, listing_id: u64) -> Result<(), Str
     else {
         return Err("Listing not found".to_string());
     };
-    if listing.is_sold {
-        return Err("Listing already sold".to_string());
-    }
-    if listing.seller == buyer {
-        return Err("Cannot buy your own listing".to_string());
-    }
     let now = now_secs(ctx);
-    if listing.expires_at < now {
-        return Err("Listing expired".to_string());
-    }
-
     let mut b = crate::economy::find_player(ctx, &buyer.to_lowercase())
         .ok_or_else(|| "Player not found".to_string())?;
-    if b.usdt < listing.price_usdt {
-        return Err("Insufficient USDT".to_string());
-    }
+    let (fee, seller_payout) = resolve_buy(
+        listing.price_usdt,
+        b.usdt,
+        listing.is_sold,
+        listing.expires_at < now,
+        listing.seller == buyer,
+    )?;
 
     // Charge buyer, hold seller payout in escrow (PROPOSAL 4.2).
     spend_usdt(ctx, &mut b, listing.price_usdt, "buy_listing")?;
-    let fee = permille_of(listing.price_usdt, PLATFORM_FEE_PERMILLE);
-    let seller_payout = listing.price_usdt - fee;
+    let _ = seller_payout; // credited on escrow release
 
     listing.is_sold = true;
     listing.buyer = Some(buyer.to_lowercase());
@@ -117,7 +146,6 @@ pub fn buy(ctx: &ReducerContext, buyer: &str, listing_id: u64) -> Result<(), Str
         listing.price_usdt,
         listing.escrow_until
     );
-    let _ = seller_payout; // credited on escrow release
     Ok(())
 }
 
@@ -268,5 +296,39 @@ mod tests {
     fn listing_lifetime_constants() {
         assert_eq!(LISTING_DURATION_SECS, 30 * 24 * 3600);
         assert_eq!(ESCROW_SECS, 48 * 3600);
+    }
+}
+
+#[cfg(test)]
+mod tests_buy {
+    use super::*;
+
+    #[test]
+    fn buy_with_sufficient_usdt_ok() {
+        let (fee, payout) = resolve_buy(1_000, 5_000, false, false, false).unwrap();
+        assert_eq!(fee, 50);
+        assert_eq!(payout, 950);
+    }
+
+    #[test]
+    fn buy_with_insufficient_usdt_fails() {
+        let err = resolve_buy(1_000, 999, false, false, false).unwrap_err();
+        assert_eq!(err, "Insufficient USDT");
+    }
+
+    #[test]
+    fn sold_or_expired_or_own_rejected() {
+        assert!(resolve_buy(100, 1_000, true, false, false).is_err());
+        assert!(resolve_buy(100, 1_000, false, true, false).is_err());
+        assert!(resolve_buy(100, 1_000, false, false, true).is_err());
+    }
+
+    #[test]
+    fn publish_validation_rules() {
+        assert!(validate_publish("My Agent", "https://github.com/u/r", 10, "Agent").is_ok());
+        assert!(validate_publish("", "https://github.com/u/r", 10, "Agent").is_err());
+        assert!(validate_publish("My Agent", "http://github.com/u/r", 10, "Agent").is_err());
+        assert!(validate_publish("My Agent", "https://github.com/u/r", 0, "Agent").is_err());
+        assert!(validate_publish("My Agent", "https://github.com/u/r", 10, "Nope").is_err());
     }
 }

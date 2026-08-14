@@ -253,11 +253,25 @@ pub struct HexPlantVisual {
     pub hex_id: u64,
 }
 
+/// Spec 016 T4.6: per-plant-type young/mature colors. Unknown types fall
+/// back to None (caller uses the default young/mature pair).
+pub fn plant_type_color(plant_type: &str, mature: bool) -> Option<Color> {
+    let (young, mature_c) = match plant_type {
+        "Wheat" => ((0.35, 0.85, 0.4), (0.85, 0.9, 0.45)),
+        "Corn" => ((0.3, 0.8, 0.25), (0.9, 0.85, 0.35)),
+        "Sunflower" => ((0.55, 0.85, 0.25), (1.0, 0.85, 0.2)),
+        "Tree" => ((0.15, 0.6, 0.2), (0.1, 0.5, 0.18)),
+        "RareHerb" => ((0.45, 0.3, 0.9), (0.65, 0.5, 1.0)),
+        _ => return None,
+    };
+    let (r, g, b) = if mature { mature_c } else { young };
+    Some(Color::srgb(r, g, b))
+}
+
 /// Shared meshes/materials for plant visuals (built lazily).
 #[derive(Resource, Default)]
 pub struct FloorPlantAssets {
-    pub young_mat: Option<Handle<StandardMaterial>>,
-    pub mature_mat: Option<Handle<StandardMaterial>>,
+    pub plant_mats: HashMap<String, (Handle<StandardMaterial>, Handle<StandardMaterial>)>,
     pub pollution_mat: Option<Handle<StandardMaterial>>,
     pub lush_mat: Option<Handle<StandardMaterial>>,
     pub degraded_mat: Option<Handle<StandardMaterial>>,
@@ -267,14 +281,23 @@ pub struct FloorPlantAssets {
     pub eco_disc_mesh: Option<Handle<Mesh>>,
 }
 
+const PLANT_TYPES: [&str; 5] = ["Wheat", "Corn", "Sunflower", "Tree", "RareHerb"];
+
 fn ensure_plant_assets(
     assets: &mut FloorPlantAssets,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
 ) {
-    if assets.young_mat.is_none() {
-        assets.young_mat = Some(materials.add(StandardMaterial::from_color(Color::srgb(0.25, 0.75, 0.3))));
-        assets.mature_mat = Some(materials.add(StandardMaterial::from_color(Color::srgb(0.95, 0.8, 0.25))));
+    if assets.plant_mats.is_empty() {
+        for plant_type in PLANT_TYPES {
+            let young = plant_type_color(plant_type, false).unwrap();
+            let mature = plant_type_color(plant_type, true).unwrap();
+            let pair = (
+                materials.add(StandardMaterial::from_color(young)),
+                materials.add(StandardMaterial::from_color(mature)),
+            );
+            assets.plant_mats.insert(plant_type.to_string(), pair);
+        }
         assets.pollution_mat = Some(materials.add(StandardMaterial::from_color(Color::srgb(0.18, 0.2, 0.16))));
         assets.lush_mat = Some(materials.add(StandardMaterial::from_color(Color::srgba(0.2, 0.9, 0.35, 0.35))));
         assets.degraded_mat = Some(materials.add(StandardMaterial::from_color(Color::srgba(0.55, 0.35, 0.15, 0.3))));
@@ -308,9 +331,7 @@ pub fn update_plant_visuals(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     ensure_plant_assets(&mut assets, &mut meshes, &mut materials);
-    let (young, mature_mat_h, pollution, lush_h, degraded_h) = (
-        assets.young_mat.clone().unwrap(),
-        assets.mature_mat.clone().unwrap(),
+    let (pollution, lush_h, degraded_h) = (
         assets.pollution_mat.clone().unwrap(),
         assets.lush_mat.clone().unwrap(),
         assets.degraded_mat.clone().unwrap(),
@@ -349,24 +370,31 @@ pub fn update_plant_visuals(
         }
         let mut mature = false;
         if let Some(json) = &plant_json {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let kind_name: String = if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
                 let planted_at = v.get("planted_at").and_then(|x| x.as_u64()).unwrap_or(0);
                 let growth = v
                     .get("growth_time")
                     .and_then(|x| x.as_u64())
                     .unwrap_or(3600);
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
                 mature = now >= planted_at + growth;
-                let kind_name = v.get("plant_type").and_then(|x| x.as_str()).unwrap_or("");
-                let use_tall = matches!(kind_name, "Tree" | "Corn" | "RareHerb");
-                kind = Some((
-                    Some(if use_tall { tall.clone() } else { cone.clone() }),
-                    if mature { mature_mat_h.clone() } else { young.clone() },
-                ));
-            }
+                v.get("plant_type").and_then(|x| x.as_str()).unwrap_or("").to_string()
+            } else {
+                String::new()
+            };
+            // Spec 016 T4.6: per-type color, per-maturity shade.
+            let (young_h, mature_h) = match assets.plant_mats.get(kind_name.as_str()) {
+                Some(pair) => pair.clone(),
+                None => (pollution.clone(), pollution.clone()),
+            };
+            let use_tall = matches!(kind_name.as_str(), "Tree" | "Corn" | "RareHerb");
+            kind = Some((
+                Some(if use_tall { tall.clone() } else { cone.clone() }),
+                if mature { mature_h.clone() } else { young_h.clone() },
+            ));
         }
 
         let cached = state.stage.get(&row.hex_id).cloned();
@@ -441,3 +469,60 @@ fn row_world_center(q: i32, r: i32) -> (f32, f32) {
 
 #[cfg(test)]
 mod tests {}
+
+#[cfg(test)]
+mod tests_plants {
+    use super::*;
+    use crate::plugins::player::aura_config;
+
+    #[test]
+    fn every_plant_type_has_young_and_mature_color() {
+        for plant_type in PLANT_TYPES {
+            let young = plant_type_color(plant_type, false).expect("young color");
+            let mature = plant_type_color(plant_type, true).expect("mature color");
+            assert_ne!(young, mature, "{plant_type} mature should differ from young");
+        }
+    }
+
+    #[test]
+    fn plant_type_colors_are_distinct() {
+        let mut colors: Vec<(u16, u16, u16, u16)> = PLANT_TYPES
+            .iter()
+            .map(|t| {
+                let c = plant_type_color(t, true).unwrap().to_srgba().to_f32_array();
+                (
+                    (c[0] * 255.0) as u16,
+                    (c[1] * 255.0) as u16,
+                    (c[2] * 255.0) as u16,
+                    (c[3] * 255.0) as u16,
+                )
+            })
+            .collect();
+        colors.sort();
+        colors.dedup();
+        assert_eq!(
+            colors.len(),
+            PLANT_TYPES.len(),
+            "mature colors must differ per type"
+        );
+    }
+
+    #[test]
+    fn unknown_plant_type_falls_back() {
+        assert!(plant_type_color("Mushroom", false).is_none());
+        assert!(!PLANT_TYPES.iter().any(|t| *t == "Mushroom"));
+    }
+
+    #[test]
+    fn eco_aura_gates_by_rank() {
+        assert!(aura_config(0).is_none());
+        assert!(aura_config(99).is_none());
+        let e = aura_config(100).unwrap();
+        assert_eq!(e.1, 2.5);
+        let w = aura_config(500).unwrap();
+        assert_eq!(w.1, 4.0);
+        let l = aura_config(1000).unwrap();
+        assert_eq!(l.1, 6.0);
+        assert_eq!(aura_config(9999).unwrap().1, 6.0);
+    }
+}
