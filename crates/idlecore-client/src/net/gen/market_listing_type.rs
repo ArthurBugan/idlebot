@@ -71,6 +71,7 @@ impl __sdk::__query_builder::HasCols for MarketListing {
 /// Provides typed access to indexed columns for query building.
 pub struct MarketListingIxCols {
     pub listing_id: __sdk::__query_builder::IxCol<MarketListing, u64>,
+    pub seller: __sdk::__query_builder::IxCol<MarketListing, String>,
 }
 
 impl __sdk::__query_builder::HasIxCols for MarketListing {
@@ -78,6 +79,7 @@ impl __sdk::__query_builder::HasIxCols for MarketListing {
     fn ix_cols(table_name: &'static str) -> Self::IxCols {
         MarketListingIxCols {
             listing_id: __sdk::__query_builder::IxCol::new(table_name, "listing_id"),
+            seller: __sdk::__query_builder::IxCol::new(table_name, "seller"),
         }
     }
 }

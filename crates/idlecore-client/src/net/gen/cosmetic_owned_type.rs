@@ -50,6 +50,7 @@ impl __sdk::__query_builder::HasCols for CosmeticOwned {
 /// Provides typed access to indexed columns for query building.
 pub struct CosmeticOwnedIxCols {
     pub cosmetic_id: __sdk::__query_builder::IxCol<CosmeticOwned, u32>,
+    pub player: __sdk::__query_builder::IxCol<CosmeticOwned, String>,
 }
 
 impl __sdk::__query_builder::HasIxCols for CosmeticOwned {
@@ -57,6 +58,7 @@ impl __sdk::__query_builder::HasIxCols for CosmeticOwned {
     fn ix_cols(table_name: &'static str) -> Self::IxCols {
         CosmeticOwnedIxCols {
             cosmetic_id: __sdk::__query_builder::IxCol::new(table_name, "cosmetic_id"),
+            player: __sdk::__query_builder::IxCol::new(table_name, "player"),
         }
     }
 }

@@ -55,6 +55,7 @@ impl __sdk::__query_builder::HasCols for VehicleOwned {
 ///
 /// Provides typed access to indexed columns for query building.
 pub struct VehicleOwnedIxCols {
+    pub player: __sdk::__query_builder::IxCol<VehicleOwned, String>,
     pub vehicle_id: __sdk::__query_builder::IxCol<VehicleOwned, u32>,
 }
 
@@ -62,6 +63,7 @@ impl __sdk::__query_builder::HasIxCols for VehicleOwned {
     type IxCols = VehicleOwnedIxCols;
     fn ix_cols(table_name: &'static str) -> Self::IxCols {
         VehicleOwnedIxCols {
+            player: __sdk::__query_builder::IxCol::new(table_name, "player"),
             vehicle_id: __sdk::__query_builder::IxCol::new(table_name, "vehicle_id"),
         }
     }

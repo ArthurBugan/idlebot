@@ -10,7 +10,7 @@ use bevy_rapier3d::prelude::*;
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender};
 use spacetimedb_sdk::DbContext;
-use spacetimedb_sdk::__codegen::{TableLike, WithDelete, WithInsert};
+use spacetimedb_sdk::__codegen::{TableLike, TableWithPrimaryKey, WithDelete, WithInsert};
 
 use idlecore_core::hex::{world_pos_to_hex, HexCoord};
 use idlecore_core::world_gen::WorldGenConfig;
@@ -225,6 +225,15 @@ impl Net {
             let dirty = dirty.clone();
             move |_ctx, row| {
                 let _ = tx.send(NetEvent::ServerMessage(format!("player left {}", row.address)));
+                dirty.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+        // Row updates (own wallet mirror + remote players) must also refresh
+        // the sync pass; reducer-side bumps alone can race the row update
+        // arriving before the reducer completion callback.
+        conn.db.player().on_update({
+            let dirty = dirty.clone();
+            move |_ctx, _old, _new| {
                 dirty.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         });

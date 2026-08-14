@@ -13,6 +13,8 @@ pub mod claim_idle_gains_reducer;
 pub mod clean_reducer;
 pub mod cosmetic_owned_type;
 pub mod dispute_listing_reducer;
+pub mod eco_transaction_table;
+pub mod eco_transaction_type;
 pub mod equip_cosmetic_reducer;
 pub mod equip_vehicle_reducer;
 pub mod harvest_reducer;
@@ -63,6 +65,8 @@ pub use claim_idle_gains_reducer::claim_idle_gains;
 pub use clean_reducer::clean;
 pub use cosmetic_owned_type::CosmeticOwned;
 pub use dispute_listing_reducer::dispute_listing;
+pub use eco_transaction_table::*;
+pub use eco_transaction_type::EcoTransaction;
 pub use equip_cosmetic_reducer::equip_cosmetic;
 pub use equip_vehicle_reducer::equip_vehicle;
 pub use harvest_reducer::harvest;
@@ -344,6 +348,7 @@ impl __sdk::Reducer for Reducer {
 #[allow(non_snake_case)]
 #[doc(hidden)]
 pub struct DbUpdate {
+    eco_transaction: __sdk::TableUpdate<EcoTransaction>,
     hex_tile: __sdk::TableUpdate<HexTile>,
     idle_gain: __sdk::TableUpdate<IdleGain>,
     market_listing: __sdk::TableUpdate<MarketListing>,
@@ -366,6 +371,9 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
         let mut db_update = DbUpdate::default();
         for table_update in __sdk::transaction_update_iter_table_updates(raw) {
             match &table_update.table_name[..] {
+                "eco_transaction" => db_update
+                    .eco_transaction
+                    .append(eco_transaction_table::parse_table_update(table_update)?),
                 "hex_tile" => db_update
                     .hex_tile
                     .append(hex_tile_table::parse_table_update(table_update)?),
@@ -434,6 +442,9 @@ impl __sdk::DbUpdate for DbUpdate {
     ) -> AppliedDiff<'_> {
         let mut diff = AppliedDiff::default();
 
+        diff.eco_transaction = cache
+            .apply_diff_to_table::<EcoTransaction>("eco_transaction", &self.eco_transaction)
+            .with_updates_by_pk(|row| &row.tx_id);
         diff.hex_tile = cache
             .apply_diff_to_table::<HexTile>("hex_tile", &self.hex_tile)
             .with_updates_by_pk(|row| &row.hex_id);
@@ -498,6 +509,9 @@ impl __sdk::DbUpdate for DbUpdate {
         let mut db_update = DbUpdate::default();
         for table_rows in raw.tables {
             match &table_rows.table[..] {
+                "eco_transaction" => db_update
+                    .eco_transaction
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "hex_tile" => db_update
                     .hex_tile
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
@@ -553,6 +567,9 @@ impl __sdk::DbUpdate for DbUpdate {
         let mut db_update = DbUpdate::default();
         for table_rows in raw.tables {
             match &table_rows.table[..] {
+                "eco_transaction" => db_update
+                    .eco_transaction
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "hex_tile" => db_update
                     .hex_tile
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
@@ -610,6 +627,7 @@ impl __sdk::DbUpdate for DbUpdate {
 #[allow(non_snake_case)]
 #[doc(hidden)]
 pub struct AppliedDiff<'r> {
+    eco_transaction: __sdk::TableAppliedDiff<'r, EcoTransaction>,
     hex_tile: __sdk::TableAppliedDiff<'r, HexTile>,
     idle_gain: __sdk::TableAppliedDiff<'r, IdleGain>,
     market_listing: __sdk::TableAppliedDiff<'r, MarketListing>,
@@ -637,6 +655,11 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
         event: &EventContext,
         callbacks: &mut __sdk::DbCallbacks<RemoteModule>,
     ) {
+        callbacks.invoke_table_row_callbacks::<EcoTransaction>(
+            "eco_transaction",
+            &self.eco_transaction,
+            event,
+        );
         callbacks.invoke_table_row_callbacks::<HexTile>("hex_tile", &self.hex_tile, event);
         callbacks.invoke_table_row_callbacks::<IdleGain>("idle_gain", &self.idle_gain, event);
         callbacks.invoke_table_row_callbacks::<MarketListing>(
@@ -1355,6 +1378,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
     type QueryBuilder = __sdk::QueryBuilder;
 
     fn register_tables(client_cache: &mut __sdk::ClientCache<Self>) {
+        eco_transaction_table::register_table(client_cache);
         hex_tile_table::register_table(client_cache);
         idle_gain_table::register_table(client_cache);
         market_listing_table::register_table(client_cache);
@@ -1371,6 +1395,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
         voice_channel_table::register_table(client_cache);
     }
     const ALL_TABLE_NAMES: &'static [&'static str] = &[
+        "eco_transaction",
         "hex_tile",
         "idle_gain",
         "market_listing",
