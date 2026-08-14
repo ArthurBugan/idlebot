@@ -81,28 +81,9 @@ pub fn move_player(
 }
 
 /// Flat-top axial hex containing a world position (PROPOSAL 9.1).
+/// Delegates to the shared, cube-round-tested core implementation.
 pub fn hex_at(x: f32, y: f32) -> (i32, i32) {
-    let size = 10.0f32;
-    let q = (x * 3.0_f32.sqrt() / 3.0 - y / 3.0) / size;
-    let r = y * 2.0 / 3.0 / size;
-    let qr = round_axial(q, r);
-    qr
-}
-
-fn round_axial(q: f32, r: f32) -> (i32, i32) {
-    let s = -q - r;
-    let mut qr = q;
-    let mut rr = r;
-    let ss = s;
-    let qd = qr - q.round();
-    let rd = rr - r.round();
-    let sd = ss - s.round();
-    if qd * qd > rd * rd && qd * qd > sd * sd {
-        qr = -rr - ss;
-    } else if rd * rd > sd * sd {
-        rr = -qr - ss;
-    }
-    (qr.round() as i32, rr.round() as i32)
+    idlecore_core::hex_grid::HexGrid::world_to_axial(x, y, 10.0)
 }
 
 /// Heartbeat (Spec 021 FR6): refresh last_seen so idle gains and occupancy
