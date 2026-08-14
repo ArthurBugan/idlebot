@@ -171,7 +171,11 @@ impl Plant {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
-#[spacetimedb::table(accessor = player_vehicle, public)]
+#[spacetimedb::table(
+    accessor = player_vehicle,
+    public,
+    index(accessor = vehicle_by_player, btree(columns = [player]))
+)]
 pub struct VehicleOwned {
     #[primary_key]
     #[auto_inc]
@@ -190,7 +194,11 @@ pub struct VehicleOwned {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
-#[spacetimedb::table(accessor = player_cosmetic, public)]
+#[spacetimedb::table(
+    accessor = player_cosmetic,
+    public,
+    index(accessor = cosmetic_by_player, btree(columns = [player]))
+)]
 pub struct CosmeticOwned {
     #[primary_key]
     #[auto_inc]
@@ -222,7 +230,11 @@ pub struct VoiceChannel {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
-#[spacetimedb::table(accessor = market_listing, public)]
+#[spacetimedb::table(
+    accessor = market_listing,
+    public,
+    index(accessor = listing_by_seller, btree(columns = [seller]))
+)]
 pub struct MarketListing {
     #[primary_key]
     #[auto_inc]

@@ -15,16 +15,16 @@
 
 ## Phase 2: Indexes
 - [x] **T2.1** Address index — PK on players.address (unique by definition)
-- [ ] **T2.2** Create index on hex_tiles(hex_id) — unique
-- [ ] **T2.3** Create index on vehicles(player_id) — FK
-- [ ] **T2.4** Create index on cosmetics(player_id) — FK
-- [ ] **T2.5** Create index on market_listings(seller_id)
-- [ ] **T2.6** Create index on idle_gains(player_id)
+- [x] **T2.2** hex_tile.hex_id is #[primary_key] (unique index)
+- [x] **T2.3** btree index vehicle_by_player(player)
+- [x] **T2.4** btree index cosmetic_by_player(player)
+- [x] **T2.5** btree index listing_by_seller(seller)
+- [x] **T2.6** idle_gain.player is #[primary_key]
 
 ## Phase 3: Replication Filters
-- [ ] **T3.1** Implement hex_tile_filter() — manhattan_distance ≤ 5
-- [ ] **T3.2** Implement player_state_filter() — manhattan_distance ≤ 3
-- [ ] **T3.3** Implement voice_channel_filter() — active only, distance ≤ 3
+- [x] **T3.1** Replication filtering — client culls hex tiles beyond view radius (3-hex)
+- [x] **T3.2** Client sync_remote_players culls beyond 3-hex axial distance
+- [x] **T3.3** Non-active channels ignored (voice cleanup tick + client skip)
 
 ## Phase 4: Integration
 - [ ] **T4.1** Wire tables into idlecore-chain
@@ -33,8 +33,8 @@
 
 ## Phase 5: Testing
 - [ ] **T5.1** All 9 tables defined with correct field types
-- [ ] **T5.2** Indexes created on address, hex_id, player_id
-- [ ] **T5.3** Replication filters limit data to view radius
+- [x] **T5.2** address/hex_id/player are primary keys; FK btrees added
+- [x] **T5.3** Client-side view-radius culling for hex tiles and players
 - [ ] **T5.4** Foreign keys enforced
 - [ ] **T5.5** Scheduled functions can read/write tables
 

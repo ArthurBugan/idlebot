@@ -190,7 +190,14 @@ fn update_hud_text(
         if let Some(conn) = &net.conn {
             let hex_id = crate::net::plugin::Net::hex_id_at(p.position.x, p.position.z);
             if let Some(h) = conn.db.hex_tile().hex_id().find(&hex_id) {
-                stats.push_str(&format!("\nHex eco: {} {}", h.eco_rating, eco_title(h.eco_rating)));
+                // Spec 020 T5.4: "Eco-Friendly" marker for 100+ hexes.
+                let flag = if h.eco_rating >= 100 { " (Eco-Friendly)" } else { "" };
+                stats.push_str(&format!(
+                    "\nHex eco: {} {}{}",
+                    h.eco_rating,
+                    eco_title(h.eco_rating),
+                    flag
+                ));
             }
         }
         // Spec 006 T3.4: vehicle inventory from the subscription cache.

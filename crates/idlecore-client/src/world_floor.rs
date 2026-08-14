@@ -244,7 +244,7 @@ pub fn update_world_floor(
 #[derive(Resource, Default)]
 pub struct FloorPlantState {
     pub visuals: HashMap<u64, Entity>,
-    pub stage: HashMap<u64, (bool, Option<String>, bool)>,
+    pub stage: HashMap<u64, (bool, Option<String>, bool, i8)>,
 }
 
 /// Root entity rendering a plant or pollution marker on one hex.
@@ -259,9 +259,12 @@ pub struct FloorPlantAssets {
     pub young_mat: Option<Handle<StandardMaterial>>,
     pub mature_mat: Option<Handle<StandardMaterial>>,
     pub pollution_mat: Option<Handle<StandardMaterial>>,
+    pub lush_mat: Option<Handle<StandardMaterial>>,
+    pub degraded_mat: Option<Handle<StandardMaterial>>,
     pub cone_mesh: Option<Handle<Mesh>>,
     pub tall_cone_mesh: Option<Handle<Mesh>>,
     pub disc_mesh: Option<Handle<Mesh>>,
+    pub eco_disc_mesh: Option<Handle<Mesh>>,
 }
 
 fn ensure_plant_assets(
@@ -273,9 +276,23 @@ fn ensure_plant_assets(
         assets.young_mat = Some(materials.add(StandardMaterial::from_color(Color::srgb(0.25, 0.75, 0.3))));
         assets.mature_mat = Some(materials.add(StandardMaterial::from_color(Color::srgb(0.95, 0.8, 0.25))));
         assets.pollution_mat = Some(materials.add(StandardMaterial::from_color(Color::srgb(0.18, 0.2, 0.16))));
+        assets.lush_mat = Some(materials.add(StandardMaterial::from_color(Color::srgba(0.2, 0.9, 0.35, 0.35))));
+        assets.degraded_mat = Some(materials.add(StandardMaterial::from_color(Color::srgba(0.55, 0.35, 0.15, 0.3))));
         assets.cone_mesh = Some(meshes.add(Cone::new(0.8, 1.6)));
         assets.tall_cone_mesh = Some(meshes.add(Cone::new(0.9, 2.6)));
         assets.disc_mesh = Some(meshes.add(Cylinder::new(1.5, 0.12)));
+        assets.eco_disc_mesh = Some(meshes.add(Cylinder::new(1.15, 0.08)));
+    }
+}
+
+/// Eco band for a hex rating: 1 = lush (>= 80), -1 = degraded (< 25), else 0.
+fn eco_band(rating: i32) -> i8 {
+    if rating >= 80 {
+        1
+    } else if rating < 25 {
+        -1
+    } else {
+        0
     }
 }
 
@@ -291,15 +308,18 @@ pub fn update_plant_visuals(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     ensure_plant_assets(&mut assets, &mut meshes, &mut materials);
-    let (young, mature_mat_h, pollution) = (
+    let (young, mature_mat_h, pollution, lush_h, degraded_h) = (
         assets.young_mat.clone().unwrap(),
         assets.mature_mat.clone().unwrap(),
         assets.pollution_mat.clone().unwrap(),
+        assets.lush_mat.clone().unwrap(),
+        assets.degraded_mat.clone().unwrap(),
     );
-    let (cone, tall, disc) = (
+    let (cone, tall, disc, eco_disc) = (
         assets.cone_mesh.clone().unwrap(),
         assets.tall_cone_mesh.clone().unwrap(),
         assets.disc_mesh.clone().unwrap(),
+        assets.eco_disc_mesh.clone().unwrap(),
     );
 
     let Some(conn) = net.conn.as_ref() else { return };
@@ -350,7 +370,8 @@ pub fn update_plant_visuals(
         }
 
         let cached = state.stage.get(&row.hex_id).cloned();
-        if cached == Some((is_polluted, plant_json.clone(), mature)) {
+        let band = eco_band(row.eco_rating);
+        if cached == Some((is_polluted, plant_json.clone(), mature, band)) {
             continue;
         }
 
@@ -373,8 +394,21 @@ pub fn update_plant_visuals(
                     MeshMaterial3d(mat),
                     Transform::from_xyz(0.0, 1.1, 0.0),
                 ));
+                // Spec 020 T6.4: eco-rating tint disc (lush / degraded bands).
+                if band != 0 {
+                    let (eco_mesh, eco_mat) = if band > 0 {
+                        (eco_disc.clone(), lush_h.clone())
+                    } else {
+                        (eco_disc.clone(), degraded_h.clone())
+                    };
+                    root.with_child((
+                        Mesh3d(eco_mesh),
+                        MeshMaterial3d(eco_mat),
+                        Transform::from_xyz(0.0, 1.05, 0.0),
+                    ));
+                }
                 state.visuals.insert(row.hex_id, root.id());
-                state.stage.insert(row.hex_id, (is_polluted, plant_json, mature));
+                state.stage.insert(row.hex_id, (is_polluted, plant_json, mature, band));
             }
             None => {
                 if let Some(entity) = existing {

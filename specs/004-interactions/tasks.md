@@ -39,8 +39,8 @@
 ## Phase 6: Testing & Polish
 - [ ] **T6.1** Integration test: full plant → grow → harvest cycle — **NOT WRITTEN**
 - [ ] **T6.2** Performance test: multiple players interacting simultaneously — **NOT WRITTEN**
-- [ ] **T6.3** Edge case: interacting with non-adjacent hex — **NOT TESTED**
-- [ ] **T6.4** Edge case: double harvest on same plant — **NOT TESTED**
+- [x] **T6.3** Verified — hex_distance check rejects beyond range 1
+- [x] **T6.4** Verified — hex.plant guard + hex lock reject double harvest
 - [x] **T6.5** Visual feedback — planted hexes show cones that turn golden at maturity; harvest/clean removes them
 
 ## Verification

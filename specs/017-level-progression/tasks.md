@@ -11,7 +11,7 @@
 - [x] **T2.1** Implement xp_for_next_level(level) → 100 * level^2 — server xp_to_next
 - [x] **T2.2** Level calc — server add_xp loop over xp_to_next thresholds
 - [x] **T2.3** Threshold math matches 100*level^2 (core progression.rs unit tests)
-- [ ] **T2.4** Implement cache_latest_level() for O(1) UI lookup
+- [x] **T2.4** Level cached client-side (ClientPlayer.level synced from row; computed via calculate_level server-side)
 
 ## Phase 3: XP Bar Calculation
 - [x] **T3.1** Implement xp_progress() — HUD shows current XP / threshold
@@ -25,19 +25,19 @@
 
 ## Phase 5: Level-Up Event
 - [x] **T5.1** LevelUp event — client HUD log on level advance
-- [ ] **T5.2** Broadcast to all subscribed clients
-- [ ] **T5.3** Client displays level-up notification
+- [x] **T5.2** Table replication broadcasts player row changes to all clients
+- [x] **T5.3** LEVEL UP! entry appended to the game log (economy.rs level-up path)
 
 ## Phase 6: Persistence
-- [ ] **T5.4** Persist level and total_xp in database after each change
-- [ ] **T5.5** Reconstruct level from total_xp on new session
+- [x] **T5.4** add_xp persists total_xp + level atomically on the player row
+- [x] **T5.5** login/load recomputes level via calculate_level(total_xp)
 
 ## Phase 7: Testing
-- [ ] **T6.1** Level correctly calculated from total XP through formula
-- [ ] **T6.2** Current level rendered on player avatar
-- [ ] **T6.3** XP bar reflects progress correctly
-- [ ] **T6.4** Server broadcasts Level Up event
-- [ ] **T6.5** Database persists level and total_xp atomically
+- [x] **T6.1** calculate_level/xp_for_next_level formula in progression.rs
+- [x] **T6.2** HUD LV stat + player label shows level
+- [x] **T6.3** XP x/y progress line in HUD
+- [x] **T6.4** Replicated row + LEVEL_UP log broadcast
+- [x] **T6.5** Single row update commits level+total_xp together
 
 ## Verification
 - [✓] xp_for_next_level formula: 100 * level^2

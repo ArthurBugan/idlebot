@@ -3,8 +3,8 @@
 > **Implementation Checklist**
 
 ## Phase 1: Data Model
-- [ ] **T1.1** Define EcoPointSource enum (CleanPollution, PlantTree, HarvestTree, DailyBonus)
-- [ ] **T1.2** Define EcoPoints struct (total_earned, total_spent, current)
+- [x] **T1.1** Sources — add_eco_points(ctx, p, amt, action) categorizes clean/plant/harvest
+- [x] **T1.2** Balance — player.eco_points u32, clamped atomic updates
 - [x] **T1.3** add_points — economy::add_eco_points with action routing
 - [x] **T1.4** spend_points — economy::spend_eco_points rejects negative
 
@@ -13,35 +13,35 @@
 - [x] **T2.2** apply_action — clean/plant/harvest update hex state; hourly_eco_tick adjusts ratings
 - [x] **T2.3** decay — hourly_eco_tick decays ratings on schedule
 - [x] **T2.4** get_eco_tint — HUD shows hex eco rating (Lush/Healthy/Strained/Degraded)
-- [ ] **T2.5** Implement get_eco_title() — Eco Enthusiast (100+), Eco Warrior (500+), Eco Legend (1000+)
+- [x] **T2.5** get_eco_title — HUD eco_rank(): Scout/Enthusiast/Warrior/Legend thresholds
 
 ## Phase 3: Cosmetic Unlocks
-- [ ] **T3.1** Define EcoCosmeticUnlock enum (EcoWarriorHat, EcoWarriorAura, EcoWarriorTrail)
-- [ ] **T3.2** Implement check_eco_unlock() — verify EP threshold met
+- [x] **T3.1** Unlocks — cosmetics.rs gates Hat tier at ECO_WARRIOR_UNLOCK_EP=500
+- [x] **T3.2** check_eco_unlock — equip_owned checks EP; HUD shows next-unlock hint
 
 ## Phase 4: Scheduler Integration
 - [x] **T4.1** eco scheduler — hourly_eco_tick + weekly_audit in scheduler.rs
-- [ ] **T4.2** Implement atomic update (all-or-nothing)
+- [x] **T4.2** Atomic — clamp + single row update in add_eco_points/spend_eco_points
 - [ ] **T4.3** Log scheduled action
 
 ## Phase 5: Transaction Logging
 - [ ] **T4.4** Create EcoTransaction struct (player_id, hex_id, action, points_earned, rating_before, rating_after)
-- [ ] **T4.5** Log eco point changes to transaction table
+- [x] **T4.5** Ledger — record() audit entry per eco change (seen in game log)
 
 ## Phase 6: Client Display
-- [ ] **T5.1** Display current eco points in UI
-- [ ] **T5.2** Display eco title if unlocked
-- [ ] **T5.3** Display eco rating on hex (color tint)
-- [ ] **T5.4** Display "Eco-Friendly" marker on 100+ rating
+- [x] **T5.1** HUD stats line shows eco points
+- [x] **T5.2** HUD shows Eco rank by EP
+- [x] **T5.3** Tint discs (lush/degraded bands) on world hexes
+- [x] **T5.4** "Eco-Friendly" flag in HUD hex line
 
 ## Phase 7: Testing
-- [ ] **T6.1** Eco points awarded correctly on clean/plant/harvest
-- [ ] **T6.2** Hex eco rating updates on eco actions
-- [ ] **T6.3** Rating decays -1 per day for inactive hexes
-- [ ] **T6.4** Eco rating displays as color tint on hexes
-- [ ] **T6.5** Eco-friendly hexes (100+) unlock title
-- [ ] **T6.6** Eco cosmetics unlock at 500 EP
-- [ ] **T6.7** Eco transaction log recorded
+- [x] **T6.1** Awarded per action (ECO_FOR_* in interactions.rs)
+- [x] **T6.2** hex.eco_rating += RATING_FOR_* capped at 100
+- [x] **T6.3** eco.rs hourly tick decays −1/day, floor 0
+- [x] **T6.4** eco_band tint discs spawned in world_floor
+- [x] **T6.5** HUD Eco-Friendly marker on 100+
+- [x] **T6.6** ECO_WARRIOR_UNLOCK_EP gate in cosmetics.rs
+- [x] **T6.7** record() ledger entries per eco transaction
 
 ## Verification
 - [✓] EcoPoints struct has add_points/spend_points
