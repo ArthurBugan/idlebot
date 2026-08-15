@@ -169,6 +169,7 @@ fn player_animation(
             warn!("Animation '{name}' not found!");
             return;
         };
+        player.stop(*node);
         transitions.play(&mut player, *node, std::time::Duration::from_millis(120));
         state.one_shot = Some(*node);
         info!("Playing one-shot animation: {name}");
@@ -195,6 +196,10 @@ fn player_animation(
         return;
     };
     info!("Playing animation: {target}");
+    // `stop` removes the previous entry so the clip always restarts from the
+    // beginning of its cycle (bevy 0.19 `replay()` keeps the old seek position,
+    // which made re-triggered runs resume mid-stride).
+    player.stop(*node);
     transitions
         .play(&mut player, *node, std::time::Duration::from_millis(150))
         .repeat();
@@ -211,11 +216,17 @@ pub struct PhysicsBody;
 fn player_movement(
     keyboard: Res<ButtonInput<KeyCode>>,
     streaming_world: Res<StreamingWorldResource>,
-    mut player_query: Query<(&mut Transform, &mut Velocity, &mut crate::player::ClientPlayer), With<PhysicsBody>>,
+    mut rapier_ctx: WriteRapierContext,
+    mut player_query: Query<(
+        &Transform,
+        &RapierRigidBodyHandle,
+        &mut Velocity,
+        &mut crate::player::ClientPlayer,
+    ), With<PhysicsBody>>,
     mut player_transform: ResMut<PlayerTransform>,
     mut orientation: ResMut<PlayerOrientation>,
 ) {
-    let Ok((mut transform, mut velocity, mut player)) = player_query.single_mut() else {
+    let Ok((transform, handle, mut velocity, mut player)) = player_query.single_mut() else {
         return;
     };
 
@@ -237,7 +248,9 @@ fn player_movement(
     velocity.linear.z = dir.y * speed;
 
     // Step up: when walking toward a slightly higher neighbor hex, lift the
-    // body so the step is climbable instead of becoming a wall.
+    // body so the step is climbable instead of becoming a wall. Done through
+    // rapier (`set_translation` on the physics body) — direct writes to the
+    // body's bevy `Transform` would fight the physics writeback every frame.
     if dir != Vec2::ZERO {
         let x = transform.translation.x;
         let z = transform.translation.z;
@@ -246,13 +259,18 @@ fn player_movement(
         let here = terrain_height_at(&streaming_world, x, z);
         let ahead = terrain_height_at(&streaming_world, ahead_x, ahead_z);
         if ahead > here && ahead - here <= MAX_STEP_HEIGHT {
-            transform.translation.y = ahead - FEET_OFFSET;
+            if let Ok(mut ctx) = rapier_ctx.single_mut() {
+                let body = &mut ctx.rigidbody_set.bodies[handle.0];
+                body.set_translation(Vec3::new(x, ahead - FEET_OFFSET, z), true);
+            }
         }
     }
 
     if dir != Vec2::ZERO {
         orientation.facing_angle = input.y.atan2(input.x);
-        transform.rotation = Quat::from_rotation_y(std::f32::consts::PI / 2.0 - orientation.facing_angle);
+        // The facing is applied to the visual root in `sync_visual_to_physics`;
+        // writing the physics body's rotation directly would be overwritten by
+        // the writeback and flicker between the two poses every frame.
     }
 
     player.position = transform.translation;
@@ -271,15 +289,19 @@ fn terrain_height_at(
 }
 
 /// The visual root carries the 13× model scale; the physics body is unscaled,
-/// so copy the body's world pose onto the visual root every frame.
+/// so copy the body's world pose onto the visual root every frame. Facing is
+/// applied here (from `PlayerOrientation`) because the physics body's rotation
+/// is rapier-owned and must not be written directly.
 fn sync_visual_to_physics(
     bodies: Query<&Transform, With<PhysicsBody>>,
+    orientation: Res<PlayerOrientation>,
     mut roots: Query<&mut Transform, (With<Player>, Without<PhysicsBody>)>,
 ) {
     let Ok(body) = bodies.single() else { return };
     let Ok(mut root) = roots.single_mut() else { return };
     root.translation = body.translation;
-    root.rotation = body.rotation;
+    root.rotation =
+        Quat::from_rotation_y(std::f32::consts::PI / 2.0 - orientation.facing_angle);
 }
 
 // ============================================================================

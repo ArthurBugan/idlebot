@@ -13,3 +13,14 @@ serde_json = { workspace = true }
 rand = { workspace = true }
 tracing = { workspace = true }
 bevy = { workspace = true, optional = true }
+# Solana-native wallet auth (Spec 013): ed25519 (RFC 8032, the Solana
+# signature scheme) + base58 Pubkeys, matching the Anchor program wallet keys.
+ed25519-dalek = { workspace = true }
+curve25519-dalek = { workspace = true }
+base58 = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+base64 = { workspace = true }
+# Server-client protocol (Spec 021): borsh-style serialization + lz4 compression.
+borsh = { workspace = true }
+lz4_flex = { workspace = true }

@@ -72,11 +72,21 @@ for (const file of files.sort()) {
     // Merge those static bones in as constant channels, otherwise they stay
     // at the character's T-pose (e.g. thumbs flat against the palm)
     // while the rest of the body plays the clip → misaligned pose.
+    //
+    // Constant channels must end at the clip's real motion length (not a
+    // hardcoded 1.0), otherwise the clip duration is pinned to 1.0s and
+    // shorter cycles (e.g. the 0.667s run) freeze for the remainder of
+    // every loop while longer ones (crouchWalk, 1.333s) get truncated.
     const animated = new Set(
         sourceAnim
             .listChannels()
             .map((ch) => `${ch.getTargetNode().getName()}/${ch.getTargetPath()}`),
     );
+    const constEnd = sourceAnim
+        .listChannels()
+        .map((ch) => ch.getSampler().getInput().getArray())
+        .filter((a) => a.length > 2)
+        .reduce((max, a) => Math.max(max, a[a.length - 1]), 0);
     const srcBuffer = doc.getRoot().listBuffers()[0] ?? doc.createBuffer();
     const paths = [
         { path: 'rotation', get: (n) => n.getRotation(), ident: [0, 0, 0, 1], type: Accessor.Type.VEC4 },
@@ -100,7 +110,7 @@ for (const file of files.sort()) {
             const times = doc
                 .createAccessor()
                 .setType(Accessor.Type.SCALAR)
-                .setArray(new Float32Array([0, 1]))
+                .setArray(new Float32Array([0, constEnd || 1]))
                 .setBuffer(srcBuffer);
             const out = doc
                 .createAccessor()

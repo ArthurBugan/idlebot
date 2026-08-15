@@ -560,4 +560,11 @@ mod shape_tests {
         assert!(cosmetic_shape(CosmeticAssetType::Aura).len() == 1);
         assert!(!cosmetic_shape(CosmeticAssetType::Trail).is_empty());
     }
+
+    #[test]
+    fn new_primitive_estimates_are_exact() {
+        assert_eq!(ShapePart::Tetrahedron { size: 1.0 }.estimated_triangles(), 4);
+        assert_eq!(ShapePart::Sphere { radius: 1.0, segments: 16 }.estimated_triangles(), 512);
+        assert_eq!(ShapePart::Sphere { radius: 1.0, segments: 8 }.estimated_triangles(), 128);
+    }
 }

@@ -11,6 +11,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender};
 use spacetimedb_sdk::DbContext;
 use spacetimedb_sdk::__codegen::{TableLike, TableWithPrimaryKey, WithDelete, WithInsert};
+use crate::plugins::player::PhysicsBody;
+use super::hud::{reducer_report, send_reducer};
 
 use idlecore_core::hex::{world_pos_to_hex, HexCoord};
 use idlecore_core::world_gen::WorldGenConfig;
@@ -277,6 +279,33 @@ impl Net {
 #[derive(Component)]
 pub struct RemotePlayerMarker(pub String);
 
+/// Interpolation state for a remote marker gliding toward its last replicated
+/// position (remote rows update every ~2 s).
+#[derive(Component, Clone)]
+struct MarkerMove {
+    target: Vec3,
+    speed: f32,
+    last_seen: std::time::Instant,
+}
+
+/// Each frame, glide every remote marker toward its replicated target at the
+/// speed it was last observed moving, so players don't teleport every ~2 s.
+fn animate_remote_markers(
+    time: Res<Time>,
+    mut markers: Query<(&mut Transform, &mut MarkerMove), With<RemotePlayerMarker>>,
+) {
+    let dt = time.delta_secs();
+    for (mut transform, interp) in &mut markers {
+        let delta = interp.target - transform.translation;
+        let dist = delta.length();
+        if dist <= 0.001 {
+            continue;
+        }
+        let step = (interp.speed * dt).min(dist);
+        transform.translation += delta / dist * step;
+    }
+}
+
 /// Path of the persisted identity token (same identity across restarts).
 fn identity_token_path() -> std::path::PathBuf {
     std::path::PathBuf::from(
@@ -309,9 +338,30 @@ pub struct NetPlugin;
 impl Plugin for NetPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Net::default())
+.init_resource::<PositionSync>()
             .add_systems(Startup, auto_connect)
             .add_systems(PreUpdate, net_drain)
-            .add_systems(Update, (net_advance, sync_remote_players, interact_key_press));
+            .add_systems(Update, (
+                animate_remote_markers,
+                send_heartbeat,
+                sync_remote_players,
+                sync_player_position,
+                interact_key_press,
+            ));
+    }
+}
+
+/// Keep the server's online window alive while the game is running: standing
+/// still without a heartbeat would let `ONLINE_WINDOW_SECS` expire the player
+/// and release their hex to other players.
+fn send_heartbeat(time: Res<Time>, net: Res<Net>, mut last: Local<f64>) {
+    let now = time.elapsed_secs_f64();
+    if now - *last < 30.0 {
+        return;
+    }
+    *last = now;
+    if let Some(conn) = net.conn.as_ref() {
+        let _ = conn.reducers().heartbeat_then(|_ctx, _res| {});
     }
 }
 
@@ -429,16 +479,85 @@ fn net_advance(net: ResMut<Net>) {
     }
 }
 
+/// Coarse position persistence: every few seconds, forward the movement
+/// since the last send to the server via `move_player`, so reconnects can
+/// restore the player where they left off. The server caps speed/distance,
+/// so this is safe to call at any cadence.
+#[derive(Resource)]
+struct PositionSync {
+    last_send: std::time::Instant,
+    last_pos: Option<Vec2>,
+}
+
+impl Default for PositionSync {
+    fn default() -> Self {
+        Self {
+            last_send: std::time::Instant::now(),
+            last_pos: None,
+        }
+    }
+}
+
+const POSITION_SYNC_INTERVAL: f32 = 2.0;
+
+/// Pure: reduce a movement delta since the last sync into a direction and
+/// speed for `move_player`, or `None` when the player barely moved.
+fn movement_report(prev: Vec2, cur: Vec2, dt: f32) -> Option<(Vec2, f32)> {
+    let delta = cur - prev;
+    if delta.length() < 0.5 {
+        return None;
+    }
+    let dir = delta / delta.length();
+    Some((dir, delta.length() / dt.max(0.001)))
+}
+
+fn sync_player_position(
+    mut net: ResMut<Net>,
+    mut state: ResMut<PositionSync>,
+    bodies: Query<&Transform, (With<PhysicsBody>, Without<RemotePlayerMarker>)>,
+) {
+    let Ok(body) = bodies.single() else { return };
+    if net.conn.is_none() || net.address.is_none() {
+        return;
+    }
+    if state.last_send.elapsed().as_secs_f32() < POSITION_SYNC_INTERVAL {
+        return;
+    }
+    let dt = state.last_send.elapsed().as_secs_f32().max(0.001);
+    state.last_send = std::time::Instant::now();
+
+    let pos = Vec2::new(body.translation.x, body.translation.z);
+    let Some(prev) = state.last_pos else {
+        state.last_pos = Some(pos);
+        return;
+    };
+    state.last_pos = Some(pos);
+
+    let Some((dir, speed)) = movement_report(prev, pos, dt) else {
+        return;
+    };
+    let tx = net.sender();
+    send_reducer(&mut net, |r| r.move_player_then(
+        dir.x,
+        dir.y,
+        speed,
+        dt,
+        reducer_report("move", tx.clone(), 0),
+    ));
+}
+
 /// Mirror the authoritative `player` table into `Net.players`, spawn 3D
 /// markers for remote players, and keep the local `ClientPlayer` resource in
 /// sync with the server row for our wallet.
 fn sync_remote_players(
     mut net: ResMut<Net>,
     mut player: Query<&mut ClientPlayer>,
+    mut bodies: Query<&mut Transform, (With<PhysicsBody>, Without<RemotePlayerMarker>)>,
+    mut skins: ResMut<crate::skins::PlayerSkins>,
     mut commands: Commands,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut markers: Query<(Entity, &RemotePlayerMarker, &mut Transform)>,
+    mut markers: Query<(Entity, &RemotePlayerMarker, &mut Transform, Option<&mut MarkerMove>)>,
 ) {
     let Some(mine) = net.address.clone() else { return };
 
@@ -484,6 +603,17 @@ fn sync_remote_players(
                 p.owned_vehicle = vehicle_from_str(&row.vehicle);
                 // Spec 014 FR4: avatar drives the local character's shape.
                 p.avatar = row.avatar.clone();
+                // Persisted look: the avatar column stores a skin file name.
+                crate::skins::set_skin_by_name(&mut skins, &row.avatar);
+                // Persisted spawn: once per session, land on the row position.
+                if !p.position_restored {
+                    if let Ok(mut t) = bodies.single_mut() {
+                        t.translation.x = row.position_x;
+                        t.translation.z = row.position_y;
+                    }
+                    p.position = Vec3::new(row.position_x, p.position.y, row.position_y);
+                    p.position_restored = true;
+                }
                 if row.level > old_level {
                     let _ = tx.send(NetEvent::ServerMessage(format!(
                         "LEVEL UP! Now level {}",
@@ -510,10 +640,30 @@ fn sync_remote_players(
         );
         let pos = Vec3::new(row.position_x, 0.4, row.position_y);
         let mut found = false;
-        for (entity, marker, mut transform) in markers.iter_mut() {
+        for (entity, marker, transform, interp_slot) in markers.iter_mut() {
             let _ = entity;
             if marker.0 == row.address {
-                transform.translation = pos;
+                // Remote rows update every ~2 s; glide toward the new spot
+                // instead of snapping, so movement stays smooth.
+                let now = std::time::Instant::now();
+                let mut interp = match &interp_slot {
+                    Some(i) => (**i).clone(),
+                    None => MarkerMove {
+                        target: pos,
+                        speed: 0.0,
+                        last_seen: now,
+                    },
+                };
+                let dist = (pos - transform.translation).length();
+                let since = now.saturating_duration_since(interp.last_seen).as_secs_f32().max(0.05);
+                interp.speed = dist / since;
+                interp.target = pos;
+                interp.last_seen = now;
+                if let Some(mut slot) = interp_slot {
+                    *slot = interp;
+                } else {
+                    commands.entity(entity).insert(interp);
+                }
                 found = true;
                 break;
             }
@@ -529,6 +679,11 @@ fn sync_remote_players(
         commands
             .spawn((
                 RemotePlayerMarker(row.address.clone()),
+                MarkerMove {
+                    target: pos,
+                    speed: 0.0,
+                    last_seen: std::time::Instant::now(),
+                },
                 Mesh3d(meshes.add(Cuboid::new(0.6, 1.2, 0.6))),
                 MeshMaterial3d(mat),
                 Transform::from_translation(pos),
@@ -547,7 +702,7 @@ fn sync_remote_players(
     net.players.retain(|k, _| known.contains(k));
 
     // Despawn markers for players no longer in the table.
-    for (entity, marker, _) in markers.iter_mut() {
+    for (entity, marker, _, _) in markers.iter_mut() {
         if !known.contains(&marker.0) {
             commands.entity(entity).despawn();
         }
@@ -680,5 +835,58 @@ mod latency_tests {
         assert!(latency.resolve().is_some());
         assert_eq!(latency.resolve(), None); // second call has nothing pending
         assert_eq!(latency.window.sample_count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod sync_tests {
+    use super::*;
+
+    #[test]
+    fn vehicle_from_str_maps_all_vehicles() {
+        use idlecore_core::Vehicle;
+        assert_eq!(vehicle_from_str("Bicycle"), Some(Vehicle::Bicycle));
+        assert_eq!(vehicle_from_str("Scooter"), Some(Vehicle::Scooter));
+        assert_eq!(vehicle_from_str("Motorcycle"), Some(Vehicle::Motorcycle));
+        assert_eq!(vehicle_from_str("Boat"), Some(Vehicle::Boat));
+        assert_eq!(vehicle_from_str("Airplane"), Some(Vehicle::Airplane));
+        assert_eq!(vehicle_from_str("None"), None);
+        assert_eq!(vehicle_from_str("bicycle"), None); // case-sensitive
+        assert_eq!(vehicle_from_str(""), None);
+    }
+
+    #[test]
+    fn axial_hex_distance_matches_cube_math() {
+        // (0,0) to (3,0): 3 steps along +q.
+        assert_eq!(axial_hex_distance((0, 0), (3, 0)), 3);
+        // (0,0) to (2,-2): cube s unchanged (0 vs 0) -> max(2,2,0) = 2.
+        assert_eq!(axial_hex_distance((0, 0), (2, -2)), 2);
+        assert_eq!(axial_hex_distance((5, 3), (5, 3)), 0);
+        // Symmetric.
+        assert_eq!(axial_hex_distance((2, -2), (0, 0)), axial_hex_distance((0, 0), (2, -2)));
+        // Adjacent hexes.
+        assert_eq!(axial_hex_distance((0, 0), (1, 0)), 1);
+        assert_eq!(axial_hex_distance((0, 0), (1, -1)), 1);
+    }
+
+    #[test]
+    fn movement_report_reduces_delta() {
+        let (dir, speed) = movement_report(Vec2::new(0.0, 0.0), Vec2::new(3.0, 4.0), 1.0).unwrap();
+        assert!((dir - Vec2::new(0.6, 0.8)).length() < 1e-5);
+        assert!((speed - 5.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn movement_report_ignores_jitter() {
+        assert!(movement_report(Vec2::new(0.0, 0.0), Vec2::new(0.2, 0.1), 2.0).is_none());
+        assert!(movement_report(Vec2::new(1.0, 1.0), Vec2::new(1.0, 1.0), 2.0).is_none());
+    }
+
+    #[test]
+    fn movement_report_scales_speed_with_dt() {
+        let (_, speed) = movement_report(Vec2::ZERO, Vec2::new(6.0, 0.0), 2.0).unwrap();
+        assert!((speed - 3.0).abs() < 1e-5);
+        let (_, speed) = movement_report(Vec2::ZERO, Vec2::new(6.0, 0.0), 0.5).unwrap();
+        assert!((speed - 12.0).abs() < 1e-5);
     }
 }

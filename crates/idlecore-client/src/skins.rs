@@ -136,6 +136,73 @@ fn cycle_skin(
     cycle_skin_dir(&mut skins, dir);
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn skins_with_textures(count: usize) -> PlayerSkins {
+        PlayerSkins {
+            textures: vec![Handle::default(); count],
+            current: 0,
+            need_bake: false,
+        }
+    }
+
+    #[test]
+    fn cycle_wraps_forward_and_backward() {
+        let mut skins = skins_with_textures(3);
+        cycle_skin_dir(&mut skins, 1);
+        assert_eq!(skins.current, 1);
+        assert!(skins.need_bake);
+        cycle_skin_dir(&mut skins, 1);
+        assert_eq!(skins.current, 2);
+        cycle_skin_dir(&mut skins, 1); // wraps to 0
+        assert_eq!(skins.current, 0);
+        cycle_skin_dir(&mut skins, -1); // wraps to last
+        assert_eq!(skins.current, 2);
+    }
+
+    #[test]
+    fn cycle_ignores_empty_texture_set() {
+        let mut skins = PlayerSkins::default();
+        cycle_skin_dir(&mut skins, 1);
+        assert_eq!(skins.current, 0);
+        assert!(!skins.need_bake);
+    }
+
+    #[test]
+    fn set_by_name_applies_known_skin() {
+        let mut skins = skins_with_textures(SKIN_FILES.len());
+        assert!(set_skin_by_name(&mut skins, "zombieC"));
+        assert_eq!(skins.current, SKIN_FILES.len() - 1);
+        assert!(skins.need_bake);
+        // Same skin again is a no-op (no re-bake).
+        skins.need_bake = false;
+        assert!(set_skin_by_name(&mut skins, "zombieC"));
+        assert!(!skins.need_bake);
+    }
+
+    #[test]
+    fn set_by_name_ignores_unknown_and_empty() {
+        let mut skins = skins_with_textures(SKIN_FILES.len());
+        assert!(!set_skin_by_name(&mut skins, "Tetrahedron"));
+        assert!(!set_skin_by_name(&mut skins, ""));
+        assert!(!set_skin_by_name(&mut skins, "not-a-skin"));
+        assert_eq!(skins.current, 0);
+        assert!(!skins.need_bake);
+        let mut empty = PlayerSkins::default();
+        assert!(!set_skin_by_name(&mut empty, "alienA"));
+    }
+
+    #[test]
+    fn skin_files_have_no_duplicates() {
+        let mut seen = std::collections::HashSet::new();
+        for name in SKIN_FILES {
+            assert!(seen.insert(*name), "duplicate skin file: {name}");
+        }
+    }
+}
+
 /// Advance the current skin by `dir` (±1, wrapping) and flag a re-bake.
 /// Shared by the [ / ] keys and the HUD "Avatar -> Next" button.
 pub(crate) fn cycle_skin_dir(skins: &mut PlayerSkins, dir: isize) {
@@ -145,4 +212,21 @@ pub(crate) fn cycle_skin_dir(skins: &mut PlayerSkins, dir: isize) {
     skins.current = (skins.current as isize + dir).rem_euclid(skins.textures.len() as isize) as usize;
     skins.need_bake = true;
     info!("Skin: {}", SKIN_FILES[skins.current]);
+}
+
+/// Select the skin by file name (e.g. restored from the persisted avatar
+/// column). Returns true if a matching skin was applied.
+pub(crate) fn set_skin_by_name(skins: &mut PlayerSkins, name: &str) -> bool {
+    if skins.textures.is_empty() {
+        return false;
+    }
+    let Some(idx) = SKIN_FILES.iter().position(|s| *s == name) else {
+        return false;
+    };
+    if idx != skins.current {
+        skins.current = idx;
+        skins.need_bake = true;
+        info!("Skin restored: {name}");
+    }
+    true
 }

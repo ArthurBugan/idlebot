@@ -34,6 +34,14 @@ fn main() {
         })
         .add_systems(Startup, boost_gravity)
         .insert_resource(CameraZoom::default())
+        .insert_resource(TimestepMode::Interpolated {
+            // Physics steps at a fixed 60 Hz, and `TransformInterpolation` on
+            // the player body renders smooth poses between steps — the render
+            // frame rate can dip or jitter without the motion doing the same.
+            dt: 1.0 / 60.0,
+            time_scale: 1.0,
+            substeps: 1,
+        })
         .insert_resource(plugins::world::StreamingWorldResource::default())
         .insert_resource(minimap::MinimapState::default())
         .insert_resource(minimap::MinimapWaypoints::default())
@@ -157,6 +165,7 @@ fn setup(
         Ccd::enabled(),
         Collider::capsule(Vec3::Y * 1.6365, Vec3::Y * 6.0, 1.5),
         Friction::coefficient(0.8),
+        TransformInterpolation::default(),
         Damping {
             linear_damping: 0.0,
             angular_damping: 6.0,
@@ -175,6 +184,7 @@ fn setup(
             eco_points: 0,
             owned_vehicle: None,
             avatar: "Tetrahedron".to_string(),
+            position_restored: false,
         },
     ));
 

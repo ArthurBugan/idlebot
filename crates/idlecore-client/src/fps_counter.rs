@@ -34,6 +34,9 @@ pub fn update_fps_counter(
         if let Some(mut text) = text_query.iter_mut().next() {
             **text = format!("FPS: {}", counter.fps);
         }
+        if counter.fps < 58 {
+            info!("FPS: {}", counter.fps);
+        }
     }
 }
 

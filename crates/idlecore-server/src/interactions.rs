@@ -15,6 +15,7 @@ use crate::types::{player, hex_tile,
 use crate::player::players_in_hex;
 
 /// Outcome of an interaction, returned to the caller for logging.
+#[derive(Clone)]
 pub enum Outcome {
     Ok(String),
     Err(String),
@@ -26,6 +27,12 @@ impl Outcome {
     }
     pub fn err(msg: impl Into<String>) -> Self {
         Outcome::Err(msg.into())
+    }
+    pub fn into_result(self) -> Result<(), String> {
+        match self {
+            Outcome::Ok(_) => Ok(()),
+            Outcome::Err(e) => Err(e),
+        }
     }
 }
 

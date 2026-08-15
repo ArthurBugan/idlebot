@@ -32,14 +32,16 @@ fn address_of(ctx: &ReducerContext) -> Option<String> {
     crate::player::address_of_identity(ctx, &ctx.sender().to_string())
 }
 
+/// World generation seed — must stay constant so the map is deterministic.
+const WORLD_SEED: u64 = 0xC0FFEE;
+
 /// One-time module init: seed the world and register the five recurring
 /// schedulers (Spec 015 FR1-FR5).
 #[reducer(init)]
 pub fn init(ctx: &ReducerContext) {
     tracing::info!("IdleBot module initializing");
 
-    let world_seed: u64 = 0xC0FFEE;
-    let count = crate::world::generate_world(ctx, world_seed);
+    let count = crate::world::generate_world(ctx, WORLD_SEED);
     tracing::info!("World seeded: {count} hexes");
 
     if ctx.db.scheduled_idle_gains().iter().next().is_none() {
@@ -90,6 +92,9 @@ pub fn init(ctx: &ReducerContext) {
 #[reducer]
 pub fn login(ctx: &ReducerContext, wallet_address: String) {
     let address = wallet_address.to_lowercase();
+    // Self-heal: fill any hexes missing from the world (e.g. a manually
+    // deleted row) so players can always interact with their surroundings.
+    crate::world::generate_world(ctx, WORLD_SEED);
     match crate::player::login(ctx, &address, &ctx.sender().to_string()) {
         Ok(_) => tracing::info!("LOGIN: {address} (identity {})", ctx.sender()),
         Err(e) => tracing::warn!("LOGIN-REJECTED {address}: {e}"),
@@ -164,24 +169,33 @@ pub fn heartbeat(ctx: &ReducerContext) {
 // ---------------------------------------------------------------------------
 
 #[reducer]
-pub fn plant(ctx: &ReducerContext, hex_id: u64, plant_type: String) {
-    let Some(address) = address_of(ctx) else { return };
+pub fn plant(ctx: &ReducerContext, hex_id: u64, plant_type: String) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
     let result = crate::interactions::plant_at(ctx, &address, hex_id, &plant_type);
-    crate::player::log_outcome(ctx, &address, "plant", result);
+    crate::player::log_outcome(ctx, &address, "plant", result.clone());
+    result.into_result()
 }
 
 #[reducer]
-pub fn harvest(ctx: &ReducerContext, hex_id: u64) {
-    let Some(address) = address_of(ctx) else { return };
+pub fn harvest(ctx: &ReducerContext, hex_id: u64) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
     let result = crate::interactions::harvest(ctx, &address, hex_id);
-    crate::player::log_outcome(ctx, &address, "harvest", result);
+    crate::player::log_outcome(ctx, &address, "harvest", result.clone());
+    result.into_result()
 }
 
 #[reducer]
-pub fn clean(ctx: &ReducerContext, hex_id: u64) {
-    let Some(address) = address_of(ctx) else { return };
+pub fn clean(ctx: &ReducerContext, hex_id: u64) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
     let result = crate::interactions::clean(ctx, &address, hex_id);
-    crate::player::log_outcome(ctx, &address, "clean", result);
+    crate::player::log_outcome(ctx, &address, "clean", result.clone());
+    result.into_result()
 }
 
 // ---------------------------------------------------------------------------

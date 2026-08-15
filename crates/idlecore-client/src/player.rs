@@ -30,6 +30,8 @@ pub struct ClientPlayer {
     /// Server-side avatar name ("Tetrahedron" | "Cube" | "Sphere" |
     /// "Cylinder" | "Cone"); drives the character's 3D shape.
     pub avatar: String,
+    /// True once the spawn position has been restored from the server row.
+    pub position_restored: bool,
 }
 
 /// Player transform resource for camera/minimap follow

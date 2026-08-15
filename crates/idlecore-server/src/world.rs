@@ -51,14 +51,10 @@ fn elevation_for(q: i32, r: i32, seed: u64) -> f32 {
     (0.5 * base + 0.25 * n1 + 0.25 * n2) * 2.0 - 0.7 // -0.7 .. 1.3
 }
 
-/// Generate and insert the whole map. Idempotent — no-ops if rows exist.
+/// Generate and insert the whole map. Idempotent — fills any missing hexes,
+/// so a single lost row (e.g. a manual delete) is repaired on the next
+/// module init without touching existing rows.
 pub fn generate_world(ctx: &ReducerContext, seed: u64) -> usize {
-    let existing = ctx.db.hex_tile().iter().next().is_some();
-    if existing {
-        tracing::info!("World already generated; skipping seed");
-        return 0;
-    }
-
     let mut count = 0usize;
     for q in -WORLD_RADIUS..=WORLD_RADIUS {
         for r in -WORLD_RADIUS..=WORLD_RADIUS {
@@ -66,11 +62,15 @@ pub fn generate_world(ctx: &ReducerContext, seed: u64) -> usize {
             if s.abs() > WORLD_RADIUS {
                 continue;
             }
+            let hex_id = hex_id_of(q, r);
+            if ctx.db.hex_tile().hex_id().find(hex_id).is_some() {
+                continue;
+            }
             let (terrain, eco) = terrain_for(q, r, seed);
             let is_polluted = terrain == "Polluted";
             let elevation = if terrain == "Water" { -0.5 } else { elevation_for(q, r, seed) };
             ctx.db.hex_tile().insert(HexTile {
-                hex_id: hex_id_of(q, r),
+                hex_id,
                 hex_q: q,
                 hex_r: r,
                 terrain: terrain.to_string(),
@@ -85,6 +85,8 @@ pub fn generate_world(ctx: &ReducerContext, seed: u64) -> usize {
             count += 1;
         }
     }
-    tracing::info!("World generated: {count} hexes (seed {seed})");
+    if count > 0 {
+        tracing::info!("World filled: {count} missing hexes (seed {seed})");
+    }
     count
 }

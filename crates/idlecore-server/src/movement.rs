@@ -12,6 +12,10 @@ use crate::player::update_hex;
 
 /// Base walking speed in world units/sec (Spec 003 FR3: 10 m/s × vehicle).
 pub const BASE_SPEED: f32 = 10.0;
+
+/// A player is considered online only if they moved or heartbeated within this
+/// window; anything older is stale and cannot hold a hex via occupancy.
+pub const ONLINE_WINDOW_SECS: u64 = 90;
 /// Tolerance: allows 20% network jitter before flagging a speed hack.
 const SPEED_TOLERANCE: f32 = 1.2;
 
@@ -78,6 +82,9 @@ pub fn move_player(
             if other.address == p.address || other.status != "online" {
                 continue;
             }
+            if now.saturating_sub(other.last_seen) > ONLINE_WINDOW_SECS {
+                continue;
+            }
             if other.hex_q == q && other.hex_r == r {
                 let d2 = (other.position_x - cx).powi(2) + (other.position_y - cy).powi(2);
                 let entry = (d2, other.last_login);
@@ -130,7 +137,18 @@ pub fn heartbeat(ctx: &ReducerContext, address: &str) -> Result<(), String> {
     let mut p = crate::economy::find_player(ctx, &address.to_lowercase())
         .ok_or_else(|| "Player not found".to_string())?;
     p.last_seen = now;
+    p.status = "online".to_string();
     ctx.db.player().address().update(p);
+
+    // Sessions that stop moving AND stop heartbeating are effectively gone
+    // (there is no disconnect reducer in SpacetimeDB). Flip them offline so
+    // their hexes don't block other players' occupancy forever.
+    for mut other in ctx.db.player().iter() {
+        if other.status == "online" && now.saturating_sub(other.last_seen) > ONLINE_WINDOW_SECS {
+            other.status = "offline".to_string();
+            ctx.db.player().address().update(other);
+        }
+    }
     Ok(())
 }
 #[cfg(test)]

@@ -26,7 +26,6 @@ enum HudAction {
 }
 
 /// Avatar shapes the server accepts (Spec 014 T1.1).
-const AVATARS: [&str; 5] = ["Tetrahedron", "Cube", "Sphere", "Cylinder", "Cone"];
 
 /// In-progress display-name edit (Spec 014 T4.2): ENTER submits, Backspace
 /// deletes, printable key chars append (alphanumeric only, max 20).
@@ -368,7 +367,7 @@ fn hud_buttons(
                 net.connect();
             }
             _ => {
-                let Some(conn) = net.conn.as_ref() else {
+                let Some(_conn) = net.conn.as_ref() else {
                     let _ = net.sender().send(NetEvent::ServerMessage(
                         "not connected — click Connect first".to_string(),
                     ));
@@ -419,21 +418,16 @@ fn hud_buttons(
                     }
                     HudAction::AvatarNext => {
                         // Visible effect, same as the ] key: cycle the skin
-                        // painted on the model.
+                        // painted on the model, then persist the choice as
+                        // the avatar column so it survives reconnects.
                         crate::skins::cycle_skin_dir(&mut skins, 1);
-                        let Some(mine) = &net.address else { continue };
-                        let avatar = conn
-                            .db
-                            .player()
-                            .address()
-                            .find(mine)
-                            .map(|p| p.avatar.clone())
+                        let skin_name = crate::skins::SKIN_FILES
+                            .get(skins.current)
+                            .map(|s| s.to_string())
                             .unwrap_or_default();
-                        let idx = AVATARS.iter().position(|a| *a == avatar).unwrap_or(0);
-                        let next = AVATARS[(idx + 1) % AVATARS.len()];
                         send_reducer(&mut net, |r| r.update_profile_then(
                             None,
-                            Some(next.to_string()),
+                            Some(skin_name),
                             None,
                             reducer_report("update_profile", tx.clone(), 0),
                         ));
