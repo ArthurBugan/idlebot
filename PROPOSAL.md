@@ -1,12 +1,12 @@
 # IdleBot — Design Specification
 
-> **Idle Tamagotchi × Voice Chat × Code Marketplace on a 3D Hex Grid**
+> **Idle Tamagotchi × Voice Chat × Code Marketplace on a Hex Grid**
 
 ---
 
 ## 1. Concept
 
-IdleBot is a multiplayer idle game where you manage a Tamagotchi-like character that grows XP and Gold even when you're offline. The game world is a shared 3D hex grid where players meet, chat by voice, farm, clean pollution, and trade AI agents and code templates on an on-chain marketplace.
+IdleBot is a multiplayer idle game where you manage a Tamagotchi-like character that grows XP and Gold even when you're offline. The game world is a shared hex grid (rendered isometrically) where players meet, chat by voice, farm, clean pollution, and trade AI agents and code templates on an on-chain marketplace.
 
 **Core loop:** Idle → Collect → Interact → Trade → Grow.
 
@@ -16,7 +16,7 @@ IdleBot is a multiplayer idle game where you manage a Tamagotchi-like character 
 
 ### 2.1 Character (Tamagotchi)
 
-- Represented as a small 3D avatar (placeholder: orange tetrahedron)
+- Represented on the client as a skin sprite (44 options in `crates/idlecore-client/assets/skins/`); the server stores the Phase-1 primitive avatar name (`Tetrahedron | Cube | Sphere | Cylinder | Cone`)
 - Has: XP, Gold, Level, Eco Points, Position
 - Progression: `level = calculate_level(total_xp)` — formula `100 * level²`
 - Cosmetics: Hat, Aura, Trail, Vehicle Skin (purchased with Gold or USDT)
@@ -88,7 +88,7 @@ All vehicles are electric (thematic consistency with conservation). Speed affect
 
 ### 3.1 Structure
 
-- **Type:** 3D, shared, hexagonal grid
+- **Type:** Shared hexagonal grid, rendered as an isometric 2D world
 - **Scale:** 1:10,000 (game coordinates × 10,000 = approximate real-world meters)
 - **Hex radius:** 10 meters (game units)
 - **Map size:** ~64 hexes radius in each direction (axial coords)
@@ -109,7 +109,7 @@ All vehicles are electric (thematic consistency with conservation). Speed affect
 
 - Players interact with hexes by proximity (within the same hex)
 - Clicking a hex on the minimap or global map triggers teleport
-- Hexes are visible as flat-top 3D tiles with color based on terrain type
+- Hexes are visible as isometric tiles with art based on terrain type
 - Plants grow on top of hexes, pollution shows as dark markers
 
 **Conflict Resolution:**
@@ -222,11 +222,10 @@ A decentralized marketplace for AI agents, code templates, and content snippets.
 - Warning system for repeat offenders (3 strikes → marketplace ban)
 - Insurance pool: 2% of all marketplace transactions fund a dispute resolution pool
 
-### 4.3 Smart Contract (Polygon)
+### 4.3 Smart Contracts
 
-- **Subscription.sol:** Manages player subscriptions
-- **TemplateMarket.sol:** Marketplace logic (list, buy, sell, transfer)
-- **USDTInterface.sol:** USDT token interaction
+- **Polygon (Solidity):** `TemplateMarket.sol` (marketplace logic: list, buy, sell, transfer), `Subscription.sol` (player subscriptions), `USDTInterface.sol` (USDT token interaction)
+- **Solana (Anchor, `contracts/solana/`):** Port of the same marketplace + subscription logic with SPL-token USDT (`marketplace.rs`, `subscription.rs`, `token_utils.rs`)
 
 ### 4.4 Content Types
 
@@ -246,23 +245,23 @@ A decentralized marketplace for AI agents, code templates, and content snippets.
 
 | Layer         | Technology              | Role                           |
 |---------------|------------------------|--------------------------------|
-| Client        | Bevy 0.19 (Rust)       | 3D game rendering, input, voice |
-| Backend       | SpacetimeDB 2.0        | Real-time multiplayer, world state, logic |
-| Blockchain    | Alloy 2.2.0 + Polygon  | Wallet auth, marketplace, USDT |
-| Voice         | str0m 0.21.0 + datachannel | WebRTC voice chat, proximity-based |
-| Language      | Rust (2024 edition)    | All crates                     |
+| Client        | Bevy 0.19 (Rust)       | 2D isometric rendering, input, UI |
+| Backend       | SpacetimeDB 2.7 (server) + 2.8 SDK (client) | Real-time multiplayer, world state, logic |
+| Blockchain    | Alloy 2.2 + Polygon, Anchor (Solana) | Wallet auth, marketplace, USDT |
+| Voice         | str0m 0.21 + datachannel (planned) | WebRTC voice chat — server-side channel management is live, audio layer pending |
+| Language      | Rust (2021 edition)    | All crates |
 
 ### 5.2 SpacetimeDB
 
 - **Self-hosted** on Raspberry Pi (or any VPS)
 - **Server modules** with validated logic (not client-side entropia)
-- Tables: `player`, `hex_tile`, `voice_channel`, `market_listing`
-- Scheduled functions: plant updates (10s), idle gains (5min), voice cleanup (1min), listing cleanup (1hr)
+- Tables (11 core + 5 scheduler): `player`, `hex_tile`, `plant`, `vehicle_owned`, `cosmetic_owned`, `voice_channel`, `market_listing`, `idle_gain`, `transaction`, `scheduled_log`, `eco_transaction`, plus `scheduled_idle_gains`, `scheduled_plant_growth`, `scheduled_voice_cleanup`, `scheduled_market_cleanup`, `scheduled_eco_maintenance`
+- Scheduled functions: plant updates (10s), idle gains (5min), voice cleanup (1min), listing cleanup (1hr), eco maintenance (1hr)
 - Pub/Sub events for real-time client updates
 
 ### 5.3 Bevy Client
 
-- 3D hex grid rendering
+- 2D isometric hex grid rendering (PNG tile packs + skin sprites, no external 3D models)
 - WASD movement (10 m/s base speed, modified by vehicle)
 - Minimap (2D overlay) and global map view
 - Voice chat UI (proximity indicator)
@@ -272,8 +271,8 @@ A decentralized marketplace for AI agents, code templates, and content snippets.
 
 ### 5.4 Wallet Authentication
 
-- Player connects wallet (Polygon network)
-- Signature-based login to SpacetimeDB
+- Player connects a wallet (Polygon network; Solana-native ed25519 keys per Spec 013)
+- Signature-based login to SpacetimeDB — the connection identity is bound to the wallet address at login, with rate limits and rapid-login penalties enforced server-side
 - No password — wallet is identity
 
 **Wallet Recovery:**
@@ -300,23 +299,23 @@ A decentralized marketplace for AI agents, code templates, and content snippets.
 
 ### 5.5 Asset Strategy
 
-- **Phase 1:** Procedural placeholders (colored primitives, no external assets)
-- **Phase 2:** Import low-poly assets (see `lowpoly_assets/` pack list)
+- **Phase 1:** Isometric PNG tile packs + 44 skin sprites in `crates/idlecore-client/assets/` (no 3D models, no physics)
+- **Phase 2:** Additional content packs, vehicle art, marketplace UI art
 - **Phase 3:** Polish textures, animations, VFX
 
 ---
 
 ## 6. Progression Roadmap
 
-### Phase 1: Core Loop (MVP)
+### Phase 1: Core Loop (MVP) — largely implemented
 
-- [ ] SpacetimeDB tables + server modules
-- [ ] Hex grid generation + rendering (procedural)
-- [ ] Player spawn + WASD movement
-- [ ] Idle gains calculation (offline)
-- [ ] Basic interaction (plant/harvest/clean)
-- [ ] Voice chat within hex (proximity)
-- [ ] Wallet login
+- [x] SpacetimeDB tables + server modules
+- [x] Hex grid generation + isometric rendering
+- [x] Player spawn + WASD movement
+- [x] Idle gains calculation (offline)
+- [x] Basic interaction (plant/harvest/clean)
+- [ ] Voice chat within hex (proximity) — server channel management done, WebRTC audio pending
+- [x] Wallet login
 
 ### Phase 2: Marketplace
 
@@ -403,6 +402,6 @@ pub fn calculate_level(total_xp: u64) -> u32 {
 
 ---
 
-| Last updated: 2026-07-26 |
-| Status: Draft — waiting on Ferris review |
-| **Software versions verified:** Bevy 0.19, SpacetimeDB 2.0, str0m 0.21.0, Alloy 2.2.0 |
+| Last updated: 2026-08-17 |
+| Status: MVP in development (Phase 1 largely implemented; see README roadmap) |
+| **Software versions in use:** Bevy 0.19, SpacetimeDB 2.7 (SDK 2.8), Alloy 2.2, str0m 0.21 (planned) |

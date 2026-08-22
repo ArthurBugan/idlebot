@@ -6,7 +6,6 @@
 //! the rest of the client.
 
 use bevy::prelude::*;
-use bevy_rapier3d::prelude::*;
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender};
 use spacetimedb_sdk::DbContext;
@@ -340,7 +339,7 @@ impl Plugin for NetPlugin {
         app.insert_resource(Net::default())
 .init_resource::<PositionSync>()
             .add_systems(Startup, auto_connect)
-            .add_systems(PreUpdate, net_drain)
+            .add_systems(PreUpdate, (net_frame_tick, net_drain).chain())
             .add_systems(Update, (
                 animate_remote_markers,
                 send_heartbeat,
@@ -384,7 +383,7 @@ fn interact_key_press(
         return;
     }
     if let Some(p) = player.as_ref().and_then(|q| q.single().ok()) {
-        let hex_id = Net::hex_id_at(p.position.x, p.position.z);
+        let hex_id = Net::hex_id_at(p.position.x, p.position.y);
         let Some(conn) = net.conn.as_ref() else {
             net.push(NetEvent::ServerMessage("E: not connected".to_string()));
             return;
@@ -439,43 +438,44 @@ fn auto_connect(mut net: ResMut<Net>) {
     net.connect();
 }
 
+/// Advance the SDK connection every frame: pumps the websocket and fires the
+/// row/reducer callbacks on the main thread. Native builds run no network
+/// thread unless `run_threaded` is used, so without this tick the connection
+/// is built but never progresses (on_connect/subscription never fire).
+fn net_frame_tick(net: Res<Net>) {
+    if let Some(conn) = net.conn.as_ref() {
+        let _ = conn.frame_tick();
+    }
+}
+
 /// Move events off the queue before other systems read the resource.
 fn net_drain(
     mut net: ResMut<Net>,
     mut burst: ResMut<crate::assets::BurstFx>,
     mut latency: ResMut<ServerLatency>,
-    mut bodies: Query<
-        (&mut Transform, &mut Velocity, &mut crate::player::ClientPlayer),
-        With<crate::plugins::player::PhysicsBody>,
-    >,
+    mut player_transform: ResMut<crate::player::PlayerTransform>,
+    mut bodies: Query<(&mut Transform, &mut crate::player::ClientPlayer), With<crate::plugins::player::PhysicsBody>>,
 ) {
     let teleports = net.drain();
     if teleports.is_empty() {
         return;
     }
-    let Ok((mut transform, mut velocity, mut player)) = bodies.single_mut() else {
+    let Ok((mut transform, mut player)) = bodies.single_mut() else {
         return;
     };
     for (q, r) in teleports {
-        let (wx, wz) = idlecore_core::hex_grid::HexGrid::axial_to_world(
+        let (wx, wy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
             q,
             r,
             WorldGenConfig::HEX_SIZE,
         );
-        let y = transform.translation.y.max(0.5);
-        transform.translation = Vec3::new(wx, y, wz);
-        velocity.linear = Vec3::ZERO;
-        player.position = Vec3::new(wx, y, wz);
+        // 2D world: x = east, y = north; z carries the draw order.
+        transform.translation = Vec3::new(wx, wy, -wy + 50.0);
+        player.position = Vec3::new(wx, wy, 0.0);
         player.current_hex = Some(crate::player::CurrentHex { q, r });
-        burst.request(Vec3::new(wx, y, wz));
+        player_transform.translation = transform.translation;
+        burst.request(Vec3::new(wx, wy, 0.0));
         latency.resolve();
-    }
-}
-
-/// Pump the SDK connection (processes incoming messages and pending sends).
-fn net_advance(net: ResMut<Net>) {
-    if let Some(conn) = &net.conn {
-        let _ = conn.frame_tick();
     }
 }
 
@@ -514,10 +514,16 @@ fn movement_report(prev: Vec2, cur: Vec2, dt: f32) -> Option<(Vec2, f32)> {
 fn sync_player_position(
     mut net: ResMut<Net>,
     mut state: ResMut<PositionSync>,
-    bodies: Query<&Transform, (With<PhysicsBody>, Without<RemotePlayerMarker>)>,
+    bodies: Query<(&Transform, &ClientPlayer), (With<PhysicsBody>, Without<RemotePlayerMarker>)>,
 ) {
-    let Ok(body) = bodies.single() else { return };
+    let Ok((body, player)) = bodies.single() else { return };
     if net.conn.is_none() || net.address.is_none() {
+        return;
+    }
+    // Don't push local positions before the authoritative row snapped us
+    // back to the persisted spot — otherwise a spawn-position delta would
+    // be sent as phantom movement and drag the saved position off.
+    if !player.position_restored {
         return;
     }
     if state.last_send.elapsed().as_secs_f32() < POSITION_SYNC_INTERVAL {
@@ -526,7 +532,7 @@ fn sync_player_position(
     let dt = state.last_send.elapsed().as_secs_f32().max(0.001);
     state.last_send = std::time::Instant::now();
 
-    let pos = Vec2::new(body.translation.x, body.translation.z);
+    let pos = Vec2::new(body.translation.x, body.translation.y);
     let Some(prev) = state.last_pos else {
         state.last_pos = Some(pos);
         return;
@@ -536,17 +542,19 @@ fn sync_player_position(
     let Some((dir, speed)) = movement_report(prev, pos, dt) else {
         return;
     };
+    // Log the hex the movement ended in (pos is the reported destination).
+    let hex_id = Net::hex_id_at(pos.x, pos.y);
     let tx = net.sender();
     send_reducer(&mut net, |r| r.move_player_then(
         dir.x,
         dir.y,
         speed,
         dt,
-        reducer_report("move", tx.clone(), 0),
+        reducer_report("move", tx.clone(), hex_id),
     ));
 }
 
-/// Mirror the authoritative `player` table into `Net.players`, spawn 3D
+/// Mirror the authoritative `player` table into `Net.players`, spawn 2D
 /// markers for remote players, and keep the local `ClientPlayer` resource in
 /// sync with the server row for our wallet.
 fn sync_remote_players(
@@ -554,9 +562,9 @@ fn sync_remote_players(
     mut player: Query<&mut ClientPlayer>,
     mut bodies: Query<&mut Transform, (With<PhysicsBody>, Without<RemotePlayerMarker>)>,
     mut skins: ResMut<crate::skins::PlayerSkins>,
+    mut player_transform: ResMut<crate::player::PlayerTransform>,
+    mut pos_sync: ResMut<PositionSync>,
     mut commands: Commands,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut meshes: ResMut<Assets<Mesh>>,
     mut markers: Query<(Entity, &RemotePlayerMarker, &mut Transform, Option<&mut MarkerMove>)>,
 ) {
     let Some(mine) = net.address.clone() else { return };
@@ -578,7 +586,7 @@ fn sync_remote_players(
             player
                 .single()
                 .ok()
-                .map(|p| idlecore_core::hex::world_pos_to_hex(p.position.x, p.position.z, WorldGenConfig::HEX_SIZE))
+                .map(|p| idlecore_core::hex::world_pos_to_hex(p.position.x, p.position.y, WorldGenConfig::HEX_SIZE))
         });
     let in_view = |row_hex_id: u64| -> bool {
         let Some((q, r)) = own_hex else { return true };
@@ -601,18 +609,27 @@ fn sync_remote_players(
                 p.eco_points = row.eco_points as u64;
                 // Spec 006 T6.3: restore equipped vehicle from the authoritative row.
                 p.owned_vehicle = vehicle_from_str(&row.vehicle);
-                // Spec 014 FR4: avatar drives the local character's shape.
+                // Spec 014 FR4: avatar drives the local character's skin.
                 p.avatar = row.avatar.clone();
                 // Persisted look: the avatar column stores a skin file name.
                 crate::skins::set_skin_by_name(&mut skins, &row.avatar);
                 // Persisted spawn: once per session, land on the row position.
                 if !p.position_restored {
                     if let Ok(mut t) = bodies.single_mut() {
-                        t.translation.x = row.position_x;
-                        t.translation.z = row.position_y;
+                        t.translation = Vec3::new(row.position_x, row.position_y, -row.position_y + 50.0);
                     }
-                    p.position = Vec3::new(row.position_x, p.position.y, row.position_y);
+                    p.position = Vec3::new(row.position_x, row.position_y, 0.0);
+                    p.current_hex = Some(crate::player::CurrentHex { q: row.hex_q, r: row.hex_r });
+                    player_transform.translation = p.position;
                     p.position_restored = true;
+                    // Baseline the position sync at the restored spot so the
+                    // next delta reflects real movement only.
+                    pos_sync.last_send = std::time::Instant::now();
+                    pos_sync.last_pos = Some(Vec2::new(row.position_x, row.position_y));
+                    let _ = tx.send(NetEvent::ServerMessage(format!(
+                        "session restored: position ({:.0},{:.0}) hex ({},{})",
+                        row.position_x, row.position_y, row.hex_q, row.hex_r
+                    )));
                 }
                 if row.level > old_level {
                     let _ = tx.send(NetEvent::ServerMessage(format!(
@@ -638,7 +655,9 @@ fn sync_remote_players(
                 online: row.status == "online",
             },
         );
-        let pos = Vec3::new(row.position_x, 0.4, row.position_y);
+        // 2D: x = east, y = north; z = draw order (above tiles, below the
+        // local player's +50 offset).
+        let pos = Vec3::new(row.position_x, row.position_y, -row.position_y + 40.0);
         let mut found = false;
         for (entity, marker, transform, interp_slot) in markers.iter_mut() {
             let _ = entity;
@@ -671,10 +690,10 @@ fn sync_remote_players(
         if found {
             continue;
         }
-        let mat = if row.status == "online" {
-            materials.add(StandardMaterial::from(Color::srgb(0.2, 0.8, 1.0)))
+        let color = if row.status == "online" {
+            Color::srgb(0.2, 0.8, 1.0)
         } else {
-            materials.add(StandardMaterial::from(Color::srgb(0.4, 0.4, 0.5)))
+            Color::srgb(0.4, 0.4, 0.5)
         };
         commands
             .spawn((
@@ -684,18 +703,20 @@ fn sync_remote_players(
                     speed: 0.0,
                     last_seen: std::time::Instant::now(),
                 },
-                Mesh3d(meshes.add(Cuboid::new(0.6, 1.2, 0.6))),
-                MeshMaterial3d(mat),
+                Sprite {
+                    color,
+                    custom_size: Some(Vec2::splat(1.0)),
+                    ..default()
+                },
                 Transform::from_translation(pos),
-                RigidBody::Fixed,
             ))
             .with_child((
                 Name::new("player-name-label"),
                 Text2d::new(short_addr(&row.address)),
-                TextFont { font_size: 30.0.into(), ..default() },
+                TextFont { font_size: 12.0.into(), ..default() },
                 TextColor(Color::srgb(0.95, 0.95, 1.0)),
                 TextShadow { color: Color::BLACK, offset: Vec2::new(1.0, 1.0) },
-                Transform::from_xyz(0.0, 1.8, 0.0),
+                Transform::from_xyz(0.0, 1.6, -1.0),
             ));
     }
 

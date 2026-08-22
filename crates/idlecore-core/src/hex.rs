@@ -45,26 +45,24 @@ impl HexCoord {
         crate::hex_grid::HexGrid::axial_to_world(self.q, self.r, hex_radius)
     }
 
-    /// Serialize hex to a u64 id: (q << 32) | r
-    /// Offsets values by i32::MAX to preserve sign in u32 storage.
+    /// Serialize hex to a u64 id using the canonical encoding
+    /// `(q as u32) << 32 | (r as u32)` — kept identical to the server's
+    /// `hex_id_of` and `HexCell::id_of` so ids agree across client, server
+    /// and persisted rows.
     pub fn to_id(&self) -> u64 {
-        const OFFSET: u64 = i32::MAX as u64;
-        let q_u64 = (self.q as i64 + OFFSET as i64) as u64;
-        let r_u64 = (self.r as i64 + OFFSET as i64) as u64;
-        (q_u64 << 32) | (r_u64 & 0xFFFFFFFF)
+        ((self.q as u32 as u64) << 32) | (self.r as u32 as u64)
     }
 
-    /// Parse a hex id back into a HexCoord.
+    /// Parse a hex id back into a HexCoord (inverse of [`Self::to_id`]).
     ///
-    /// Row data can carry sentinel/garbage ids (e.g. a fresh player row with
-    /// `hex_id = 0`), which would decode to coordinates near ±i32::MAX and
-    /// overflow the `s = -q - r` invariant. Clamp to a band far wider than
-    /// any real world (radius 100) so decoding can never panic.
+    /// Garbage/sentinel ids (e.g. `u64::MAX`) would decode to coordinates
+    /// near ±i32::MAX and overflow the `s = -q - r` invariant. Clamp to a
+    /// band far wider than any real world (radius 100) so decoding can
+    /// never panic.
     pub fn from_id(id: u64) -> Self {
-        const OFFSET: i64 = i32::MAX as i64;
         const LIMIT: i64 = 1_000_000_000;
-        let q = (((id >> 32) as i64) - OFFSET).clamp(-LIMIT, LIMIT);
-        let r = (((id & 0xFFFFFFFF) as i64) - OFFSET).clamp(-LIMIT, LIMIT);
+        let q = ((id >> 32) as u32 as i32 as i64).clamp(-LIMIT, LIMIT);
+        let r = ((id & 0xFFFF_FFFF) as u32 as i32 as i64).clamp(-LIMIT, LIMIT);
         Self::new(q as i32, r as i32)
     }
 
@@ -336,11 +334,28 @@ mod world_pos_tests {
 #[cfg(test)]
 mod from_id_tests {
     use super::*;
+    use crate::world_gen::HexCell;
 
     #[test]
     fn sentinel_zero_id_does_not_overflow() {
         let h = HexCoord::from_id(0);
         let _ = h.s;
+    }
+
+    #[test]
+    fn zero_id_decodes_to_origin() {
+        assert_eq!(HexCoord::from_id(0), HexCoord::new(0, 0));
+    }
+
+    #[test]
+    fn id_encoding_matches_canonical_hex_cell_and_server_scheme() {
+        for q in -200..=200 {
+            for r in -200..=200 {
+                let h = HexCoord::new(q, r);
+                assert_eq!(h.to_id(), HexCell::id_of(q, r), "({q},{r})");
+                assert_eq!(HexCoord::from_id(h.to_id()), h);
+            }
+        }
     }
 
     #[test]

@@ -1,27 +1,33 @@
-//! Camera system plugin
-//! Handles camera following the player + keyboard zoom
+//! Camera system plugin — 2D camera following the player with zoom.
 
 use bevy::prelude::*;
-use bevy::input::mouse::MouseWheel;
+use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use crate::player::PlayerTransform;
 use crate::minimap::MinimapState;
+use crate::plugins::player::PhysicsBody;
 
 /// Minimap corner padding (must match `minimap::MINIMAP_PADDING`).
 const MINIMAP_PADDING: f32 = 10.0;
 
-/// Camera zoom level (controlled by keyboard)
+/// Pixels per world unit at the default zoom: the 132px-wide isometric tile
+/// art covers one hex (√3 × 10 ≈ 17.32 world units).
+const BASE_PIXELS_PER_UNIT: f32 = 132.0 / (1.7320508075688772 * 10.0);
+
+/// Camera zoom limits (pixels per world unit).
+const MIN_ZOOM: f32 = 3.0;
+const MAX_ZOOM: f32 = 2000.0;
+
+/// Camera zoom level (pixels per world unit).
 #[derive(Resource)]
 pub struct CameraZoom {
-    pub distance: f32,
-    pub height: f32,
+    pub scale: f32,
 }
 
 impl Default for CameraZoom {
     fn default() -> Self {
-        Self {
-            distance: 150.0,  // Starting distance (farther)
-            height: 150.0,
-        }
+        // Default is 3x the 1:1 art scale so the player starts comfortably
+        // close (tiles render at 3x their native pixel size).
+        Self { scale: BASE_PIXELS_PER_UNIT * 3.0 }
     }
 }
 
@@ -33,19 +39,30 @@ impl Plugin for CameraPlugin {
     }
 }
 
-/// Camera follow system
+/// Camera follow system (2D: x = east, y = north). Follows the player sprite
+/// entity directly (covers teleports/restores), falling back to the
+/// `PlayerTransform` resource before the sprite exists.
 fn follow_camera(
     player_transform: Res<PlayerTransform>,
     zoom: Res<CameraZoom>,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
+    body: Query<&Transform, (With<PhysicsBody>, Without<Camera2d>)>,
+    mut camera: Query<(&mut Transform, &mut Projection), With<Camera2d>>,
 ) {
-    let Ok(mut camera_transform) = camera.single_mut() else {
+    let Ok((mut camera_transform, mut projection)) = camera.single_mut() else {
         return;
     };
-
-    let offset = Vec3::new(0.0, zoom.height, zoom.distance);
-    camera_transform.translation = player_transform.translation + offset;
-    camera_transform.look_at(player_transform.translation, Vec3::Y);
+    let target = body
+        .single()
+        .ok()
+        .map(|t| t.translation)
+        .unwrap_or(player_transform.translation);
+    camera_transform.translation.x = target.x;
+    camera_transform.translation.y = target.y;
+    if let Projection::Orthographic(ortho) = projection.as_mut() {
+        // Bevy 0.19 `scale` is world-units-per-pixel (higher = zoomed OUT),
+        // while `CameraZoom` tracks pixels per world unit (higher = zoomed IN).
+        ortho.scale = 1.0 / zoom.scale.max(1e-4);
+    }
 }
 
 /// Is the cursor currently over the minimap (top-right corner)?
@@ -72,26 +89,29 @@ fn handle_zoom(
     minimap_state: Res<MinimapState>,
     mut zoom: ResMut<CameraZoom>,
 ) {
-    let delta = 10.0;
+    // Zoom step per wheel notch / +/- key press (1.3 = +30% per step).
+    let factor: f32 = 1.3;
 
     for event in scroll.read() {
         if event.y == 0.0 || cursor_over_minimap(&windows, &minimap_state) {
             continue;
         }
-        // Wheel up zooms in (closer), down zooms out.
-        zoom.distance = (zoom.distance - event.y * delta).clamp(30.0, 300.0);
-        zoom.height = (zoom.height - event.y * delta).clamp(30.0, 300.0);
+        // Trackpads (Pixel deltas, macOS natural scrolling) report the
+        // "zoom in" gesture as negative y; mice (Line deltas) report wheel
+        // up as positive. Normalize both so up/forward zooms in.
+        let dir = match event.unit {
+            MouseScrollUnit::Line => event.y,
+            MouseScrollUnit::Pixel => -event.y,
+        };
+        zoom.scale = (zoom.scale * factor.powf(dir)).clamp(MIN_ZOOM, MAX_ZOOM);
     }
 
-    // Zoom in with + key
     if keys.just_pressed(KeyCode::Equal) || keys.just_pressed(KeyCode::NumpadAdd) {
-        zoom.distance = (zoom.distance - delta).clamp(30.0, 300.0);
-        zoom.height = (zoom.height - delta).clamp(30.0, 300.0);
+        zoom.scale = (zoom.scale * factor).clamp(MIN_ZOOM, MAX_ZOOM);
+        info!("Camera zoom: {:.1} px/unit", zoom.scale);
     }
-
-    // Zoom out with - key
     if keys.just_pressed(KeyCode::Minus) || keys.just_pressed(KeyCode::NumpadSubtract) {
-        zoom.distance = (zoom.distance + delta).clamp(30.0, 300.0);
-        zoom.height = (zoom.height + delta).clamp(30.0, 300.0);
+        zoom.scale = (zoom.scale / factor).clamp(MIN_ZOOM, MAX_ZOOM);
+        info!("Camera zoom: {:.1} px/unit", zoom.scale);
     }
 }

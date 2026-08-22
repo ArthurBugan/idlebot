@@ -52,13 +52,15 @@ pub enum MinimapZoom {
 }
 
 impl MinimapZoom {
+    /// Pixels per world unit. Tuned for hex radius 10 (server scale): the
+    /// World level fits the whole ~3800-unit map into the 200px minimap.
     pub fn pixel_scale(&self) -> f32 {
         match self {
-            MinimapZoom::Local => 0.005,
-            MinimapZoom::Area => 0.0025,
-            MinimapZoom::World => 0.00125,
-            MinimapZoom::Close => 0.01,
-            MinimapZoom::Max => 0.02,
+            MinimapZoom::Local => 0.15,
+            MinimapZoom::Area => 0.075,
+            MinimapZoom::World => 0.0375,
+            MinimapZoom::Close => 0.3,
+            MinimapZoom::Max => 0.6,
         }
     }
 
@@ -137,9 +139,10 @@ impl MinimapState {
         self.zoom.pixel_scale()
     }
 
-    /// Render radius (vision + soft border) in minimap pixels.
+    /// Render radius (vision + soft border) in world units, scaled to
+    /// minimap pixels. Vision is ~1.5 hexes (hex radius 10).
     pub fn render_radius_px(&self) -> f32 {
-        (1500.0 + 300.0) * self.pixel_scale()
+        (15.0 + 3.0) * self.pixel_scale()
     }
 }
 
@@ -183,7 +186,7 @@ pub struct HexEntityMap {
 }
 
 /// Data needed to render an explored minimap tile even after its chunk is unloaded.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct ExploredCell {
     pub center_x: f32,
     pub center_y: f32,
@@ -196,13 +199,92 @@ pub struct ExploredHexes {
     pub explored: HashMap<u64, ExploredCell>,
 }
 
+// ============================================================================
+// Discovery persistence (logout → next launch restores the fog-of-war map)
+// ============================================================================
+
+/// Disk path for one wallet's discovered-hex cache.
+fn explored_path(address: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
+        .join(format!(".idlebot_discovered_{address}.json"))
+}
+
+/// Persist discovered hexes for `address` (best effort, like the token cache).
+pub fn save_explored(address: &str, explored: &ExploredHexes) {
+    if let Ok(json) = serde_json::to_string(&explored.explored) {
+        let _ = std::fs::write(explored_path(address), json);
+    }
+}
+
+/// Load previously discovered hexes for `address`, if any.
+fn load_explored(address: &str) -> Option<HashMap<u64, ExploredCell>> {
+    let text = std::fs::read_to_string(explored_path(address)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Restore the persisted discovery set once the wallet binds (once per
+/// session). Merge-only: fresh discoveries this session always win.
+pub fn restore_explored_on_login(
+    net: Res<crate::net::plugin::Net>,
+    mut explored_hexes: ResMut<ExploredHexes>,
+    mut loaded_for: Local<Option<String>>,
+) {
+    let Some(address) = net.address.clone() else { return };
+    if *loaded_for == Some(address.clone()) {
+        return;
+    }
+    *loaded_for = Some(address.clone());
+    let Some(saved) = load_explored(&address) else { return };
+    let before = explored_hexes.explored.len();
+    for (hex_id, cell) in saved {
+        explored_hexes.explored.entry(hex_id).or_insert(cell);
+    }
+    let restored = explored_hexes.explored.len() - before;
+    if restored > 0 {
+        info!("restored {restored} discovered tiles for {address}");
+    }
+}
+
+/// Autosave discoveries every 10 s while exploring, so logout or a crash
+/// keeps the fog-of-war map for the next session.
+pub fn autosave_explored(
+    net: Res<crate::net::plugin::Net>,
+    explored_hexes: Res<ExploredHexes>,
+    time: Res<Time>,
+    mut next_save: Local<f64>,
+    mut last_count: Local<usize>,
+) {
+    let now = time.elapsed_secs_f64();
+    if now < *next_save || explored_hexes.explored.len() == *last_count {
+        return;
+    }
+    *next_save = now + 10.0;
+    let Some(address) = net.address.as_ref() else { return };
+    save_explored(address, &explored_hexes);
+    *last_count = explored_hexes.explored.len();
+}
+
+/// Final flush of discovered tiles when the game quits (logout), closing the
+/// gap the periodic autosave would otherwise leave behind.
+pub fn save_explored_on_exit(
+    net: Res<crate::net::plugin::Net>,
+    explored_hexes: Res<ExploredHexes>,
+    mut exit_reader: MessageReader<bevy::app::AppExit>,
+) {
+    for _ in exit_reader.read() {
+        if let Some(address) = net.address.as_ref() {
+            save_explored(address, &explored_hexes);
+        }
+    }
+}
+
 /// Track waypoint entities for proper despawn lifecycle.
 #[derive(Resource, Default)]
 pub struct WaypointEntityMap {
     pub entities: HashMap<u64, Entity>,
 }
 
-/// Track which chunk was last loaded (avoid redundant chunk operations).
+/// Track the last streamed player hex (avoid redundant chunk operations).
 #[derive(Resource, Default)]
 pub struct ChunkLoadState {
     pub last_chunk: Option<(i32, i32)>,
@@ -591,7 +673,7 @@ pub fn sync_player_state(
     let new_pos = player_query
         .iter()
         .next()
-        .map(|transform| Vec2::new(transform.translation.x, transform.translation.z));
+        .map(|transform| Vec2::new(transform.translation.x, transform.translation.y));
     if new_pos != minimap_state.player_pos {
         minimap_state.player_pos = new_pos;
     }
@@ -614,20 +696,22 @@ pub fn load_nearby_chunks(
 
     let (q, r) = world_pos_to_hex(player_pos.x, player_pos.y, HEX_SIZE);
     let chunk_size = WorldGenConfig::CHUNK_SIZE;
-    let current_chunk = (q / chunk_size, r / chunk_size);
 
-    if Some(current_chunk) == chunk_state.last_chunk {
+    // Perf: re-stream once the player has moved half a chunk (16 hexes) from
+    // the last center — frequent enough that the cache keeps up with the
+    // render radius, rare enough to be cheap (generation is idempotent).
+    let re_stream = match chunk_state.last_chunk {
+        None => true,
+        Some((cq, cr)) => (q - cq).abs() >= chunk_size / 2 || (r - cr).abs() >= chunk_size / 2,
+    };
+    if !re_stream {
         return;
     }
-
-    let render_radius_world = minimap_state.render_radius_px() / minimap_state.pixel_scale();
-    let view_radius = ((render_radius_world / HEX_SIZE as f32) as i32 / chunk_size) + 5;
-    let _ = view_radius.max(15);
 
     let config = streaming_world.config;
     streaming_world.chunks.stream_around(&config, q, r);
 
-    chunk_state.last_chunk = Some(current_chunk);
+    chunk_state.last_chunk = Some((q, r));
 }
 
 // ============================================================================

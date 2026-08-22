@@ -518,21 +518,26 @@ impl RotationMode {
     /// For `NorthUp`, the map does not rotate (angle = 0).
     /// For `PlayerUp`, the map rotates so the player's facing direction points up.
     /// `facing_angle` is the player's world-facing angle in radians (0 = +x axis).
+    ///
+    /// Screen y is mirrored (north = +y world renders as up): the standard
+    /// rotation in world space followed by the y-flip brings facing `θ` to the
+    /// screen top when `φ = π/2 − θ`.
     pub fn map_rotation(self, facing_angle: f32) -> f32 {
         match self {
             Self::NorthUp => 0.0,
-            // Map rotates opposite to marker: -(facing + π/2) so the player's
-            // facing direction maps to "up" (north) on screen.
-            Self::PlayerUp => -(facing_angle + std::f32::consts::FRAC_PI_2),
+            Self::PlayerUp => std::f32::consts::FRAC_PI_2 - facing_angle,
         }
     }
 
     /// Returns the rotation angle for the player marker.
     /// For `NorthUp`, the marker rotates to show facing.
     /// For `PlayerUp`, the marker always points up (angle = 0).
+    ///
+    /// World angle `θ` (CCW from +x) renders as screen angle `−θ`; the marker
+    /// sprite's forward is the screen-up axis, so its rotation is `π/2 − θ`.
     pub fn marker_rotation(self, facing_angle: f32) -> f32 {
         match self {
-            Self::NorthUp => facing_angle + std::f32::consts::FRAC_PI_2,
+            Self::NorthUp => std::f32::consts::FRAC_PI_2 - facing_angle,
             Self::PlayerUp => 0.0,
         }
     }
@@ -574,11 +579,14 @@ impl MinimapWaypoint {
 
 /// Convert a world position to a minimap screen pixel position (player-centered).
 ///
-/// - `world_pos`: the world (x, y) position of the tile
+/// - `world_pos`: the world (x, y) position of the tile (y = north)
 /// - `player_pos`: the world (x, y) position of the player
 /// - `pixel_scale`: pixels per world unit (includes zoom)
 /// - `mm_center`: the center of the minimap in pixels (usually size/2)
 /// - `rotation`: rotation angle in radians to apply to the map (for PlayerUp mode)
+///
+/// Screen y grows downward, so north (+y) renders above the player (smaller
+/// screen y) — the y axis is mirrored relative to world coordinates.
 pub fn world_to_map_pixel(
     world_pos: (f32, f32),
     player_pos: (f32, f32),
@@ -594,10 +602,10 @@ pub fn world_to_map_pixel(
         let sin = rotation.sin();
         (
             mm_center + dx * cos - dy * sin,
-            mm_center + dx * sin + dy * cos,
+            mm_center - (dx * sin + dy * cos),
         )
     } else {
-        (mm_center + dx, mm_center + dy)
+        (mm_center + dx, mm_center - dy)
     }
 }
 
@@ -610,8 +618,9 @@ pub fn map_pixel_to_world(
     mm_center: f32,
     rotation: f32,
 ) -> (f32, f32) {
+    // Screen y is mirrored: recover the rotated world offsets directly.
     let px = pixel.0 - mm_center;
-    let py = pixel.1 - mm_center;
+    let py = mm_center - pixel.1;
 
     if rotation.abs() > 1e-6 {
         let cos = rotation.cos();
@@ -719,10 +728,10 @@ mod fov_tests {
     #[test]
     fn test_rotation_mode_map_rotation_player_up() {
         let mode = RotationMode::PlayerUp;
-        // Player faces east (0) → map should rotate to bring east to top
-        // map_rotation = -(0 + π/2) = -π/2
+        // Player faces east (0) → map should rotate to bring east to top:
+        // map_rotation = π/2 - 0 = π/2 (with the mirrored screen y).
         let facing = 0.0;
-        let expected = -(std::f32::consts::FRAC_PI_2);
+        let expected = std::f32::consts::FRAC_PI_2;
         let result = mode.map_rotation(facing);
         assert!((result - expected).abs() < 1e-6);
     }
@@ -730,8 +739,8 @@ mod fov_tests {
     #[test]
     fn test_rotation_mode_marker_north_up() {
         let mode = RotationMode::NorthUp;
-        // Player faces east (0) → marker rotates to point right
-        // marker_rotation = 0 + π/2 = π/2
+        // Player faces east (0) → marker rotates to point right:
+        // marker_rotation = π/2 - 0 = π/2.
         let facing = 0.0;
         let result = mode.marker_rotation(facing);
         assert!((result - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
@@ -744,6 +753,29 @@ mod fov_tests {
         let facing = 1.5;
         let result = mode.marker_rotation(facing);
         assert!(result.abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_world_to_pixel_north_is_up() {
+        // North (+y) must render above the player (smaller screen y).
+        let (sx, sy) = world_to_map_pixel((0.0, 100.0), (0.0, 0.0), 0.5, 100.0, 0.0);
+        assert!((sx - 100.0).abs() < 1e-4);
+        assert!(sy < 100.0, "north must render above the player");
+    }
+
+    #[test]
+    fn test_world_pixel_round_trip_with_and_without_rotation() {
+        let player = (12.0, -34.0);
+        for rotation in [0.0f32, 1.1f32, -2.4f32] {
+            for (wx, wy) in [(0.0, 0.0), (55.0, 77.0), (-120.0, 33.0), (200.0, -400.0)] {
+                let (sx, sy) = world_to_map_pixel((wx, wy), player, 0.75, 120.0, rotation);
+                let (rx, ry) = map_pixel_to_world((sx, sy), player, 0.75, 120.0, rotation);
+                assert!(
+                    (rx - wx).abs() < 1e-3 && (ry - wy).abs() < 1e-3,
+                    "round trip failed at rotation {rotation}: ({wx},{wy}) -> ({rx},{ry})"
+                );
+            }
+        }
     }
 
     #[test]

@@ -1,12 +1,15 @@
-//! IdleBot — Bevy 0.19 hex grid single-player client.
+//! IdleBot — Bevy 0.19 2D hex-grid client.
+//!
+//! 2D world: x = east, y = north. Tiles are isometric sprites
+//! (`assets/models/Isometric Tiles Base/PNG/`), the player is a skin sprite
+//! (`assets/skins/*.png`), and the server protocol is unchanged.
 
 #![allow(clippy::type_complexity)]
 
 use bevy::prelude::*;
-use bevy_rapier3d::prelude::*;
-use crate::player::{Player, PlayerTransform};
+use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
+use crate::player::{Player, PlayerTransform, PLAYER_SIZE};
 use plugins::camera::CameraZoom;
-use plugins::world::StreamingWorldResource;
 
 mod player;
 mod idle;
@@ -27,21 +30,7 @@ fn main() {
 
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_plugins(RapierPhysicsPlugin::<()>::default())
-        .add_plugins(RapierDebugRenderPlugin {
-            enabled: false,
-            ..default()
-        })
-        .add_systems(Startup, boost_gravity)
         .insert_resource(CameraZoom::default())
-        .insert_resource(TimestepMode::Interpolated {
-            // Physics steps at a fixed 60 Hz, and `TransformInterpolation` on
-            // the player body renders smooth poses between steps — the render
-            // frame rate can dip or jitter without the motion doing the same.
-            dt: 1.0 / 60.0,
-            time_scale: 1.0,
-            substeps: 1,
-        })
         .insert_resource(plugins::world::StreamingWorldResource::default())
         .insert_resource(minimap::MinimapState::default())
         .insert_resource(minimap::MinimapWaypoints::default())
@@ -51,6 +40,8 @@ fn main() {
         .insert_resource(minimap::WaypointEntityMap::default())
         .insert_resource(minimap::ChunkLoadState::default())
         .insert_resource(world_floor::WorldFloor::default())
+        .insert_resource(world_floor::WaterTextures::default())
+        .insert_resource(world_floor::SolidFloorTextures::default())
         .add_plugins(plugins::player::PlayerPlugin)
         .add_plugins(plugins::camera::CameraPlugin)
         .add_plugins(plugins::world::WorldPlugin)
@@ -62,22 +53,16 @@ fn main() {
         .insert_resource(PlayerTransform::default())
         .insert_resource(idle::IdleGainsState::default())
         .insert_resource(world_floor::FloorPlantState::default())
-        .insert_resource(world_floor::FloorPlantAssets::default())
         .add_systems(Startup, (
             setup,
             assets::load_all_assets,
-            // Must run after `setup` spawns the physics body (deferred
-            // commands flush only between Startup systems).
-            assets::spawn_vehicle_models.after(setup),
             minimap::spawn_minimap_ui,
             idle::spawn_idle_panel,
         ))
         .add_systems(Update, (
-            toggle_physics_debug,
             minimap::handle_input,
             minimap::sync_player_state
-                .after(minimap::handle_input)
-                .after(PhysicsSet::Writeback),
+                .after(minimap::handle_input),
             minimap::load_nearby_chunks
                 .after(minimap::sync_player_state),
             minimap::render_visible_tiles
@@ -96,19 +81,24 @@ fn main() {
                 .after(minimap::handle_input),
             minimap::update_player_marker
                 .after(minimap::sync_player_state),
+            minimap::restore_explored_on_login,
+            minimap::autosave_explored,
+            minimap::save_explored_on_exit,
             idle::update_idle_gains_panel,
             world_floor::update_plant_visuals,
+            world_floor::init_water_textures,
+            world_floor::init_solid_floor_textures,
             world_floor::update_world_floor
                 .after(minimap::sync_player_state)
-                .after(minimap::load_nearby_chunks),
+                .after(minimap::load_nearby_chunks)
+                .after(world_floor::init_water_textures)
+                .after(world_floor::init_solid_floor_textures),
+            take_debug_screenshot,
         ))
         .add_systems(Update, (
-            assets::track_asset_loading,
             assets::spawn_cosmetic_layers,
-            assets::sync_vehicle_model,
             assets::sync_cosmetic_layers,
             assets::toggle_cosmetic_layers,
-            assets::apply_vehicle_material,
             assets::update_trail_vfx,
             assets::expire_trail_particles,
         ))
@@ -120,61 +110,66 @@ fn main() {
         .run();
 }
 
-/// Setup lights, camera, and player
-fn setup(
+/// Temporary diagnostic: screenshot the main window a few seconds after boot.
+fn take_debug_screenshot(
+    time: Res<Time>,
+    player: Res<PlayerTransform>,
+    zoom: Res<CameraZoom>,
+    floor: Res<world_floor::WorldFloor>,
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    streaming_world: Res<StreamingWorldResource>,
+    mut shot: Local<f32>,
 ) {
-    // Directional sun
+    if *shot == 0.0 {
+        *shot = time.elapsed_secs() + 25.0;
+        return;
+    }
+    if time.elapsed_secs() >= *shot && *shot > 0.0 {
+        info!(
+            "debug: player at ({:.1}, {:.1}) zoom {:.1}px/u floor_chunks {}",
+            player.translation.x,
+            player.translation.y,
+            zoom.scale,
+            floor.entities.len()
+        );
+        commands.spawn((
+            Screenshot::primary_window(),
+            Transform::default(),
+            GlobalTransform::default(),
+        ))
+        .observe(save_to_disk("/tmp/idlebot_floor_shot.png"));
+        *shot = -1.0;
+    }
+}
+
+/// Setup the 2D camera and the player sprite.
+fn setup(mut commands: Commands) {
+    // 2D camera: follows the player (plugins/camera.rs), zoomed to the
+    // tile-art pixels-per-unit scale.
     commands.spawn((
-        Name::new("sun"),
-        DirectionalLight {
-            color: Color::srgba(1.0, 0.95, 0.8, 1.0),
-            illuminance: 10_000.0,
+        Name::new("camera2d"),
+        Camera2d,
+        Transform::from_xyz(0.0, 0.0, 1000.0),
+        Projection::Orthographic(OrthographicProjection {
+            // Bevy 0.19: scale = world units per pixel (1/px-per-unit).
+            scale: 1.0 / CameraZoom::default().scale,
+            ..OrthographicProjection::default_2d()
+        }),
+    ));
+
+    // Player sprite: one entity carries the sprite, the ClientPlayer state
+    // and the PhysicsBody marker (movement + net sync query it).
+    commands.spawn((
+        Name::new("Player"),
+        Player,
+        plugins::player::PhysicsBody,
+        Sprite {
+            custom_size: Some(Vec2::splat(PLAYER_SIZE)),
             ..default()
         },
-        Transform::from_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_4)),
-    ));
-    
-    // Camera
-    commands.spawn((
-        Camera3d::default(),
-        bevy::core_pipeline::tonemapping::Tonemapping::None,
-        Transform::from_xyz(0.0, 60.0, 60.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    
-    // Spawn player using the glTF character model.
-    let player_scene: Handle<bevy::world_serialization::WorldAsset> =
-        asset_server.load("models/characterLargeMale.glb#Scene0");
-
-    // Drop the player in from above the starting hex; gravity settles it on the
-    // terrain colliders.
-    let start_height =
-        3.0 + streaming_world.config.generate_hex(0, 0).elevation * 25.0;
-
-    // Physics body: a top-level, unscaled entity in world units. Keep it off
-    // the 13× scaled visual root — rapiper scales colliders by the entity
-    // transform, which would otherwise balloon the capsule ~13× and float the
-    // character high above the ground.
-    commands.spawn((
-        Name::new("PlayerPhysics"),
-        plugins::player::PhysicsBody,
-        RigidBody::Dynamic,
-        Velocity::zero(),
-        Ccd::enabled(),
-        Collider::capsule(Vec3::Y * 1.6365, Vec3::Y * 6.0, 1.5),
-        Friction::coefficient(0.8),
-        TransformInterpolation::default(),
-        Damping {
-            linear_damping: 0.0,
-            angular_damping: 6.0,
-        },
-        LockedAxes::ROTATION_LOCKED_X | LockedAxes::ROTATION_LOCKED_Z,
-        Transform::from_xyz(0.0, start_height, 0.0),
+        Transform::from_xyz(0.0, 0.0, 50.0),
         GlobalTransform::default(),
         player::ClientPlayer {
-            position: Vec3::new(0.0, start_height, 0.0),
+            position: Vec3::ZERO,
             velocity: Vec2::ZERO,
             current_hex: None,
             gold: 0,
@@ -183,46 +178,8 @@ fn setup(
             level: 1,
             eco_points: 0,
             owned_vehicle: None,
-            avatar: "Tetrahedron".to_string(),
+            avatar: "alienA".to_string(),
             position_restored: false,
         },
     ));
-
-    // Visual root: the 13× scaled character model; pose is copied from the
-    // physics body by `sync_visual_to_physics`.
-    commands.spawn((
-        Name::new("Player"),
-        Player,
-        Transform {
-            translation: Vec3::ZERO,
-            scale: Vec3::splat(13.0),
-            ..default()
-        },
-        GlobalTransform::default(),
-        bevy::world_serialization::WorldAssetRoot(player_scene),
-    ));
 }
-
-/// F12 toggles the Rapier debug renderer (collider wireframes).
-fn toggle_physics_debug(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut context: ResMut<DebugRenderContext>,
-) {
-    if keys.just_pressed(KeyCode::F12) {
-        context.enabled = !context.enabled;
-        info!(
-            "Physics debug render: {}",
-            if context.enabled { "ON" } else { "OFF" }
-        );
-    }
-}
-/// The world is big (hexes × 25-unit elevations), so the default rapier
-/// gravity feels floaty; give it a snappier fall.
-fn boost_gravity(
-    mut configuration: Query<&mut RapierConfiguration, With<DefaultRapierContext>>,
-) {
-    if let Ok(mut config) = configuration.single_mut() {
-        config.gravity = Vec3::NEG_Y * 45.0;
-    }
-}
-

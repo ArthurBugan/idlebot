@@ -450,12 +450,11 @@ pub fn hex_id_of(q: i32, r: i32) -> u64 {
     ((q as u64) << 32) | (r as u32 as u64)
 }
 
-/// Decode q/r from a hex id.
+/// Decode q/r from a hex id (inverse of [`hex_id_of`], delegated to the
+/// shared core encoding so client and server can never diverge).
 pub fn hex_coords_of(hex_id: u64) -> (i32, i32) {
-    const OFFSET: i64 = i32::MAX as i64;
-    let q = ((hex_id >> 32) as i64) - OFFSET;
-    let r = ((hex_id & 0xFFFFFFFF) as i64) - OFFSET;
-    (q as i32, r as i32)
+    let c = idlecore_core::hex::HexCoord::from_id(hex_id);
+    (c.q, c.r)
 }
 
 /// Hex axial distance (cube coords).

@@ -243,7 +243,7 @@ fn update_hud_text(
         }
         // Spec 020 T2.4: eco rating of the hex under the player.
         if let Some(conn) = &net.conn {
-            let hex_id = crate::net::plugin::Net::hex_id_at(p.position.x, p.position.z);
+            let hex_id = crate::net::plugin::Net::hex_id_at(p.position.x, p.position.y);
             if let Some(h) = conn.db.hex_tile().hex_id().find(&hex_id) {
                 // Spec 020 T5.4: "Eco-Friendly" marker for 100+ hexes.
                 let flag = if h.eco_rating >= 100 { " (Eco-Friendly)" } else { "" };
@@ -376,17 +376,17 @@ fn hud_buttons(
                 match action {
                     HudAction::Plant => {
                         let Some(pos) = player.as_ref().and_then(|q| q.single().ok()).map(|p| p.position) else { continue };
-                        let hex = Net::hex_id_at(pos.x, pos.z);
+                        let hex = Net::hex_id_at(pos.x, pos.y);
                         send_reducer(&mut net, |r| r.plant_then(hex, "Wheat".to_string(), reducer_report("plant", tx.clone(), hex)));
                     }
                     HudAction::Harvest => {
                         let Some(pos) = player.as_ref().and_then(|q| q.single().ok()).map(|p| p.position) else { continue };
-                        let hex = Net::hex_id_at(pos.x, pos.z);
+                        let hex = Net::hex_id_at(pos.x, pos.y);
                         send_reducer(&mut net, |r| r.harvest_then(hex, reducer_report("harvest", tx.clone(), hex)));
                     }
                     HudAction::Clean => {
                         let Some(pos) = player.as_ref().and_then(|q| q.single().ok()).map(|p| p.position) else { continue };
-                        let hex = Net::hex_id_at(pos.x, pos.z);
+                        let hex = Net::hex_id_at(pos.x, pos.y);
                         send_reducer(&mut net, |r| r.clean_then(hex, reducer_report("clean", tx.clone(), hex)));
                     }
                     HudAction::ClaimIdle => {
@@ -421,7 +421,7 @@ fn hud_buttons(
                         // painted on the model, then persist the choice as
                         // the avatar column so it survives reconnects.
                         crate::skins::cycle_skin_dir(&mut skins, 1);
-                        let skin_name = crate::skins::SKIN_FILES
+                        let skin_name = crate::skins::TOON_CHARACTERS
                             .get(skins.current)
                             .map(|s| s.to_string())
                             .unwrap_or_default();

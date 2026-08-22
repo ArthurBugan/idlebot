@@ -110,9 +110,9 @@ impl Default for WorldGenConfig {
 }
 
 impl WorldGenConfig {
-    /// Hex radius in world units (meters). Default: 2000 m radius (20x the
-    /// original 100 m) so individual hexes are clearly visible on the world.
-    pub const HEX_SIZE: f32 = 2000.0;
+    /// Hex radius in world units. Aligned with the server hex radius (10 u),
+    /// so client and server share a single world scale.
+    pub const HEX_SIZE: f32 = 10.0;
 
     /// The chunk size in hexes.
     pub const CHUNK_SIZE: i32 = 32;
