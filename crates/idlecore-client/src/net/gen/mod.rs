@@ -17,6 +17,7 @@ pub mod eco_transaction_table;
 pub mod eco_transaction_type;
 pub mod equip_cosmetic_reducer;
 pub mod equip_vehicle_reducer;
+pub mod gather_object_reducer;
 pub mod harvest_reducer;
 pub mod heartbeat_reducer;
 pub mod hex_tile_table;
@@ -29,7 +30,10 @@ pub mod market_listing_table;
 pub mod market_listing_type;
 pub mod move_player_reducer;
 pub mod plant_reducer;
+pub mod plant_tree_reducer;
 pub mod player_cosmetic_table;
+pub mod player_item_table;
+pub mod player_item_type;
 pub mod player_table;
 pub mod player_type;
 pub mod player_vehicle_table;
@@ -57,6 +61,8 @@ pub mod voice_channel_table;
 pub mod voice_channel_type;
 pub mod voice_join_reducer;
 pub mod voice_leave_reducer;
+pub mod world_object_table;
+pub mod world_object_type;
 
 pub use buy_cosmetic_reducer::buy_cosmetic;
 pub use buy_listing_reducer::buy_listing;
@@ -69,6 +75,7 @@ pub use eco_transaction_table::*;
 pub use eco_transaction_type::EcoTransaction;
 pub use equip_cosmetic_reducer::equip_cosmetic;
 pub use equip_vehicle_reducer::equip_vehicle;
+pub use gather_object_reducer::gather_object;
 pub use harvest_reducer::harvest;
 pub use heartbeat_reducer::heartbeat;
 pub use hex_tile_table::*;
@@ -81,7 +88,10 @@ pub use market_listing_table::*;
 pub use market_listing_type::MarketListing;
 pub use move_player_reducer::move_player;
 pub use plant_reducer::plant;
+pub use plant_tree_reducer::plant_tree;
 pub use player_cosmetic_table::*;
+pub use player_item_table::*;
+pub use player_item_type::PlayerItem;
 pub use player_table::*;
 pub use player_type::Player;
 pub use player_vehicle_table::*;
@@ -109,6 +119,8 @@ pub use voice_channel_table::*;
 pub use voice_channel_type::VoiceChannel;
 pub use voice_join_reducer::voice_join;
 pub use voice_leave_reducer::voice_leave;
+pub use world_object_table::*;
+pub use world_object_type::WorldObject;
 
 #[derive(Clone, PartialEq, Debug)]
 
@@ -141,6 +153,9 @@ pub enum Reducer {
     EquipVehicle {
         vehicle_type: String,
     },
+    GatherObject {
+        object_id: u64,
+    },
     Harvest {
         hex_id: u64,
     },
@@ -156,10 +171,15 @@ pub enum Reducer {
         dir_y: f32,
         intended_speed: f32,
         dt: f32,
+        to_x: f32,
+        to_y: f32,
     },
     Plant {
         hex_id: u64,
         plant_type: String,
+    },
+    PlantTree {
+        hex_id: u64,
     },
     PublishListing {
         title: String,
@@ -206,12 +226,14 @@ impl __sdk::Reducer for Reducer {
             Reducer::DisputeListing { .. } => "dispute_listing",
             Reducer::EquipCosmetic { .. } => "equip_cosmetic",
             Reducer::EquipVehicle { .. } => "equip_vehicle",
+            Reducer::GatherObject { .. } => "gather_object",
             Reducer::Harvest { .. } => "harvest",
             Reducer::Heartbeat => "heartbeat",
             Reducer::Login { .. } => "login",
             Reducer::Logout { .. } => "logout",
             Reducer::MovePlayer { .. } => "move_player",
             Reducer::Plant { .. } => "plant",
+            Reducer::PlantTree { .. } => "plant_tree",
             Reducer::PublishListing { .. } => "publish_listing",
             Reducer::ReleaseEscrow { .. } => "release_escrow",
             Reducer::RenewListing { .. } => "renew_listing",
@@ -262,6 +284,11 @@ impl __sdk::Reducer for Reducer {
                     vehicle_type: vehicle_type.clone(),
                 })
             }
+            Reducer::GatherObject { object_id } => {
+                __sats::bsatn::to_vec(&gather_object_reducer::GatherObjectArgs {
+                    object_id: object_id.clone(),
+                })
+            }
             Reducer::Harvest { hex_id } => __sats::bsatn::to_vec(&harvest_reducer::HarvestArgs {
                 hex_id: hex_id.clone(),
             }),
@@ -279,16 +306,25 @@ impl __sdk::Reducer for Reducer {
                 dir_y,
                 intended_speed,
                 dt,
+                to_x,
+                to_y,
             } => __sats::bsatn::to_vec(&move_player_reducer::MovePlayerArgs {
                 dir_x: dir_x.clone(),
                 dir_y: dir_y.clone(),
                 intended_speed: intended_speed.clone(),
                 dt: dt.clone(),
+                to_x: to_x.clone(),
+                to_y: to_y.clone(),
             }),
             Reducer::Plant { hex_id, plant_type } => {
                 __sats::bsatn::to_vec(&plant_reducer::PlantArgs {
                     hex_id: hex_id.clone(),
                     plant_type: plant_type.clone(),
+                })
+            }
+            Reducer::PlantTree { hex_id } => {
+                __sats::bsatn::to_vec(&plant_tree_reducer::PlantTreeArgs {
+                    hex_id: hex_id.clone(),
                 })
             }
             Reducer::PublishListing {
@@ -354,6 +390,7 @@ pub struct DbUpdate {
     market_listing: __sdk::TableUpdate<MarketListing>,
     player: __sdk::TableUpdate<Player>,
     player_cosmetic: __sdk::TableUpdate<CosmeticOwned>,
+    player_item: __sdk::TableUpdate<PlayerItem>,
     player_vehicle: __sdk::TableUpdate<VehicleOwned>,
     scheduled_eco_maintenance: __sdk::TableUpdate<ScheduledEcoMaintenance>,
     scheduled_idle_gains: __sdk::TableUpdate<ScheduledIdleGains>,
@@ -363,6 +400,7 @@ pub struct DbUpdate {
     scheduled_voice_cleanup: __sdk::TableUpdate<ScheduledVoiceCleanup>,
     transaction: __sdk::TableUpdate<Transaction>,
     voice_channel: __sdk::TableUpdate<VoiceChannel>,
+    world_object: __sdk::TableUpdate<WorldObject>,
 }
 
 impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
@@ -389,6 +427,9 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
                 "player_cosmetic" => db_update
                     .player_cosmetic
                     .append(player_cosmetic_table::parse_table_update(table_update)?),
+                "player_item" => db_update
+                    .player_item
+                    .append(player_item_table::parse_table_update(table_update)?),
                 "player_vehicle" => db_update
                     .player_vehicle
                     .append(player_vehicle_table::parse_table_update(table_update)?),
@@ -416,6 +457,9 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
                 "voice_channel" => db_update
                     .voice_channel
                     .append(voice_channel_table::parse_table_update(table_update)?),
+                "world_object" => db_update
+                    .world_object
+                    .append(world_object_table::parse_table_update(table_update)?),
 
                 unknown => {
                     return Err(__sdk::InternalError::unknown_name(
@@ -460,6 +504,9 @@ impl __sdk::DbUpdate for DbUpdate {
         diff.player_cosmetic = cache
             .apply_diff_to_table::<CosmeticOwned>("player_cosmetic", &self.player_cosmetic)
             .with_updates_by_pk(|row| &row.cosmetic_id);
+        diff.player_item = cache
+            .apply_diff_to_table::<PlayerItem>("player_item", &self.player_item)
+            .with_updates_by_pk(|row| &row.key);
         diff.player_vehicle = cache
             .apply_diff_to_table::<VehicleOwned>("player_vehicle", &self.player_vehicle)
             .with_updates_by_pk(|row| &row.vehicle_id);
@@ -502,6 +549,9 @@ impl __sdk::DbUpdate for DbUpdate {
         diff.voice_channel = cache
             .apply_diff_to_table::<VoiceChannel>("voice_channel", &self.voice_channel)
             .with_updates_by_pk(|row| &row.hex_id);
+        diff.world_object = cache
+            .apply_diff_to_table::<WorldObject>("world_object", &self.world_object)
+            .with_updates_by_pk(|row| &row.object_id);
 
         diff
     }
@@ -526,6 +576,9 @@ impl __sdk::DbUpdate for DbUpdate {
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "player_cosmetic" => db_update
                     .player_cosmetic
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "player_item" => db_update
+                    .player_item
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "player_vehicle" => db_update
                     .player_vehicle
@@ -553,6 +606,9 @@ impl __sdk::DbUpdate for DbUpdate {
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "voice_channel" => db_update
                     .voice_channel
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "world_object" => db_update
+                    .world_object
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 unknown => {
                     return Err(
@@ -585,6 +641,9 @@ impl __sdk::DbUpdate for DbUpdate {
                 "player_cosmetic" => db_update
                     .player_cosmetic
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "player_item" => db_update
+                    .player_item
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "player_vehicle" => db_update
                     .player_vehicle
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
@@ -612,6 +671,9 @@ impl __sdk::DbUpdate for DbUpdate {
                 "voice_channel" => db_update
                     .voice_channel
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "world_object" => db_update
+                    .world_object
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 unknown => {
                     return Err(
                         __sdk::InternalError::unknown_name("table", unknown, "QueryRows").into(),
@@ -633,6 +695,7 @@ pub struct AppliedDiff<'r> {
     market_listing: __sdk::TableAppliedDiff<'r, MarketListing>,
     player: __sdk::TableAppliedDiff<'r, Player>,
     player_cosmetic: __sdk::TableAppliedDiff<'r, CosmeticOwned>,
+    player_item: __sdk::TableAppliedDiff<'r, PlayerItem>,
     player_vehicle: __sdk::TableAppliedDiff<'r, VehicleOwned>,
     scheduled_eco_maintenance: __sdk::TableAppliedDiff<'r, ScheduledEcoMaintenance>,
     scheduled_idle_gains: __sdk::TableAppliedDiff<'r, ScheduledIdleGains>,
@@ -642,6 +705,7 @@ pub struct AppliedDiff<'r> {
     scheduled_voice_cleanup: __sdk::TableAppliedDiff<'r, ScheduledVoiceCleanup>,
     transaction: __sdk::TableAppliedDiff<'r, Transaction>,
     voice_channel: __sdk::TableAppliedDiff<'r, VoiceChannel>,
+    world_object: __sdk::TableAppliedDiff<'r, WorldObject>,
     __unused: std::marker::PhantomData<&'r ()>,
 }
 
@@ -673,6 +737,7 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
             &self.player_cosmetic,
             event,
         );
+        callbacks.invoke_table_row_callbacks::<PlayerItem>("player_item", &self.player_item, event);
         callbacks.invoke_table_row_callbacks::<VehicleOwned>(
             "player_vehicle",
             &self.player_vehicle,
@@ -716,6 +781,11 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
         callbacks.invoke_table_row_callbacks::<VoiceChannel>(
             "voice_channel",
             &self.voice_channel,
+            event,
+        );
+        callbacks.invoke_table_row_callbacks::<WorldObject>(
+            "world_object",
+            &self.world_object,
             event,
         );
     }
@@ -1384,6 +1454,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
         market_listing_table::register_table(client_cache);
         player_table::register_table(client_cache);
         player_cosmetic_table::register_table(client_cache);
+        player_item_table::register_table(client_cache);
         player_vehicle_table::register_table(client_cache);
         scheduled_eco_maintenance_table::register_table(client_cache);
         scheduled_idle_gains_table::register_table(client_cache);
@@ -1393,6 +1464,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
         scheduled_voice_cleanup_table::register_table(client_cache);
         transaction_table::register_table(client_cache);
         voice_channel_table::register_table(client_cache);
+        world_object_table::register_table(client_cache);
     }
     const ALL_TABLE_NAMES: &'static [&'static str] = &[
         "eco_transaction",
@@ -1401,6 +1473,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
         "market_listing",
         "player",
         "player_cosmetic",
+        "player_item",
         "player_vehicle",
         "scheduled_eco_maintenance",
         "scheduled_idle_gains",
@@ -1410,5 +1483,6 @@ impl __sdk::SpacetimeModule for RemoteModule {
         "scheduled_voice_cleanup",
         "transaction",
         "voice_channel",
+        "world_object",
     ];
 }

@@ -34,7 +34,7 @@ pub fn load_all_assets(mut commands: Commands) {
 /// Draw-order helpers: everything VFX-related renders above tiles
 /// (z = 1000 - y, see `world_floor`) but below the player (+50).
 fn vfx_depth(y: f32, offset: f32) -> f32 {
-    1000.0 - y + offset
+    crate::world_floor::prop_depth(y) + offset
 }
 
 // ============================================================================

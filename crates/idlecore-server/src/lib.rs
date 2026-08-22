@@ -14,6 +14,7 @@ pub mod economy;
 pub mod player;
 pub mod movement;
 pub mod interactions;
+pub mod objects;
 pub mod teleport;
 pub mod vehicles;
 pub mod cosmetics;
@@ -32,17 +33,17 @@ fn address_of(ctx: &ReducerContext) -> Option<String> {
     crate::player::address_of_identity(ctx, &ctx.sender().to_string())
 }
 
-/// World generation seed — must stay constant so the map is deterministic.
-const WORLD_SEED: u64 = 0xC0FFEE;
-
-/// One-time module init: seed the world and register the five recurring
+/// One-time module init: seed the spawn area and register the five recurring
 /// schedulers (Spec 015 FR1-FR5).
 #[reducer(init)]
 pub fn init(ctx: &ReducerContext) {
     tracing::info!("IdleBot module initializing");
 
-    let count = crate::world::generate_world(ctx, WORLD_SEED);
-    tracing::info!("World seeded: {count} hexes");
+    // The planet is far too large to pre-generate; tiles materialize lazily
+    // around players (see world::ensure_tiles_around). Seed the spawn area.
+    let (sq, sr) = idlecore_core::earth::resolve_spawn_hex();
+    let count = crate::world::ensure_tiles_around(ctx, sq, sr);
+    tracing::info!("Spawn area seeded at ({sq},{sr}): {count} hexes");
 
     if ctx.db.scheduled_idle_gains().iter().next().is_none() {
         ctx.db.scheduled_idle_gains().insert(crate::types::ScheduledIdleGains {
@@ -92,11 +93,15 @@ pub fn init(ctx: &ReducerContext) {
 #[reducer]
 pub fn login(ctx: &ReducerContext, wallet_address: String) {
     let address = wallet_address.to_lowercase();
-    // Self-heal: fill any hexes missing from the world (e.g. a manually
-    // deleted row) so players can always interact with their surroundings.
-    crate::world::generate_world(ctx, WORLD_SEED);
     match crate::player::login(ctx, &address, &ctx.sender().to_string()) {
-        Ok(_) => tracing::info!("LOGIN: {address} (identity {})", ctx.sender()),
+        Ok(_) => {
+            tracing::info!("LOGIN: {address} (identity {})", ctx.sender());
+            // Materialize the neighborhood of wherever this player lives.
+            if let Some(p) = crate::economy::find_player(ctx, &address) {
+                let count = crate::world::ensure_tiles_around(ctx, p.hex_q, p.hex_r);
+                tracing::info!("LOGIN ensured {count} tiles around ({},{})", p.hex_q, p.hex_r);
+            }
+        }
         Err(e) => tracing::warn!("LOGIN-REJECTED {address}: {e}"),
     }
 }
@@ -150,9 +155,13 @@ pub fn move_player(
     dir_y: f32,
     intended_speed: f32,
     dt: f32,
+    to_x: f32,
+    to_y: f32,
 ) {
     let Some(address) = address_of(ctx) else { return };
-    if let Err(e) = crate::movement::move_player(ctx, &address, dir_x, dir_y, intended_speed, dt) {
+    if let Err(e) =
+        crate::movement::move_player(ctx, &address, dir_x, dir_y, intended_speed, dt, to_x, to_y)
+    {
         tracing::warn!("MOVE-REJECTED {address}: {e}");
     }
 }
@@ -196,6 +205,26 @@ pub fn clean(ctx: &ReducerContext, hex_id: u64) -> Result<(), String> {
     let result = crate::interactions::clean(ctx, &address, hex_id);
     crate::player::log_outcome(ctx, &address, "clean", result.clone());
     result.into_result()
+}
+
+// ---------------------------------------------------------------------------
+// World objects: gather grass/trees, plant trees from seeds
+// ---------------------------------------------------------------------------
+
+#[reducer]
+pub fn gather_object(ctx: &ReducerContext, object_id: u64) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    crate::objects::gather_object(ctx, &address, object_id)
+}
+
+#[reducer]
+pub fn plant_tree(ctx: &ReducerContext, hex_id: u64) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    crate::objects::plant_tree(ctx, &address, hex_id)
 }
 
 // ---------------------------------------------------------------------------

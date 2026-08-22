@@ -271,7 +271,7 @@ fn economy_phases(
         .find(|p| p.address == wallet)
         .map(|p| (p.position_x, p.position_y))
         .unwrap_or((0.0, 0.0));
-    if let Err(e) = conn.reducers().move_player_then(1.0, 0.0, 5.0, 1.0, move |_ctx, _res| {}) {
+    if let Err(e) = conn.reducers().move_player_then(1.0, 0.0, 5.0, 1.0, prev.0 + 4.0, prev.1, move |_ctx, _res| {}) {
         failures.push(format!("move_player send failed: {e}"));
     }
     let moved = wait_until(conn, TIMEOUT, || {
@@ -303,38 +303,20 @@ fn economy_phases(
     }
 
     // --- Phase 7: plant Wheat on the player's current hex -------------------
-    // The hex must be free (runs leave plants behind) AND far from spawn
-    // (>= 40 hexes out) so test plants never litter the player's area.
-    // Server hexes are ~17.3 world units wide but moves are capped at 10 u/s,
-    // so two moves per attempt guarantee crossing a boundary.
+    // New players spawn in the Earth-replica spawn forest (plantable land),
+    // so the current hex should be free terrain; retry a few times in case
+    // a past run left a plant standing on an adjacent hex.
     let start = std::time::Instant::now();
     println!("[7] plant Wheat on current hex (10 G)");
     let mut planted: Option<u64> = None;
-    // Walk east first; at the world edge (x ~1216 = hex ~70) switch north,
-    // which past runs never littered.
-    let mut north = false;
-    for attempt in 1..=120 {
-        let hex_id = conn
+    for attempt in 1..=6 {
+        let (hex_id, pos) = conn
             .db
             .player()
             .iter()
             .find(|p| p.address == wallet)
-            .map(|p| p.hex_id)
-            .unwrap_or(0);
-        let pos = conn
-            .db
-            .player()
-            .iter()
-            .find(|p| p.address == wallet)
-            .map(|p| (p.position_x, p.position_y))
-            .unwrap_or((0.0, 0.0));
-        let far_enough = conn
-            .db
-            .player()
-            .iter()
-            .find(|p| p.address == wallet)
-            .map(|p| p.hex_q >= 40 || p.hex_r >= 40)
-            .unwrap_or(false);
+            .map(|p| (p.hex_id, (p.position_x, p.position_y)))
+            .unwrap_or((0, (0.0, 0.0)));
         let free = conn
             .db
             .hex_tile()
@@ -346,23 +328,15 @@ fn economy_phases(
                     && h.plant.is_none()
             })
             .unwrap_or(false);
-        if !free || !far_enough {
-            if pos.0 >= 1200.0 {
-                north = true;
-            }
-            let (dx, dy) = if north { (0.0, 1.0) } else { (1.0, 0.0) };
+        if !free {
             println!(
-                "[7 t={:.0}s] hex {hex_id} not plantable (occupied/polluted/terrain/too close); walking further",
+                "[7 t={:.0}s] hex {hex_id} not plantable; stepping aside",
                 start.elapsed().as_secs_f32()
             );
             if conn
                 .reducers()
-                .move_player_then(dx, dy, 10.0, 1.0, move |_ctx, _res| {})
+                .move_player_then(1.0, 0.0, 10.0, 1.0, pos.0 + 8.0, pos.1, move |_ctx, _res| {})
                 .is_err()
-                || conn
-                    .reducers()
-                    .move_player_then(dx, dy, 10.0, 1.0, move |_ctx, _res| {})
-                    .is_err()
             {
                 failures.push("plant retry move send failed".to_string());
                 break;
@@ -375,7 +349,7 @@ fn economy_phases(
             });
             continue;
         }
-        println!("[7] attempt {attempt}: planting at hex {hex_id}");
+        println!("[7] attempt {attempt}: planting at hex {hex_id} ({pos:?})");
         let outcome_cell = Arc::new(Mutex::new(None::<String>));
         let oc = outcome_cell.clone();
         if let Err(e) = conn.reducers().plant_then(hex_id, "Wheat".to_string(), move |_ctx, res| {
@@ -421,7 +395,7 @@ fn economy_phases(
         break;
     }
     if planted.is_none() && failures.iter().all(|f| !f.starts_with("plant")) {
-        failures.push("no free far hex found for planting after 40 moves".to_string());
+        failures.push("no plantable hex at spawn after retries".to_string());
     }
 
     // --- Phase 8: profile avatar -------------------------------------------

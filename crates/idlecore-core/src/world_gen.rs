@@ -1,7 +1,7 @@
 //! Hex World Grid Floor System — deterministic world-scale hex grid.
 //!
 //! Implements the core architectural primitives for a whole-world hex grid
-//! at 1:10,000 scale: world bounds, compact cell data, and deterministic
+//! at 1:100 scale: world bounds, compact cell data, and deterministic
 //! generation from a world seed + hex coordinate.
 
 use crate::hex::HexCoord;
@@ -124,6 +124,16 @@ impl WorldGenConfig {
     /// `HexCell`.
     pub fn generate_hex(&self, q: i32, r: i32) -> HexCell {
         let coord = HexCoord::new(q, r);
+        let seed = self.local_seed(q, r);
+
+        // --- Real-Earth replica (1:100) ---
+        // Inside the mapped planet bounds the actual Earth data overrides
+        // procedural generation entirely; outside them (shouldn't happen in
+        // play) the seeded generator still produces a valid cell.
+        let (wx, wy) = crate::hex_grid::HexGrid::axial_to_world(q, r, Self::HEX_SIZE);
+        if let Some(biome) = crate::earth::biome_at(wx, wy) {
+            return self.earth_cell(coord, q, r, biome, seed);
+        }
 
         // --- Elevation (continental + local noise) ---
         // A flat world uses a constant mid elevation: high enough to avoid
@@ -141,8 +151,6 @@ impl WorldGenConfig {
         // --- Flags ---
         let flags = self.flags(terrain, elevation, moisture);
 
-        let seed = self.local_seed(q, r);
-
         HexCell {
             coord,
             q,
@@ -154,6 +162,29 @@ impl WorldGenConfig {
             temperature,
             biome_id,
             flags,
+            seed,
+        }
+    }
+
+    /// Build a cell directly from Earth replica data (see [`crate::earth`]).
+    fn earth_cell(&self, coord: HexCoord, q: i32, r: i32, biome: crate::earth::Biome, seed: u64) -> HexCell {
+        let terrain = biome.terrain();
+        let water = biome.water_class();
+        let elevation = biome.elevation();
+        let moisture = biome.moisture();
+        let (wx, wy) = crate::hex_grid::HexGrid::axial_to_world(q, r, Self::HEX_SIZE);
+        let temperature = crate::earth::temperature_at(wx, wy);
+        HexCell {
+            coord,
+            q,
+            r,
+            elevation,
+            terrain,
+            water,
+            moisture,
+            temperature,
+            biome_id: 100 + biome.index() as u16,
+            flags: self.flags(terrain, elevation, moisture),
             seed,
         }
     }
@@ -961,9 +992,17 @@ mod tests {
     #[test]
     fn test_generate_hex_different_coords() {
         let config = WorldGenConfig::default();
-        let cell1 = config.generate_hex(0, 0);
-        let cell2 = config.generate_hex(100, -50);
+        // Different real-Earth biomes must produce different cells: the
+        // spawn forest vs mid-Pacific ocean.
+        let (sx, sy) =
+            crate::earth::lonlat_to_world(crate::earth::SPAWN_LON, crate::earth::SPAWN_LAT);
+        let (sq, sr) = crate::hex_grid::HexGrid::world_to_axial(sx, sy, WorldGenConfig::HEX_SIZE);
+        let (ox, oy) = crate::earth::lonlat_to_world(-140.0, 0.0);
+        let (oq, orr) = crate::hex_grid::HexGrid::world_to_axial(ox, oy, WorldGenConfig::HEX_SIZE);
+        let cell1 = config.generate_hex(sq, sr);
+        let cell2 = config.generate_hex(oq, orr);
         assert_ne!(cell1.elevation, cell2.elevation);
+        assert_ne!(cell1.terrain, cell2.terrain);
     }
 
     #[test]
@@ -973,14 +1012,13 @@ mod tests {
             world_radius: 10,
             flat: false,
         };
-        // Far from center tends to be water
-        let cell = config.generate_hex(8, 8);
-        // At high latitude, should be tundra or water
-        assert!(
-            cell.terrain == TerrainType::Water
-                || cell.terrain == TerrainType::Tundra
-                || cell.terrain == TerrainType::Mountain
-        );
+        // Mid-Pacific is deep ocean on the real Earth replica too.
+        let (x, y) = crate::earth::lonlat_to_world(-140.0, 0.0);
+        let (q, r) = crate::hex_grid::HexGrid::world_to_axial(x, y, WorldGenConfig::HEX_SIZE);
+        let cell = config.generate_hex(q, r);
+        assert_eq!(cell.terrain, TerrainType::Water);
+        assert_eq!(cell.water, WaterClass::Ocean);
+        assert_eq!(cell.biome_id, 100 + crate::earth::Biome::Water.index() as u16);
     }
 
     #[test]

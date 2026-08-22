@@ -14,9 +14,9 @@ use super::plugin::{Net, NetEvent, NetStatus};
 #[derive(Debug, Clone, Copy, Component)]
 enum HudAction {
     Connect,
-    Plant,
     Harvest,
     Clean,
+    PlantTree,
     ClaimIdle,
     BuyBicycle,
     EquipBicycle,
@@ -67,6 +67,13 @@ impl Plugin for NetHudPlugin {
     }
 }
 
+/// Toggled with F1 so it never blocks inventory interaction.
+#[derive(Component)]
+struct DebugHudRoot;
+
+#[derive(Resource, Default)]
+struct DebugHudVisible(bool);
+
 #[derive(Component)]
 struct HudStatusText;
 
@@ -88,13 +95,16 @@ fn button_style(width: f32, height: f32) -> Node {
 }
 
 fn spawn_hud(mut commands: Commands) {
+    commands.insert_resource(DebugHudVisible(false));
     let mut root = commands.spawn((
+        DebugHudRoot,
         Node {
             position_type: PositionType::Absolute,
             left: Val::Px(10.0),
             top: Val::Px(10.0),
             flex_direction: FlexDirection::Column,
             padding: UiRect::all(Val::Px(8.0)),
+            display: Display::None,
             ..default()
         },
         BackgroundColor(Color::srgba(0.05, 0.08, 0.15, 0.85)),
@@ -115,9 +125,9 @@ fn spawn_hud(mut commands: Commands) {
 
         for (label, action) in [
             ("Connect & Login", HudAction::Connect),
-            ("Plant Wheat (10G)", HudAction::Plant),
             ("Harvest (15G)", HudAction::Harvest),
             ("Clean (20G)", HudAction::Clean),
+            ("Plant Tree (seed)", HudAction::PlantTree),
             ("Claim Idle Gains", HudAction::ClaimIdle),
             ("Buy Bicycle (500G)", HudAction::BuyBicycle),
             ("Equip Bicycle", HudAction::EquipBicycle),
@@ -253,6 +263,34 @@ fn update_hud_text(
                     eco_title(h.eco_rating),
                     flag
                 ));
+                // Earth replica: gatherable materials on this biome.
+                let mats = idlecore_core::earth::materials_for_name(&h.terrain);
+                if !mats.is_empty() {
+                    let list = mats
+                        .iter()
+                        .map(|(name, yield_per)| format!("{name}×{yield_per}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    stats.push_str(&format!("\nHere: {list}"));
+                }
+            }
+            // Nearest real-world city, with distance in km.
+            if let Some((city, dist_km)) =
+                idlecore_core::earth::nearest_city(p.position.x, p.position.y)
+            {
+                stats.push_str(&format!("\nNear: {} ({:.0} km)", city.name, dist_km));
+            }
+        }
+        // Resource-node inventory (seeds fuel tree planting).
+        if let Some(conn) = &net.conn {
+            use spacetimedb_sdk::Table;
+            if let Some(item) = conn
+                .db
+                .player_item()
+                .iter()
+                .find(|i| Some(&i.player) == net.address.as_ref() && i.item == "Seed")
+            {
+                stats.push_str(&format!("\nSeeds: {}", item.count));
             }
         }
         // Spec 006 T3.4: vehicle inventory from the subscription cache.
@@ -344,6 +382,30 @@ pub(crate) fn send_reducer(
     }
 }
 
+/// Send the teleport for the currently selected hex (shared by the HUD
+/// button and the minimap/world double-click shortcut). Clears the selection
+/// once sent; returns false when nothing is selected or not connected.
+pub(crate) fn try_send_teleport(
+    net: &mut Net,
+    minimap_state: &mut crate::minimap::MinimapState,
+    latency: &mut super::plugin::ServerLatency,
+) -> bool {
+    let Some((q, r)) = minimap_state.selected_hex else {
+        let _ = net.sender().send(NetEvent::ServerMessage(
+            "Teleport: click a hex on the map or minimap first".to_string(),
+        ));
+        return false;
+    };
+    let tx = net.sender();
+    latency.note_request();
+    send_reducer(net, |reducers| {
+        reducers.teleport_player_then(q, r, teleport_report("teleport", tx.clone(), q, r))
+    });
+    minimap_state.selected_hex = None;
+    minimap_state.selected_px = None;
+    true
+}
+
 /// Click handling: invoke the corresponding server reducer.
 fn hud_buttons(
     mut net: ResMut<Net>,
@@ -351,7 +413,9 @@ fn hud_buttons(
     mut name_edit: ResMut<NameEdit>,
     mut latency: ResMut<super::plugin::ServerLatency>,
     mut skins: ResMut<crate::skins::PlayerSkins>,
-    player: Option<Query<&ClientPlayer>>,
+    inventory: Res<crate::inventory::Inventory>,
+    action_target: Res<crate::world_floor::ActionTarget>,
+    _player: Option<Query<&ClientPlayer>>,
     mut interactions: Query<(&Interaction, &HudAction), Changed<Interaction>>,
 ) {
     for (interaction, action) in interactions.iter_mut() {
@@ -374,20 +438,31 @@ fn hud_buttons(
                     continue;
                 };
                 match action {
-                    HudAction::Plant => {
-                        let Some(pos) = player.as_ref().and_then(|q| q.single().ok()).map(|p| p.position) else { continue };
-                        let hex = Net::hex_id_at(pos.x, pos.y);
-                        send_reducer(&mut net, |r| r.plant_then(hex, "Wheat".to_string(), reducer_report("plant", tx.clone(), hex)));
-                    }
                     HudAction::Harvest => {
-                        let Some(pos) = player.as_ref().and_then(|q| q.single().ok()).map(|p| p.position) else { continue };
-                        let hex = Net::hex_id_at(pos.x, pos.y);
+                        let hex = idlecore_core::hex::HexCoord::new(action_target.q, action_target.r).to_id();
                         send_reducer(&mut net, |r| r.harvest_then(hex, reducer_report("harvest", tx.clone(), hex)));
                     }
                     HudAction::Clean => {
-                        let Some(pos) = player.as_ref().and_then(|q| q.single().ok()).map(|p| p.position) else { continue };
-                        let hex = Net::hex_id_at(pos.x, pos.y);
+                        let hex = idlecore_core::hex::HexCoord::new(action_target.q, action_target.r).to_id();
                         send_reducer(&mut net, |r| r.clean_then(hex, reducer_report("clean", tx.clone(), hex)));
+                    }
+                    HudAction::PlantTree => {
+                        // Minecraft-style: the seed must be in hand (selected
+                        // in the hotbar).
+                        let holding_seed = inventory
+                            .active_item()
+                            .map(String::as_str)
+                            == Some("Seed");
+                        if !holding_seed {
+                            let _ = tx.send(NetEvent::ServerMessage(
+                                "Select Seeds in your hotbar first [1-9]".to_string(),
+                            ));
+                            continue;
+                        }
+                        let hex = idlecore_core::hex::HexCoord::new(action_target.q, action_target.r).to_id();
+                        send_reducer(&mut net, |r| {
+                            r.plant_tree_then(hex, reducer_report("plant_tree", tx.clone(), hex))
+                        });
                     }
                     HudAction::ClaimIdle => {
                         send_reducer(&mut net, |r| r.claim_idle_gains_then(reducer_report("claim_idle_gains", tx.clone(), 0)));
@@ -399,16 +474,7 @@ fn hud_buttons(
                         send_reducer(&mut net, |r| r.equip_vehicle_then("Bicycle".to_string(), reducer_report("equip_vehicle", tx.clone(), 0)));
                     }
                     HudAction::Teleport => {
-                        let Some((q, r)) = minimap_state.selected_hex else {
-                            let _ = tx.send(NetEvent::ServerMessage(
-                                "Teleport: left-click a hex on the minimap first".to_string(),
-                            ));
-                            continue;
-                        };
-                        latency.note_request();
-                        send_reducer(&mut net, |reducers| reducers.teleport_player_then(q, r, teleport_report("teleport", tx.clone(), q, r)));
-                        minimap_state.selected_hex = None;
-                        minimap_state.selected_px = None;
+                        crate::net::hud::try_send_teleport(&mut net, &mut minimap_state, &mut latency);
                     }
                     HudAction::EditName => {
                         name_edit.editing = !name_edit.editing;
@@ -517,5 +583,21 @@ fn eco_rank(ep: u64) -> (&'static str, Option<u64>) {
         ("Eco Enthusiast", Some(500))
     } else {
         ("Eco Scout", Some(100))
+    }
+}
+
+/// F1 hides/shows the whole debug panel (status, buttons, log).
+fn toggle_debug_hud(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut state: ResMut<DebugHudVisible>,
+    mut panel: Query<&mut Node, With<DebugHudRoot>>,
+) {
+    if !keys.just_pressed(KeyCode::F1) {
+        return;
+    }
+    state.0 = !state.0;
+    let want = if state.0 { Display::Flex } else { Display::None };
+    if let Ok(mut node) = panel.single_mut() {
+        node.display = want;
     }
 }

@@ -389,6 +389,69 @@ pub struct ScheduledEcoMaintenance {
 }
 
 // ---------------------------------------------------------------------------
+// 10b. world_objects — server-authoritative resource nodes
+// ---------------------------------------------------------------------------
+//
+// Grass tufts, rocks and player-grown trees all live here; the client only
+// renders what this table replicates. Rows are materialized lazily together
+// with their hex (`world::ensure_hex`), deterministically per slot.
+
+#[derive(Clone, Debug)]
+#[spacetimedb::table(
+    accessor = world_object,
+    public,
+    index(accessor = object_by_hex, btree(columns = [hex_id]))
+)]
+pub struct WorldObject {
+    #[primary_key]
+    #[auto_inc]
+    pub object_id: u64,
+    /// Hex the object sits on (same encoding as hex_tile.hex_id).
+    pub hex_id: u64,
+    /// Per-hex slot in 0..MAX_OBJECTS_PER_HEX (unique together with hex_id).
+    pub slot: u8,
+    pub kind: String, // "Grass" | "Rock" | "Tree"
+    /// Offset from the hex center, in world units.
+    pub offset_x: f32,
+    pub offset_y: f32,
+    /// Unix secs when a growing Tree matures; 0 = no growth phase.
+    pub mature_at: u64,
+    pub planted_by: Option<String>,
+}
+
+/// Simple stack inventory: one row per player+item.
+#[derive(Clone, Debug)]
+#[spacetimedb::table(
+    accessor = player_item,
+    public,
+    index(accessor = items_by_player, btree(columns = [player]))
+)]
+pub struct PlayerItem {
+    /// Synthetic key "{player}|{item}" (single-column PK requirement).
+    #[primary_key]
+    pub key: String,
+    pub player: String,
+    pub item: String,
+    pub count: u64,
+}
+
+/// Tombstones for consumed natural nodes: without these, the deterministic
+/// roller would resurrect every gathered tuft / mined rock on the next visit.
+#[derive(Clone, Debug)]
+#[spacetimedb::table(
+    accessor = object_removed,
+    public,
+    index(accessor = removed_by_hex, btree(columns = [hex_id]))
+)]
+pub struct ObjectRemoved {
+    /// Synthetic key "{hex_id}:{slot}" (single-column PK requirement).
+    #[primary_key]
+    pub key: String,
+    pub hex_id: u64,
+    pub slot: u8,
+}
+
+// ---------------------------------------------------------------------------
 // Game constants (shared with the reducers)
 // ---------------------------------------------------------------------------
 
@@ -444,6 +507,31 @@ pub const STARTING_GOLD: u64 = 100;
 /// Teleport base cost and cooldown (Spec 008 / Ecosystem 2.3).
 pub const TELEPORT_BASE_COST: u64 = 100;
 pub const TELEPORT_COOLDOWN_SECS: u64 = 60;
+
+/// Max resource nodes per hex across all kinds (world_objects slots).
+pub const MAX_OBJECTS_PER_HEX: u8 = 6;
+/// Object kind names.
+pub const OBJ_GRASS: &str = "Grass";
+pub const OBJ_ROCK: &str = "Rock";
+pub const OBJ_TREE: &str = "Tree";
+/// Inventory item names.
+pub const ITEM_SEED: &str = "Seed";
+pub const ITEM_WOOD: &str = "Wood";
+pub const ITEM_STONE: &str = "Stone";
+pub const ITEM_GRASS: &str = "Grass";
+/// Destroying a grass tuft drops this much fiber plus a chance of seeds.
+pub const GRASS_PER_TUFT: u64 = 2;
+pub const STONE_PER_ROCK: u64 = 2;
+/// Destroying a grass tuft drops this many seeds.
+pub const SEEDS_PER_GRASS: u64 = 2;
+/// Harvesting a mature tree yields wood + seeds to keep the loop going.
+pub const WOOD_PER_TREE: u64 = 3;
+pub const SEEDS_PER_TREE: u64 = 2;
+/// A planted tree takes this long to mature.
+pub const TREE_GROWTH_SECS: u64 = 600;
+/// XP for gathering actions.
+pub const GATHER_XP: u64 = 2;
+pub const HARVEST_TREE_XP: u64 = 5;
 
 /// Encode axial (q, r) into the u64 hex id: `(q << 32) | r`.
 pub fn hex_id_of(q: i32, r: i32) -> u64 {

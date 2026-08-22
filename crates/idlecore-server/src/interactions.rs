@@ -73,6 +73,7 @@ fn preflight(
 
     // Spec 004 FR1: interaction range is 1 hex.
     let (hq, hr) = crate::types::hex_coords_of(hex_id);
+    crate::world::ensure_hex(ctx, hq, hr);
     let dist = crate::types::hex_distance(p.hex_q, p.hex_r, hq, hr);
     let hex = ctx
         .db

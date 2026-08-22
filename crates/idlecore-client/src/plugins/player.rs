@@ -46,7 +46,7 @@ pub struct PhysicsBody;
 /// players. Tiles are z = 1000 - y (see `world_floor`), so the player rides
 /// 50 units above its own tile.
 const PLAYER_DEPTH_OFFSET: f32 = 50.0;
-const TILE_DEPTH_BASE: f32 = 1000.0;
+const TILE_DEPTH_BASE: f32 = 130_000.0; // prop band base (world_floor::prop_depth)
 
 fn register_player_orientation(mut commands: Commands) {
     commands.insert_resource(PlayerOrientation::default());

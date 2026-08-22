@@ -3,8 +3,8 @@
 
 use spacetimedb::ReducerContext;
 use crate::economy::spend_gold;
-use crate::types::{player, hex_tile, 
-    hex_center, hex_id_of, now_secs, TELEPORT_BASE_COST, TELEPORT_COOLDOWN_SECS,
+use crate::types::{
+    hex_center, now_secs, player, TELEPORT_BASE_COST, TELEPORT_COOLDOWN_SECS,
 };
 
 /// Teleport cost per Ecosystem spec 2.3: `floor(100 × √level)`.
@@ -32,14 +32,11 @@ pub fn teleport(
         ));
     }
 
-    // Spec 008 FR3: the destination hex must exist in the generated world.
-    let hex = ctx
-        .db
-        .hex_tile()
-        .hex_id()
-        .find(hex_id_of(target_q, target_r))
-        .ok_or_else(|| "Destination hex does not exist".to_string())?;
-    let _ = hex; // exists check only
+    // Spec 008 FR3: the destination must be on the planet; materialize it
+    // lazily (tiles come into existence when first visited).
+    if !crate::world::ensure_hex(ctx, target_q, target_r) {
+        return Err("Destination hex does not exist".to_string());
+    }
 
     let cost = teleport_cost(p.level);
     if let Err(e) = spend_gold(ctx, &mut p, cost, "teleport") {

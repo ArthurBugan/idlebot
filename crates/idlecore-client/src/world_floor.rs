@@ -39,29 +39,337 @@ const DECOR_SCALE: f32 = 1.35;
 const TILE_W: f32 = 1.7320508075688772 * WorldGenConfig::HEX_SIZE * DECOR_SCALE;
 const TILE_H: f32 = 1.5 * WorldGenConfig::HEX_SIZE * DECOR_SCALE;
 
-/// Draw-order base: south (smaller y) rows draw over north rows.
-///
-/// The 2D camera sits at z=1000 and its default near/far clip planes make
-/// world z ∈ [0, 2000] visible, so depth must stay inside that band.
-/// Map world y (≈ ±700 max at the current render radius) onto z ∈ [300, 1700].
-fn depth(y: f32) -> f32 {
-    1000.0 - y
+/// Ground-band draw order: floor tiles only, south over north. Kept in its
+/// own low band ([−25k, 25k]) so no tile can ever paint over a prop.
+pub fn floor_depth(y: f32) -> f32 {
+    -y * 0.25
 }
 
-/// Cropped pine-tree art for forested cells.
-const TREE_ART_PATH: &str = "models/Isometric Miniature Tiles/Isometric/treePine.png";
+/// Prop/entity-band draw order: trees, grass, rocks, players, VFX. Always
+/// above every floor tile ([min 30k] > floor max 25k), still ordered
+/// south-over-north among themselves. The camera's clip planes (main.rs)
+/// are sized to this band.
+pub fn prop_depth(y: f32) -> f32 {
+    130_000.0 - y
+}
 
-/// Rock/boulder art for mountainous cells (from the Overworld pack).
-const ROCK_ART_PATH: &str =
+// Server-authoritative resource-node art (rendered from `world_object` rows).
+pub(crate) const TREE_ART_PATH: &str = "models/Isometric Miniature Tiles/Isometric/treePine.png";
+pub(crate) const ROCK_ART_PATH: &str =
     "models/Isometric Miniature Overworld/extracted/Isometric/grassStoneLarge_S.png";
-/// Smaller rock for variety on mountainous cells.
-const ROCK_SMALL_ART_PATH: &str =
-    "models/Isometric Miniature Overworld/extracted/Isometric/grassStoneSmall_S.png";
-/// Grass-tuft art for open grassy cells (from the Nature pack).
-const GRASS_TUFT_PATHS: [&str; 2] = [
+pub(crate) const GRASS_TUFT_PATHS: [&str; 2] = [
     "models/Isometric Nature/PNG/naturePack_011_2.png",
     "models/Isometric Nature/PNG/naturePack_012_3.png",
 ];
+
+// ============================================================================
+// Action-target box (Stardew-style ground cursor)
+// ============================================================================
+
+/// Hex currently targeted for ground actions (plant/harvest/gather/clean),
+/// driven by the mouse cursor; defaults to the player's own hex.
+#[derive(Resource, Default, Debug, Clone, Copy)]
+pub struct ActionTarget {
+    pub q: i32,
+    pub r: i32,
+}
+
+#[derive(Component)]
+pub(crate) struct ActionBoxMarker;
+
+/// Hollow hexagon outline (the targeting box), AA edges like the fill tiles.
+fn hex_outline_image(width: u32, height: u32, srgb: [f32; 3], thickness_px: f32) -> Image {
+    let mut pixels = vec![0u8; (width * height * 4) as usize];
+    let [r, g, b] = srgb.map(|c| (c * 255.0).round() as u8);
+    let cx = width as f32 / 2.0;
+    let cy = height as f32 / 2.0;
+    let radius = height as f32 / 2.0;
+    let apothem = radius * 1.7320508075688772 / 2.0;
+    for y in 0..height {
+        for x in 0..width {
+            let px = x as f32 + 0.5 - cx;
+            let py = y as f32 + 0.5 - cy;
+            let m = px
+                .abs()
+                .max((0.5 * px + 0.8660254037844386 * py).abs())
+                .max((0.5 * px - 0.8660254037844386 * py).abs());
+            let inside = apothem - m;
+            // Opaque band centered on the edge, fading over ~1 px each side.
+            let half = thickness_px * 0.5 + 0.5;
+            let alpha = (half - inside.abs()).clamp(0.0, 1.0);
+            let i = ((y * width + x) * 4) as usize;
+            pixels[i] = r;
+            pixels[i + 1] = g;
+            pixels[i + 2] = b;
+            pixels[i + 3] = (alpha * 255.0).round() as u8;
+        }
+    }
+    Image::new(
+        Extent3d { width, height, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    )
+}
+
+pub fn spawn_action_box(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    let w = (FLOOR_W * 12.0).round() as u32;
+    let h = (FLOOR_H * 12.0).round() as u32;
+    let handle = images.add(hex_outline_image(w, h, [1.0, 0.95, 0.5], 3.0));
+    commands.spawn((
+        Name::new("action-box"),
+        ActionBoxMarker,
+        Sprite {
+            image: handle,
+            custom_size: Some(Vec2::new(FLOOR_W * 1.04, FLOOR_H * 1.04)),
+            ..default()
+        },
+        Transform::from_xyz(f32::MAX, f32::MAX, 0.0),
+        Visibility::Hidden,
+    ));
+}
+
+/// Drive the targeting box from the cursor and refresh the target resource.
+#[allow(clippy::type_complexity)]
+pub fn update_action_box(
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    widgets: Query<&Interaction>,
+    minimap_state: Res<crate::minimap::MinimapState>,
+    player_transform: Res<PlayerTransform>,
+    mut target: ResMut<ActionTarget>,
+    mut box_q: Query<
+        (&mut Transform, &mut Sprite, &mut Visibility),
+        (With<ActionBoxMarker>, Without<Camera2d>),
+    >,
+) {
+    let Ok((mut transform, mut sprite, mut visibility)) = box_q.single_mut() else { return };
+
+    // Default target: the hex the player stands on.
+    let mut next = world_pos_to_hex(
+        player_transform.translation.x,
+        player_transform.translation.y,
+        WorldGenConfig::HEX_SIZE,
+    );
+
+    // Cursor override unless hovering UI/minimap.
+    if let Ok(window) = windows.single() {
+        if let Some(cursor) = window.cursor_position() {
+            let over_widget =
+                widgets.iter().any(|i| matches!(i, Interaction::Hovered | Interaction::Pressed));
+            let mm_left = window.width() - 10.0 - minimap_state.mm_size();
+            let over_minimap = cursor.x >= mm_left && cursor.y >= 10.0
+                && cursor.x < mm_left + minimap_state.mm_size()
+                && cursor.y < 10.0 + minimap_state.mm_size();
+            if !over_widget && !over_minimap {
+                if let Ok((camera, cam_transform)) = cameras.single() {
+                    if let Ok(world) = camera.viewport_to_world_2d(cam_transform, cursor) {
+                        next = world_pos_to_hex(world.x, world.y, WorldGenConfig::HEX_SIZE);
+                    }
+                }
+            }
+        }
+    }
+    target.q = next.0;
+    target.r = next.1;
+
+    let (wx, wy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
+        target.q,
+        target.r,
+        WorldGenConfig::HEX_SIZE,
+    );
+    transform.translation = Vec3::new(wx, wy, crate::world_floor::prop_depth(wy) + 0.4);
+    *visibility = Visibility::Visible;
+
+    // Green while within the server's 1-hex interaction range, dim otherwise.
+    let player_hex = world_pos_to_hex(
+        player_transform.translation.x,
+        player_transform.translation.y,
+        WorldGenConfig::HEX_SIZE,
+    );
+    let dq = (target.q - player_hex.0).abs();
+    let dr = (target.r - player_hex.1).abs();
+    let ds = ((target.q + target.r) - (player_hex.0 + player_hex.1)).abs();
+    let in_range = dq.max(dr).max(ds) <= 1;
+    let tint = if in_range { Color::srgba(0.6, 1.0, 0.5, 0.95) } else { Color::srgba(0.9, 0.9, 0.9, 0.35) };
+    sprite.color = tint;
+}
+
+// ============================================================================
+// Prop textures: generated tuft/icons + loaded tree/rock art
+// ============================================================================
+
+/// Handles + aspects for every prop sprite, built once at startup.
+#[derive(Resource)]
+pub struct PropTextures {
+    pub grass: Handle<Image>,
+    pub grass_aspect: f32,
+    pub tree: Handle<Image>,
+    pub tree_aspect: f32,
+    pub sapling: Handle<Image>,
+    pub sapling_aspect: f32,
+    pub rock: Handle<Image>,
+    pub rock_aspect: f32,
+    /// Square UI icons for inventory slots.
+    pub icon_seed: Handle<Image>,
+    pub icon_wood: Handle<Image>,
+    pub icon_stone: Handle<Image>,
+    pub icon_grass: Handle<Image>,
+}
+
+pub(crate) const SAPLING_ART_PATH: &str =
+    "models/Isometric Miniature Prototype/Isometric/treePineSmall_S.png";
+
+/// Build all prop sprites once. Runs at Startup.
+pub fn init_prop_textures(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    asset_server: Res<AssetServer>,
+) {
+    let tuft = images.add(grass_tuft_image(128));
+    commands.insert_resource(PropTextures {
+        grass: tuft.clone(),
+        grass_aspect: 1.0,
+        tree: asset_server.load(TREE_ART_PATH),
+        tree_aspect: 256.0 / 216.0,
+        sapling: asset_server.load(SAPLING_ART_PATH),
+        sapling_aspect: 256.0 / 512.0,
+        rock: asset_server.load(ROCK_ART_PATH),
+        rock_aspect: 256.0 / 512.0,
+        icon_seed: asset_server.load(SAPLING_ART_PATH),
+        icon_wood: images.add(log_icon_image(64)),
+        icon_stone: images.add(stone_icon_image(64)),
+        icon_grass: tuft,
+    });
+}
+
+/// Stylized grass tuft: tapered blades fanning from a base point in three
+/// shades of green. Deterministic — same canvas every run.
+fn grass_tuft_image(size_px: u32) -> Image {
+    let size = size_px as usize;
+    let mut pixels = vec![0u8; size * size * 4];
+    let cx = size as f32 * 0.5;
+    let base_y = size as f32 * 0.92;
+    let shades: [(u8, u8, u8); 3] = [(45, 96, 36), (62, 124, 47), (86, 160, 58)];
+    // Seven broad blades: angle spread, length and lean vary per blade.
+    for i in 0..7usize {
+        let t = i as f32 / 6.0; // 0..1 across the fan
+        let ang = -0.8 + t * 1.6 + ((i * 37) % 7) as f32 * 0.02;
+        let len = size as f32 * (0.55 + 0.38 * (1.0 - (t - 0.5).abs() * 1.2).max(0.25));
+        let w0 = (size as f32) * 0.11;
+        let (r, g, b) = shades[i % 3];
+        for yy in 0..size {
+            for xx in 0..size {
+                let dx = xx as f32 - cx;
+                let dy = base_y - yy as f32; // up-positive
+                if dy <= 0.0 || dy > len {
+                    continue;
+                }
+                // Rotate into blade space.
+                let ca = (-ang).cos();
+                let sa = (-ang).sin();
+                let u = dx * sa + dy * ca;
+                let v = dx * ca - dy * sa;
+                if u < 0.0 {
+                    continue;
+                }
+                let half = w0 * 0.5 * (1.0 - u / len);
+                if v.abs() <= half.max(0.6) {
+                    let k = (yy * size + xx) * 4;
+                    pixels[k] = r;
+                    pixels[k + 1] = g;
+                    pixels[k + 2] = b;
+                    pixels[k + 3] = 255;
+                }
+            }
+        }
+    }
+    Image::new(
+        Extent3d { width: size_px, height: size_px, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    )
+}
+
+/// Two stacked logs — Wood icon.
+fn log_icon_image(size_px: u32) -> Image {
+    let s = size_px as usize;
+    let mut px = vec![0u8; s * s * 4];
+    let draw_log = |px: &mut [u8], cy: f32| {
+        let x0 = s as f32 * 0.12;
+        let x1 = s as f32 * 0.88;
+        let half_h = s as f32 * 0.11;
+        for y in 0..s {
+            for x in 0..s {
+                let fx = x as f32 + 0.5;
+                let fy = y as f32 + 0.5;
+                if fx >= x0 && fx <= x1 && (fy - cy).abs() <= half_h {
+                    let k = (y * s + x) * 4;
+                    let end = fx < x0 + half_h * 1.6;
+                    let (r, g, b) = if end { (200, 155, 106) } else { (138, 90, 43) };
+                    px[k] = r; px[k + 1] = g; px[k + 2] = b; px[k + 3] = 255;
+                }
+            }
+        }
+    };
+    draw_log(&mut px, s as f32 * 0.38);
+    draw_log(&mut px, s as f32 * 0.64);
+    Image::new(
+        Extent3d { width: size_px, height: size_px, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        px,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    )
+}
+
+/// Faceted gray chunk — Stone icon.
+fn stone_icon_image(size_px: u32) -> Image {
+    let s = size_px as usize;
+    let mut px = vec![0u8; s * s * 4];
+    let cx = s as f32 * 0.5;
+    let cy = s as f32 * 0.55;
+    let r = s as f32 * 0.36;
+    let n = 7usize;
+    let verts: Vec<(f32, f32)> = (0..n)
+        .map(|i| {
+            let a = i as f32 / n as f32 * std::f32::consts::TAU - 0.35;
+            let rr = r * (0.78 + 0.27 * ((i * 53) % 7) as f32 / 6.0);
+            (cx + a.cos() * rr, cy + a.sin() * rr)
+        })
+        .collect();
+    for y in 0..s {
+        for x in 0..s {
+            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+            let mut inside = false;
+            let mut j = n - 1;
+            for i in 0..n {
+                let (xi, yi) = verts[i];
+                let (xj, yj) = verts[j];
+                if (yi > fy) != (yj > fy) && fx < (xj - xi) * (fy - yi) / (yj - yi) + xi {
+                    inside = !inside;
+                }
+                j = i;
+            }
+            if inside {
+                let k = (y * s + x) * 4;
+                let dark = fy > cy;
+                let (rr, gg, bb) = if dark { (100, 103, 110) } else { (138, 142, 150) };
+                px[k] = rr; px[k + 1] = gg; px[k + 2] = bb; px[k + 3] = 255;
+            }
+        }
+    }
+    Image::new(
+        Extent3d { width: size_px, height: size_px, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        px,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    )
+}
 
 // ============================================================================
 // Solid biome-colored floor
@@ -145,13 +453,149 @@ pub fn init_solid_floor_textures(
     }
 }
 
-/// Forested terrains get a pine-tree overlay sprite.
-fn forest_terrain(terrain: &idlecore_core::terrain::TerrainType) -> bool {
-    use idlecore_core::terrain::TerrainType;
-    matches!(
-        terrain,
-        TerrainType::Forest | TerrainType::Taiga | TerrainType::TropicalRainforest
-    )
+// ============================================================================
+// Server-authoritative resource nodes (world_object replication)
+// ============================================================================
+
+/// Visual cache for replicated `world_object` rows: object_id → entity plus
+/// the descriptor last rendered, so unchanged rows skip rework. Also caches
+/// loaded texture aspects so sprites keep their native proportions.
+#[derive(Resource, Default)]
+pub struct WorldObjectState {
+    pub visuals: HashMap<u64, Entity>,
+    pub rendered: HashMap<u64, (String, bool, i32, i32)>,
+    pub aspects: HashMap<String, f32>,
+}
+
+/// Pixel aspect (width/height) of the object art files — these are static
+/// files, and runtime lookups through `Assets<Image>` are unreliable for
+/// render-only textures, so the values live here.
+fn known_aspect(path: &str) -> f32 {
+    match path {
+        p if p.ends_with("treePine.png") => 256.0 / 216.0,
+        p if p.ends_with("grassStoneLarge_S.png") => 256.0 / 512.0,
+        p if GRASS_TUFT_PATHS.contains(&p) => 220.0 / 379.0,
+        _ => 1.0,
+    }
+}
+
+/// Target on-screen height (world units) per object kind.
+fn kind_height(kind: &str, mature: bool) -> f32 {
+    match kind {
+        "Grass" => 5.2,
+        "Rock" => 4.5,
+        "Tree" if mature => 7.5,
+        "Tree" => 4.2,
+        _ => 3.0,
+    }
+}
+
+/// Spawn/update/despawn sprites for grass, rocks and player-grown trees.
+/// The `world_object` table is the only source of truth — nothing decorative
+/// is invented client-side anymore.
+pub fn update_world_object_visuals(
+    mut commands: Commands,
+    net: Res<crate::net::plugin::Net>,
+    player_transform: Res<PlayerTransform>,
+    props: Res<PropTextures>,
+    time: Res<Time>,
+    mut next_scan: Local<f64>,
+    mut state: ResMut<WorldObjectState>,
+) {
+    // Perf: this scans every replicated world_object row; at planet scale
+    // that set grows unboundedly, so cap the pass to ~7 Hz.
+    if time.elapsed_secs_f64() < *next_scan {
+        return;
+    }
+    *next_scan = time.elapsed_secs_f64() + 0.15;
+    let Some(conn) = net.conn.as_ref() else { return };
+    let px = player_transform.translation.x;
+    let py = player_transform.translation.y;
+    let max_dist = RENDER_RADIUS_HEXES + 2.0 * WorldGenConfig::HEX_SIZE;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    for row in crate::net::gen::WorldObjectTableAccess::world_object(&conn.db).iter() {
+        seen.insert(row.object_id);
+        let coord = idlecore_core::hex::HexCoord::from_id(row.hex_id);
+        let (hx, hy) = row_world_center(coord.q, coord.r);
+        let wx = hx + row.offset_x;
+        let wy = hy + row.offset_y;
+        if (wx - px).powi(2) + (wy - py).powi(2) > max_dist * max_dist {
+            continue;
+        }
+
+        let mature = row.mature_at == 0 || now >= row.mature_at;
+        // Descriptor: sprite + target height + flip; trees grow sapling->full.
+        let flip = row.object_id % 2 == 0;
+        let (handle, height, aspect, tint) = match row.kind.as_str() {
+            "Grass" => (&props.grass, kind_height("Grass", true), props.grass_aspect, Color::WHITE),
+            "Rock" => (&props.rock, kind_height("Rock", true), props.rock_aspect, Color::WHITE),
+            "Tree" => {
+                if mature {
+                    (&props.tree, kind_height("Tree", true), props.tree_aspect, Color::WHITE)
+                } else {
+                    (
+                        &props.sapling,
+                        kind_height("Tree", false),
+                        props.sapling_aspect,
+                        Color::srgb(0.65, 0.85, 0.5),
+                    )
+                }
+            }
+            other => {
+                warn!("unknown world object kind '{other}'");
+                continue;
+            }
+        };
+        let size = Vec2::new(height * aspect, height);
+
+        let key = (
+            row.kind.clone(),
+            mature,
+            (wx * 16.0) as i32,
+            (wy * 16.0) as i32,
+        );
+        if state.rendered.get(&row.object_id) == Some(&key) {
+            continue;
+        }
+
+        if let Some(entity) = state.visuals.get(&row.object_id).copied() {
+            commands.entity(entity).despawn();
+        }
+        let sprite = commands.spawn((
+            Name::new(format!("obj-{}-{}", row.kind, row.object_id)),
+            Sprite {
+                image: handle.clone(),
+                custom_size: Some(size),
+                color: tint,
+                flip_x: flip,
+                ..default()
+            },
+            // Bottom-center anchor: the sprite's base sits on the hex.
+            Transform::from_xyz(wx, wy + size.y * 0.5, prop_depth(wy) + 0.55),
+            Visibility::Visible,
+        ));
+        state.visuals.insert(row.object_id, sprite.id());
+        state.rendered.insert(row.object_id, key);
+    }
+
+    let stale: Vec<u64> = state
+        .visuals
+        .keys()
+        .filter(|id| !seen.contains(id))
+        .copied()
+        .collect();
+    for object_id in stale {
+        if let Some(entity) = state.visuals.remove(&object_id) {
+            commands.entity(entity).despawn();
+        }
+        state.rendered.remove(&object_id);
+    }
 }
 
 // ============================================================================
@@ -232,7 +676,6 @@ pub fn update_world_floor(
     mut floor: ResMut<WorldFloor>,
     water: Res<WaterTextures>,
     solid: Res<SolidFloorTextures>,
-    asset_server: Res<AssetServer>,
 ) {
     let px = player_transform.translation.x;
     let py = player_transform.translation.y;
@@ -320,59 +763,8 @@ pub fn update_world_floor(
                     custom_size: Some(Vec2::new(FLOOR_W, FLOOR_H)),
                     ..default()
                 },
-                Transform::from_xyz(wx, wy, depth(wy)),
+                Transform::from_xyz(wx, wy, floor_depth(wy)),
             ));
-            // Pine-tree overlay on forested terrain (drawn above the tile).
-            if forest_terrain(&cell.terrain) {
-                let flip = (cell.q + cell.r).rem_euclid(2) == 0;
-                parent.with_child((
-                    Name::new(format!("tree({},{})", cell.q, cell.r)),
-                    Sprite {
-                        image: asset_server.load(TREE_ART_PATH),
-                        custom_size: Some(Vec2::new(TILE_W * 0.7, TILE_H * 0.85)),
-                        flip_x: flip,
-                        ..default()
-                    },
-                    Transform::from_xyz(wx, wy, depth(wy) + 0.6),
-                ));
-            }
-            // Rock/boulder overlay on mountainous terrain (alternate large/small).
-            if cell.terrain == TerrainType::Mountain {
-                let flip = (cell.q + cell.r).rem_euclid(2) == 0;
-                let (path, scale) = if (cell.q + cell.r).rem_euclid(3) == 0 {
-                    (ROCK_SMALL_ART_PATH, 0.4)
-                } else {
-                    (ROCK_ART_PATH, 0.6)
-                };
-                parent.with_child((
-                    Name::new(format!("rock({},{})", cell.q, cell.r)),
-                    Sprite {
-                        image: asset_server.load(path),
-                        custom_size: Some(Vec2::new(TILE_W * scale, TILE_H * scale)),
-                        flip_x: flip,
-                        ..default()
-                    },
-                    Transform::from_xyz(wx, wy, depth(wy) + 0.7),
-                ));
-            }
-            // Grass tufts on open grassy terrain (sparse, so meadows breathe).
-            if matches!(cell.terrain, TerrainType::Grass | TerrainType::Grassland)
-                && (cell.q * 3 + cell.r * 5).rem_euclid(3) == 0
-            {
-                let idx =
-                    (cell.q * 7 + cell.r * 13).rem_euclid(GRASS_TUFT_PATHS.len() as i32) as usize;
-                let flip = (cell.q + cell.r).rem_euclid(2) == 0;
-                parent.with_child((
-                    Name::new(format!("grass({},{})", cell.q, cell.r)),
-                    Sprite {
-                        image: asset_server.load(GRASS_TUFT_PATHS[idx]),
-                        custom_size: Some(Vec2::new(TILE_W * 0.45, TILE_H * 0.4)),
-                        flip_x: flip,
-                        ..default()
-                    },
-                    Transform::from_xyz(wx, wy, depth(wy) + 0.5),
-                ));
-            }
         }
 
         floor.entities.insert((*cq, *cr), parent.id());
@@ -450,8 +842,15 @@ pub fn update_plant_visuals(
     net: Res<crate::net::plugin::Net>,
     player_transform: Res<crate::player::PlayerTransform>,
     _streaming_world: Res<StreamingWorldResource>,
+    time: Res<Time>,
+    mut next_scan: Local<f64>,
     mut state: ResMut<FloorPlantState>,
 ) {
+    // Perf: full hex_tile scan — throttle to ~7 Hz like world objects.
+    if time.elapsed_secs_f64() < *next_scan {
+        return;
+    }
+    *next_scan = time.elapsed_secs_f64() + 0.15;
     let Some(conn) = net.conn.as_ref() else { return };
 
     let px = player_transform.translation.x;
@@ -542,7 +941,7 @@ pub fn update_plant_visuals(
                         custom_size: sprite.custom_size,
                         ..default()
                     },
-                    Transform::from_xyz(wx, wy, depth(wy) + 1.0)
+                    Transform::from_xyz(wx, wy, prop_depth(wy) + 1.0)
                         .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_4)),
                     Visibility::Visible,
                 ));
@@ -649,18 +1048,6 @@ mod tests_plants {
     }
 
     #[test]
-    fn forested_terrains_get_trees_others_do_not() {
-        use idlecore_core::terrain::TerrainType;
-        assert!(forest_terrain(&TerrainType::Forest));
-        assert!(forest_terrain(&TerrainType::Taiga));
-        assert!(forest_terrain(&TerrainType::TropicalRainforest));
-        assert!(!forest_terrain(&TerrainType::Grassland));
-        assert!(!forest_terrain(&TerrainType::Water));
-        assert!(!forest_terrain(&TerrainType::City));
-        assert!(!forest_terrain(&TerrainType::Mountain));
-    }
-
-    #[test]
     fn water_colors_are_distinct() {
         let classes = [
             WaterClass::Ocean,
@@ -682,8 +1069,21 @@ mod tests_plants {
     }
 
     #[test]
+    fn hex_outline_alpha_is_a_hollow_ring() {
+        let img = hex_outline_image(18, 20, [1.0, 1.0, 0.0], 2.0);
+        let data = img.data.expect("has pixels");
+        let w = 18u32;
+        let alpha = |x: u32, y: u32| data[((y * w + x) * 4 + 3) as usize];
+        // Hollow interior.
+        assert_eq!(alpha(9, 10), 0);
+        // Opaque band at the edge midpoint (left vertex region).
+        assert!(alpha(0, 10) > 200 || alpha(1, 10) > 200);
+        // Outside corners stay empty.
+        assert_eq!(alpha(0, 0), 0);
+    }
+
+    #[test]
     fn hex_tile_alpha_is_a_pointy_top_hexagon() {
-        // Aspect must match the hexagon bounding box (√3·R × 2·R): 18×20 ≈.
         let img = hex_tile_image(18, 20, [1.0, 0.0, 0.0]);
         let data = img.data.expect("has pixels");
         let w = 18u32;

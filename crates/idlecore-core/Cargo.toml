@@ -24,3 +24,8 @@ base64 = { workspace = true }
 # Server-client protocol (Spec 021): borsh-style serialization + lz4 compression.
 borsh = { workspace = true }
 lz4_flex = { workspace = true }
+
+[dev-dependencies]
+# Offline Earth-map generator (`examples/earthgen.rs`): decodes NASA Blue
+# Marble JPEGs into the embedded biome raster.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }

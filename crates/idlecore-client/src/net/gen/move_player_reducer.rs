@@ -11,6 +11,8 @@ pub(super) struct MovePlayerArgs {
     pub dir_y: f32,
     pub intended_speed: f32,
     pub dt: f32,
+    pub to_x: f32,
+    pub to_y: f32,
 }
 
 impl From<MovePlayerArgs> for super::Reducer {
@@ -20,6 +22,8 @@ impl From<MovePlayerArgs> for super::Reducer {
             dir_y: args.dir_y,
             intended_speed: args.intended_speed,
             dt: args.dt,
+            to_x: args.to_x,
+            to_y: args.to_y,
         }
     }
 }
@@ -45,8 +49,10 @@ pub trait move_player {
         dir_y: f32,
         intended_speed: f32,
         dt: f32,
+        to_x: f32,
+        to_y: f32,
     ) -> __sdk::Result<()> {
-        self.move_player_then(dir_x, dir_y, intended_speed, dt, |_, _| {})
+        self.move_player_then(dir_x, dir_y, intended_speed, dt, to_x, to_y, |_, _| {})
     }
 
     /// Request that the remote module invoke the reducer `move_player` to run as soon as possible,
@@ -61,6 +67,8 @@ pub trait move_player {
         dir_y: f32,
         intended_speed: f32,
         dt: f32,
+        to_x: f32,
+        to_y: f32,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -75,6 +83,8 @@ impl move_player for super::RemoteReducers {
         dir_y: f32,
         intended_speed: f32,
         dt: f32,
+        to_x: f32,
+        to_y: f32,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -86,6 +96,8 @@ impl move_player for super::RemoteReducers {
                 dir_y,
                 intended_speed,
                 dt,
+                to_x,
+                to_y,
             },
             callback,
         )

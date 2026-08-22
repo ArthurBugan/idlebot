@@ -13,6 +13,7 @@ use plugins::camera::CameraZoom;
 
 mod player;
 mod idle;
+mod inventory;
 mod minimap;
 mod plugins;
 mod skins;
@@ -50,14 +51,19 @@ fn main() {
         .add_plugins(net::plugin::NetPlugin)
         .add_plugins(net::hud::NetHudPlugin)
         .add_plugins(net::market::MarketPlugin)
+        .add_plugins(inventory::InventoryPlugin)
         .insert_resource(PlayerTransform::default())
         .insert_resource(idle::IdleGainsState::default())
         .insert_resource(world_floor::FloorPlantState::default())
+        .insert_resource(world_floor::WorldObjectState::default())
+        .init_resource::<world_floor::ActionTarget>()
         .add_systems(Startup, (
             setup,
             assets::load_all_assets,
             minimap::spawn_minimap_ui,
             idle::spawn_idle_panel,
+            world_floor::spawn_action_box,
+            world_floor::init_prop_textures,
         ))
         .add_systems(Update, (
             minimap::handle_input,
@@ -86,6 +92,10 @@ fn main() {
             minimap::save_explored_on_exit,
             idle::update_idle_gains_panel,
             world_floor::update_plant_visuals,
+            world_floor::update_world_object_visuals,
+            world_floor::update_action_box,
+        ))
+        .add_systems(Update, (
             world_floor::init_water_textures,
             world_floor::init_solid_floor_textures,
             world_floor::update_world_floor
@@ -143,15 +153,29 @@ fn take_debug_screenshot(
 
 /// Setup the 2D camera and the player sprite.
 fn setup(mut commands: Commands) {
+    // Start looking at the Earth-replica spawn forest (the server row snaps
+    // us precisely once it replicates).
+    let (sq, sr) = idlecore_core::earth::spawn_hex();
+    let (wx, wy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
+        sq,
+        sr,
+        idlecore_core::world_gen::WorldGenConfig::HEX_SIZE,
+    );
+
     // 2D camera: follows the player (plugins/camera.rs), zoomed to the
     // tile-art pixels-per-unit scale.
     commands.spawn((
         Name::new("camera2d"),
         Camera2d,
-        Transform::from_xyz(0.0, 0.0, 1000.0),
+        Transform::from_xyz(wx, wy, 1000.0),
         Projection::Orthographic(OrthographicProjection {
             // Bevy 0.19: scale = world units per pixel (1/px-per-unit).
             scale: 1.0 / CameraZoom::default().scale,
+            // Planet-scale draw order: world y (±~100k at 1:100) maps onto z,
+            // so the clip planes must cover the whole globe — the default_2d
+            // band ([0,2000] world z) made everything vanish past ±1000.
+            near: -350_000.0,
+            far: 350_000.0,
             ..OrthographicProjection::default_2d()
         }),
     ));
@@ -166,10 +190,10 @@ fn setup(mut commands: Commands) {
             custom_size: Some(Vec2::splat(PLAYER_SIZE)),
             ..default()
         },
-        Transform::from_xyz(0.0, 0.0, 50.0),
+        Transform::from_xyz(wx, wy, crate::world_floor::prop_depth(wy) + 50.0),
         GlobalTransform::default(),
         player::ClientPlayer {
-            position: Vec3::ZERO,
+            position: Vec3::new(wx, wy, 0.0),
             velocity: Vec2::ZERO,
             current_hex: None,
             gold: 0,

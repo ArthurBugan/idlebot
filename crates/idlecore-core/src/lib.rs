@@ -26,6 +26,7 @@ pub mod voice;
 pub mod idle_config;
 pub mod minimap;
 pub mod world_gen;
+pub mod earth;
 pub mod world_biome;
 pub mod world_water;
 pub mod world_mesh;

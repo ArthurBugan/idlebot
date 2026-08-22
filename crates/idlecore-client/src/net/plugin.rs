@@ -378,17 +378,52 @@ fn interact_key_press(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut net: ResMut<Net>,
     player: Option<Query<&ClientPlayer>>,
+    target: Res<crate::world_floor::ActionTarget>,
+    inventory: Res<crate::inventory::Inventory>,
 ) {
     if !keyboard.just_pressed(KeyCode::KeyE) {
         return;
     }
-    if let Some(p) = player.as_ref().and_then(|q| q.single().ok()) {
-        let hex_id = Net::hex_id_at(p.position.x, p.position.y);
+    // Ground actions aim at the Stardew-style targeting box, not the feet.
+    let hex_id = idlecore_core::hex::HexCoord::new(target.q, target.r).to_id();
+    if let Some(_p) = player.as_ref().and_then(|q| q.single().ok()) {
         let Some(conn) = net.conn.as_ref() else {
             net.push(NetEvent::ServerMessage("E: not connected".to_string()));
             return;
         };
         let tx = net.sender();
+
+        // Interactables on the tile come first: gather grass, mine rocks,
+        // harvest trees — regardless of the held item.
+        let mut node: Option<(u64, String, bool)> = None;
+        for obj in conn.db.world_object().iter().filter(|o| o.hex_id == hex_id) {
+            let mature = obj.mature_at == 0;
+            match (&obj.kind[..], mature, &node) {
+                ("Grass", _, None) => node = Some((obj.object_id, "Grass".into(), true)),
+                ("Rock", _, None) => node = Some((obj.object_id, "Rock".into(), true)),
+                ("Tree", true, _) | ("Tree", false, None) => {
+                    node = Some((obj.object_id, "Tree".into(), mature))
+                }
+                _ => {}
+            }
+        }
+        if let Some((object_id, kind, mature)) = node {
+            if kind == "Tree" && !mature {
+                net.push(NetEvent::ServerMessage("E: tree still growing".to_string()));
+                return;
+            }
+            super::hud::send_reducer(&mut net, |r| {
+                r.gather_object_then(
+                    object_id,
+                    super::hud::reducer_report(
+                        if kind == "Grass" { "gather" } else { "harvest_tree" },
+                        tx.clone(),
+                        hex_id,
+                    ),
+                )
+            });
+            return;
+        }
         let Some(hex) = conn.db.hex_tile().hex_id().find(&hex_id) else {
             net.push(NetEvent::ServerMessage(format!("E: hex {hex_id} not found")));
             return;
@@ -418,16 +453,19 @@ fn interact_key_press(
             super::hud::send_reducer(&mut net, |r| {
                 r.clean_then(hex_id, super::hud::reducer_report("clean", tx.clone(), hex_id))
             });
-        } else if hex.terrain == "Grass" || hex.terrain == "Forest" {
+        } else if inventory.active_item().map(String::as_str) == Some("Seed") {
+            // Empty natural tile with a seed in hand: grow a tree here.
             super::hud::send_reducer(&mut net, |r| {
-                r.plant_then(
+                r.plant_tree_then(
                     hex_id,
-                    "Wheat".to_string(),
-                    super::hud::reducer_report("plant", tx.clone(), hex_id),
+                    super::hud::reducer_report("plant_tree", tx.clone(), hex_id),
                 )
             });
         } else {
-            net.push(NetEvent::ServerMessage(format!("E: cannot interact on {}", hex.terrain)));
+            net.push(NetEvent::ServerMessage(format!(
+                "E: nothing to interact with on {}",
+                hex.terrain
+            )));
         }
     }
 }
@@ -470,7 +508,7 @@ fn net_drain(
             WorldGenConfig::HEX_SIZE,
         );
         // 2D world: x = east, y = north; z carries the draw order.
-        transform.translation = Vec3::new(wx, wy, -wy + 50.0);
+        transform.translation = Vec3::new(wx, wy, crate::world_floor::prop_depth(wy) + 50.0);
         player.position = Vec3::new(wx, wy, 0.0);
         player.current_hex = Some(crate::player::CurrentHex { q, r });
         player_transform.translation = transform.translation;
@@ -550,6 +588,8 @@ fn sync_player_position(
         dir.y,
         speed,
         dt,
+        pos.x,
+        pos.y,
         reducer_report("move", tx.clone(), hex_id),
     ));
 }
@@ -616,7 +656,7 @@ fn sync_remote_players(
                 // Persisted spawn: once per session, land on the row position.
                 if !p.position_restored {
                     if let Ok(mut t) = bodies.single_mut() {
-                        t.translation = Vec3::new(row.position_x, row.position_y, -row.position_y + 50.0);
+                        t.translation = Vec3::new(row.position_x, row.position_y, crate::world_floor::prop_depth(row.position_y) + 50.0);
                     }
                     p.position = Vec3::new(row.position_x, row.position_y, 0.0);
                     p.current_hex = Some(crate::player::CurrentHex { q: row.hex_q, r: row.hex_r });
@@ -657,7 +697,7 @@ fn sync_remote_players(
         );
         // 2D: x = east, y = north; z = draw order (above tiles, below the
         // local player's +50 offset).
-        let pos = Vec3::new(row.position_x, row.position_y, -row.position_y + 40.0);
+        let pos = Vec3::new(row.position_x, row.position_y, crate::world_floor::prop_depth(row.position_y) + 40.0);
         let mut found = false;
         for (entity, marker, transform, interp_slot) in markers.iter_mut() {
             let _ = entity;

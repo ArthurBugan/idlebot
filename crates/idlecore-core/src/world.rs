@@ -1,4 +1,5 @@
-//! World generation — 1:10000 scale Earth replica.
+//! World generation — legacy procedural module; the live map is the
+//! real-Earth replica in `earth` (1:100 scale).
 //! Uses proper continental shapes and latitude-based biomes.
 
 use rand::rngs::SmallRng;

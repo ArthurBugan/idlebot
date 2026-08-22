@@ -89,7 +89,7 @@ All vehicles are electric (thematic consistency with conservation). Speed affect
 ### 3.1 Structure
 
 - **Type:** Shared hexagonal grid, rendered as an isometric 2D world
-- **Scale:** 1:10,000 (game coordinates × 10,000 = approximate real-world meters)
+- **Scale:** 1:100 (game coordinates × 100 = approximate real-world meters)
 - **Hex radius:** 10 meters (game units)
 - **Map size:** ~64 hexes radius in each direction (axial coords)
 - **Total hexes:** ~12,480 (with axial constraint `|s| <= map_radius`)

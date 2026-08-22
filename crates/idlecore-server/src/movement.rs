@@ -24,10 +24,13 @@ fn displacement_cap(speed: f32, elapsed: f32) -> f32 {
     speed * elapsed.max(0.05) * SPEED_TOLERANCE
 }
 
-/// Move reducer body. `dir_x/dir_y` is the normalized client input direction,
-/// `intended_speed` the base speed the client claims (10 m/s × multiplier).
-/// The server recomputes a bounded displacement from the elapsed time, so a
-/// client spamming stale updates cannot teleport or outrun its vehicle.
+/// Move reducer body. `dir_x/dir_y` is the client's input direction,
+/// `intended_speed` the base speed it claims (10 m/s × multiplier) and
+/// `(to_x, to_y)` the destination it reports. The server accepts the
+/// destination as long as the step fits inside its speed budget for the
+/// elapsed time (anti-teleport), which also keeps the persisted hex in
+/// lockstep with the player's real position — interactions and occupancy
+/// then judge range against truth instead of drifted dead-reckoning.
 pub fn move_player(
     ctx: &ReducerContext,
     address: &str,
@@ -35,6 +38,8 @@ pub fn move_player(
     dir_y: f32,
     intended_speed: f32,
     dt: f32,
+    to_x: f32,
+    to_y: f32,
 ) -> Result<(f32, f32, u64, bool), String> {
     let now = now_secs(ctx);
     let p = crate::economy::find_player(ctx, &address.to_lowercase())
@@ -48,27 +53,38 @@ pub fn move_player(
     let max_speed = BASE_SPEED * multiplier;
     let speed = intended_speed.clamp(0.0, max_speed);
 
-    let mag = (dir_x * dir_x + dir_y * dir_y).sqrt();
-    if mag <= 0.0 {
-        // Still (no input): refresh online status only.
+    let dx = to_x - p.position_x;
+    let dy = to_y - p.position_y;
+    let want = (dx * dx + dy * dy).sqrt();
+
+    if want <= 1e-4 {
+        // Still (no movement): refresh online status only.
         update_hex(ctx, &p.address, p.hex_q, p.hex_r, p.position_x, p.position_y, now);
         return Ok((p.position_x, p.position_y, p.hex_id, false));
     }
 
-    let dir_x = dir_x / mag;
-    let dir_y = dir_y / mag;
+    // Displacement budget over the flagged elapsed time — the
+    // server-authoritative speed limit (Spec 018 FR7).
+    let distance_allowed = (speed * elapsed).min(displacement_cap(max_speed, elapsed));
 
-    // Displacement bounded by max_speed over the flagged elapsed time; this
-    // is the server-authoritative speed limit (Spec 018 FR7).
-    let distance = (speed * elapsed).min(displacement_cap(max_speed, elapsed));
+    let (x, y) = if want <= distance_allowed {
+        // Within budget: trust the reported destination exactly — no drift.
+        (to_x, to_y)
+    } else {
+        // Overspeed: clamp the step along the requested direction.
+        let ux = dx / want;
+        let uy = dy / want;
+        (
+            p.position_x + ux * distance_allowed,
+            p.position_y + uy * distance_allowed,
+        )
+    };
 
-    let mut x = p.position_x + dir_x * distance;
-    let mut y = p.position_y + dir_y * distance;
-
-    // World bounds (Spec 003 FR4): the grid is R=64 away from the origin.
-    let world_radius = crate::world::WORLD_RADIUS as f32 * 10.0 * 1.9;
-    x = x.clamp(-world_radius, world_radius);
-    y = y.clamp(-world_radius, world_radius);
+    // World bounds (Spec 003 FR4): the equirectangular Earth replica plane.
+    let half_w = idlecore_core::earth::EARTH_HALF_W_UNITS as f32;
+    let half_h = idlecore_core::earth::EARTH_HALF_H_UNITS as f32;
+    let x = x.clamp(-half_w, half_w);
+    let y = y.clamp(-half_h, half_h);
 
     let (q, r) = hex_at(x, y);
     let corrected = (q, r) != (p.hex_q, p.hex_r);

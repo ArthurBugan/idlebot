@@ -3,7 +3,7 @@
 
 use spacetimedb::{ReducerContext, Table};
 use crate::types::{
-    hex_id_of, now_secs, player, Player, RAPID_LOGIN_BAN_SECS, RAPID_LOGIN_WINDOW_SECS,
+    hex_center, hex_id_of, now_secs, player, Player, RAPID_LOGIN_BAN_SECS, RAPID_LOGIN_WINDOW_SECS,
     STARTING_GOLD,
 };
 
@@ -41,6 +41,24 @@ pub fn resolve_login(
     }
     let mut player = existing.clone();
     player.identity = identity.to_string();
+
+    // Never let anyone log in standing on open water (e.g. legacy saves from
+    // before the Earth replica, or coordinates outside the map): snap to the
+    // resolved land spawn.
+    if !idlecore_core::earth::is_land_at(player.position_x, player.position_y) {
+        let (sq, sr) = idlecore_core::earth::resolve_spawn_hex();
+        let (sx, sy) = hex_center(sq, sr);
+        tracing::info!(
+            "RELOCATE {lower}: was at sea ({:.0},{:.0}) -> spawn ({sq},{sr})",
+            player.position_x,
+            player.position_y
+        );
+        player.hex_q = sq;
+        player.hex_r = sr;
+        player.hex_id = hex_id_of(sq, sr);
+        player.position_x = sx;
+        player.position_y = sy;
+    }
 
     // Idle-gain anti-cheat: rapid re-login within 5 min of the previous one
     // triggers a 90-day "new player" state (PROPOSAL 2.2).
@@ -89,8 +107,11 @@ pub fn login(
     Ok((outcome.created, outcome.rapid))
 }
 
-/// Create a brand-new player (Spec 014): starting gold 100, level 1.
+/// Create a brand-new player (Spec 014): starting gold 100, level 1, spawned
+/// on solid land (resolved Earth-replica spawn, never mid-ocean).
 fn new_player(address: &str, identity: &str, now: u64) -> Player {
+    let (sq, sr) = idlecore_core::earth::resolve_spawn_hex();
+    let (sx, sy) = hex_center(sq, sr);
     Player {
         address: address.to_string(),
         identity: identity.to_string(),
@@ -105,11 +126,11 @@ fn new_player(address: &str, identity: &str, now: u64) -> Player {
         eco_points: 0,
         lifetime_gold_earned: 0,
         lifetime_gold_spent: 0,
-        position_x: 0.0,
-        position_y: 0.0,
-        hex_q: 0,
-        hex_r: 0,
-        hex_id: 0,
+        position_x: sx,
+        position_y: sy,
+        hex_q: sq,
+        hex_r: sr,
+        hex_id: hex_id_of(sq, sr),
         vehicle: "None".to_string(),
         cosmetics: "[]".to_string(),
         templates: "[]".to_string(),
@@ -215,6 +236,9 @@ pub fn update_hex(ctx: &ReducerContext, address: &str, q: i32, r: i32, x: f32, y
     p.position_y = y;
     p.last_seen = now;
     ctx.db.player().address().update(p);
+    // Lazy world materialization: tiles come into existence as players
+    // approach them (the planet is too large to pre-generate).
+    crate::world::ensure_tiles_around(ctx, q, r);
 }
 
 /// Count online players currently in a hex (Spec 018 FR3 occupancy).

@@ -53,7 +53,8 @@ pub enum MinimapZoom {
 
 impl MinimapZoom {
     /// Pixels per world unit. Tuned for hex radius 10 (server scale): the
-    /// World level fits the whole ~3800-unit map into the 200px minimap.
+    /// World level shows a ~5300-unit region (~300+ hexes) of the planet
+    /// in the 200px minimap; at 1:100 scale no zoom level fits the globe.
     pub fn pixel_scale(&self) -> f32 {
         match self {
             MinimapZoom::Local => 0.15,
@@ -718,7 +719,11 @@ pub fn load_nearby_chunks(
 // Input Handling
 // ============================================================================
 
-/// Handle minimap input: zoom (mouse wheel), rotation (N), expand (M), waypoints (right-click).
+/// Handle minimap input: zoom (mouse wheel), rotation (N), expand (M),
+/// waypoints (right-click). Left-click selects a hex for teleporting — on
+/// the minimap itself or anywhere on the world floor — and a double-click
+/// on the world floor fires the teleport immediately.
+#[allow(clippy::too_many_arguments)]
 pub fn handle_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut scroll: MessageReader<MouseWheel>,
@@ -726,6 +731,11 @@ pub fn handle_input(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mut minimap_state: ResMut<MinimapState>,
     mut minimap_waypoints: ResMut<MinimapWaypoints>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    widgets: Query<&Interaction>,
+    mut net: ResMut<crate::net::plugin::Net>,
+    mut latency: ResMut<crate::net::plugin::ServerLatency>,
+    mut last_click: Local<Option<(std::time::Instant, Vec2)>>,
 ) {
     if keyboard.just_pressed(KeyCode::KeyN) {
         minimap_state.rotation = minimap_state.rotation.toggle();
@@ -789,9 +799,13 @@ pub fn handle_input(
     }
 
     if mouse_buttons.just_pressed(MouseButton::Left) {
+        let window = windows.single().ok();
+        let cursor = window.as_ref().and_then(|w| w.cursor_position());
+        let mut selected = false;
         if let (Some(player_pos), Some(mm_pos)) =
             (minimap_state.player_pos, get_minimap_mouse_pos(&windows, minimap_state.mm_size()))
         {
+            // Click on the minimap: select the hex under the cursor.
             let pixel_scale = minimap_state.pixel_scale();
             let mm_center = minimap_state.mm_size() / 2.0;
             let rotation = minimap_state.rotation.map_rotation(minimap_state.facing_angle);
@@ -805,9 +819,52 @@ pub fn handle_input(
             let (q, r) = world_pos_to_hex(wx, wz, WorldGenConfig::HEX_SIZE);
             minimap_state.selected_hex = Some((q, r));
             minimap_state.selected_px = Some(mm_pos);
+            selected = true;
+        } else if let Some(cursor) = cursor {
+            // Click on the world floor: pick the hex under the camera.
+            // Never wipe an existing selection here — unrelated clicks (e.g.
+            // the Teleport button itself) used to race it away before the
+            // button handler could read it.
+            let over_widget = widgets
+                .iter()
+                .any(|i| matches!(i, Interaction::Hovered | Interaction::Pressed));
+            if !over_widget {
+                if let Ok((camera, cam_transform)) = cameras.single() {
+                    if let Ok(world) = camera.viewport_to_world_2d(cam_transform, cursor) {
+                        let (q, r) = world_pos_to_hex(world.x, world.y, WorldGenConfig::HEX_SIZE);
+                        minimap_state.selected_hex = Some((q, r));
+                        // Keep the selection ring on the minimap in sync.
+                        if let Some(player_pos) = minimap_state.player_pos {
+                            let (mx, my) = world_to_map_pixel(
+                                (world.x, world.y),
+                                (player_pos.x, player_pos.y),
+                                minimap_state.pixel_scale(),
+                                minimap_state.mm_size() / 2.0,
+                                minimap_state.rotation.map_rotation(minimap_state.facing_angle),
+                            );
+                            minimap_state.selected_px = Some((mx, my));
+                        }
+                        selected = true;
+                    }
+                }
+            }
+        }
+        // A fresh selection on either surface: a second click within 450 ms
+        // and ~14 px of the first fires the teleport immediately.
+        if selected {
+            let now = std::time::Instant::now();
+            let at = cursor.unwrap_or_default();
+            let double = matches!(*last_click, Some((t0, p0))
+                if now.duration_since(t0).as_millis() < 450 && at.distance(p0) < 14.0);
+            if double {
+                crate::net::hud::try_send_teleport(&mut net, &mut minimap_state, &mut latency);
+                *last_click = None;
+            } else {
+                *last_click = Some((now, at));
+            }
         } else {
-            minimap_state.selected_hex = None;
-            minimap_state.selected_px = None;
+            // UI/empty-space clicks reset the double-click chain.
+            *last_click = None;
         }
     }
 }
