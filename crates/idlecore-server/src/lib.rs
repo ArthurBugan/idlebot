@@ -220,11 +220,16 @@ pub fn gather_object(ctx: &ReducerContext, object_id: u64) -> Result<(), String>
 }
 
 #[reducer]
-pub fn plant_tree(ctx: &ReducerContext, hex_id: u64) -> Result<(), String> {
+pub fn plant_tree(
+    ctx: &ReducerContext,
+    hex_id: u64,
+    slot_x: i32,
+    slot_y: i32,
+) -> Result<(), String> {
     let Some(address) = address_of(ctx) else {
         return Err("Not logged in — connect first".to_string());
     };
-    crate::objects::plant_tree(ctx, &address, hex_id)
+    crate::objects::plant_tree(ctx, &address, hex_id, slot_x, slot_y)
 }
 
 // ---------------------------------------------------------------------------

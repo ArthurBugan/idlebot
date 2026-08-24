@@ -1,13 +1,16 @@
 //! IdleBot — Bevy 0.19 2D hex-grid client.
 //!
-//! 2D world: x = east, y = north. Tiles are isometric sprites
-//! (`assets/models/Isometric Tiles Base/PNG/`), the player is a skin sprite
-//! (`assets/skins/*.png`), and the server protocol is unchanged.
+//! 2D world: x = east, y = north. Tiles are pixel-art isometric hexes built
+//! from the Tiny* packs (`assets/models/Tiny */Tiles/`), the player is an
+//! 8-direction animated pixel hero (`skins.rs`), and the server protocol is
+//! unchanged.
 
 #![allow(clippy::type_complexity)]
 
 use bevy::prelude::*;
-use bevy::render::view::window::screenshot::{Screenshot, save_to_disk};
+use bevy::diagnostic::{
+    EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin,
+};
 use crate::player::{Player, PlayerTransform, PLAYER_SIZE};
 use plugins::camera::CameraZoom;
 
@@ -20,6 +23,7 @@ mod skins;
 mod net;
 mod fps_counter;
 mod world_floor;
+mod tiny;
 mod assets;
 
 
@@ -30,7 +34,17 @@ fn main() {
         .init();
 
     App::new()
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()))
+        // Perf tracking: logs avg/max frame time + entity count every 5 s so
+        // fps oscillation is visible in the log alongside world growth.
+        .add_plugins((
+            FrameTimeDiagnosticsPlugin::default(),
+            EntityCountDiagnosticsPlugin::default(),
+            LogDiagnosticsPlugin {
+                wait_duration: std::time::Duration::from_secs(5),
+                ..default()
+            },
+        ))
         .insert_resource(CameraZoom::default())
         .insert_resource(plugins::world::StreamingWorldResource::default())
         .insert_resource(minimap::MinimapState::default())
@@ -40,13 +54,15 @@ fn main() {
         .insert_resource(minimap::ExploredHexes::default())
         .insert_resource(minimap::WaypointEntityMap::default())
         .insert_resource(minimap::ChunkLoadState::default())
-        .insert_resource(world_floor::WorldFloor::default())
+        .insert_resource(world_floor::FloorTiles::default())
         .insert_resource(world_floor::WaterTextures::default())
         .insert_resource(world_floor::SolidFloorTextures::default())
+        .insert_resource(tiny::TinyKeyQueue::default())
         .add_plugins(plugins::player::PlayerPlugin)
         .add_plugins(plugins::camera::CameraPlugin)
         .add_plugins(plugins::world::WorldPlugin)
         .add_plugins(skins::SkinsPlugin)
+        .add_systems(Update, tiny::process_key_queue)
         .add_plugins(fps_counter::FpsCounterPlugin)
         .add_plugins(net::plugin::NetPlugin)
         .add_plugins(net::hud::NetHudPlugin)
@@ -64,6 +80,7 @@ fn main() {
             idle::spawn_idle_panel,
             world_floor::spawn_action_box,
             world_floor::init_prop_textures,
+            world_floor::init_deco_textures,
         ))
         .add_systems(Update, (
             minimap::handle_input,
@@ -103,7 +120,6 @@ fn main() {
                 .after(minimap::load_nearby_chunks)
                 .after(world_floor::init_water_textures)
                 .after(world_floor::init_solid_floor_textures),
-            take_debug_screenshot,
         ))
         .add_systems(Update, (
             assets::spawn_cosmetic_layers,
@@ -118,37 +134,6 @@ fn main() {
             assets::expire_burst_particles,
         ))
         .run();
-}
-
-/// Temporary diagnostic: screenshot the main window a few seconds after boot.
-fn take_debug_screenshot(
-    time: Res<Time>,
-    player: Res<PlayerTransform>,
-    zoom: Res<CameraZoom>,
-    floor: Res<world_floor::WorldFloor>,
-    mut commands: Commands,
-    mut shot: Local<f32>,
-) {
-    if *shot == 0.0 {
-        *shot = time.elapsed_secs() + 25.0;
-        return;
-    }
-    if time.elapsed_secs() >= *shot && *shot > 0.0 {
-        info!(
-            "debug: player at ({:.1}, {:.1}) zoom {:.1}px/u floor_chunks {}",
-            player.translation.x,
-            player.translation.y,
-            zoom.scale,
-            floor.entities.len()
-        );
-        commands.spawn((
-            Screenshot::primary_window(),
-            Transform::default(),
-            GlobalTransform::default(),
-        ))
-        .observe(save_to_disk("/tmp/idlebot_floor_shot.png"));
-        *shot = -1.0;
-    }
 }
 
 /// Setup the 2D camera and the player sprite.
@@ -190,6 +175,8 @@ fn setup(mut commands: Commands) {
             custom_size: Some(Vec2::splat(PLAYER_SIZE)),
             ..default()
         },
+        // Feet on the logical position; the tiny tiles are bottom-aligned.
+        bevy::sprite::Anchor::BOTTOM_CENTER,
         Transform::from_xyz(wx, wy, crate::world_floor::prop_depth(wy) + 50.0),
         GlobalTransform::default(),
         player::ClientPlayer {

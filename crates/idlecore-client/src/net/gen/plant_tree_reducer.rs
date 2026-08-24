@@ -8,12 +8,16 @@ use spacetimedb_sdk::__codegen::{self as __sdk, __lib, __sats, __ws};
 #[sats(crate = __lib)]
 pub(super) struct PlantTreeArgs {
     pub hex_id: u64,
+    pub slot_x: i32,
+    pub slot_y: i32,
 }
 
 impl From<PlantTreeArgs> for super::Reducer {
     fn from(args: PlantTreeArgs) -> Self {
         Self::PlantTree {
             hex_id: args.hex_id,
+            slot_x: args.slot_x,
+            slot_y: args.slot_y,
         }
     }
 }
@@ -33,8 +37,8 @@ pub trait plant_tree {
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
     /// /// Use [`plant_tree:plant_tree_then`] to run a callback after the reducer completes.
-    fn plant_tree(&self, hex_id: u64) -> __sdk::Result<()> {
-        self.plant_tree_then(hex_id, |_, _| {})
+    fn plant_tree(&self, hex_id: u64, slot_x: i32, slot_y: i32) -> __sdk::Result<()> {
+        self.plant_tree_then(hex_id, slot_x, slot_y, |_, _| {})
     }
 
     /// Request that the remote module invoke the reducer `plant_tree` to run as soon as possible,
@@ -46,6 +50,8 @@ pub trait plant_tree {
     fn plant_tree_then(
         &self,
         hex_id: u64,
+        slot_x: i32,
+        slot_y: i32,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -57,12 +63,20 @@ impl plant_tree for super::RemoteReducers {
     fn plant_tree_then(
         &self,
         hex_id: u64,
+        slot_x: i32,
+        slot_y: i32,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp
-            .invoke_reducer_with_callback(PlantTreeArgs { hex_id }, callback)
+        self.imp.invoke_reducer_with_callback(
+            PlantTreeArgs {
+                hex_id,
+                slot_x,
+                slot_y,
+            },
+            callback,
+        )
     }
 }

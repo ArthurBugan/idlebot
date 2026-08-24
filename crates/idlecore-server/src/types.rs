@@ -435,8 +435,9 @@ pub struct PlayerItem {
     pub count: u64,
 }
 
-/// Tombstones for consumed natural nodes: without these, the deterministic
-/// roller would resurrect every gathered tuft / mined rock on the next visit.
+/// Timed respawn records for consumed natural nodes: a gathered tuft/rock/
+/// tree stays gone until `respawn_at`, then the deterministic roller brings
+/// it back on the next visit.
 #[derive(Clone, Debug)]
 #[spacetimedb::table(
     accessor = object_removed,
@@ -449,6 +450,8 @@ pub struct ObjectRemoved {
     pub key: String,
     pub hex_id: u64,
     pub slot: u8,
+    /// Unix seconds when the slot becomes rollable again.
+    pub respawn_at: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +460,10 @@ pub struct ObjectRemoved {
 
 /// Maximum concurrent players allowed in one hex (PROPOSAL 3.3).
 pub const MAX_PLAYERS_PER_HEX: usize = 8;
+/// Natural nodes respawn 10-60 minutes after being gathered (exact cooldown
+/// is deterministic per hex+slot).
+pub const RESPAWN_MIN_SECS: u64 = 10 * 60;
+pub const RESPAWN_MAX_SECS: u64 = 60 * 60;
 /// Interaction lock timeout (PROPOSAL 3.3): 2 s to acquire a hex lock.
 pub const HEX_LOCK_TIMEOUT_SECS: u64 = 2;
 /// "Already harvested" rejection cooldown (PROPOSAL 3.3): 3 s.

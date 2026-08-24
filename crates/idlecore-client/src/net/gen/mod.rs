@@ -29,6 +29,8 @@ pub mod logout_reducer;
 pub mod market_listing_table;
 pub mod market_listing_type;
 pub mod move_player_reducer;
+pub mod object_removed_table;
+pub mod object_removed_type;
 pub mod plant_reducer;
 pub mod plant_tree_reducer;
 pub mod player_cosmetic_table;
@@ -87,6 +89,8 @@ pub use logout_reducer::logout;
 pub use market_listing_table::*;
 pub use market_listing_type::MarketListing;
 pub use move_player_reducer::move_player;
+pub use object_removed_table::*;
+pub use object_removed_type::ObjectRemoved;
 pub use plant_reducer::plant;
 pub use plant_tree_reducer::plant_tree;
 pub use player_cosmetic_table::*;
@@ -180,6 +184,8 @@ pub enum Reducer {
     },
     PlantTree {
         hex_id: u64,
+        slot_x: i32,
+        slot_y: i32,
     },
     PublishListing {
         title: String,
@@ -322,11 +328,15 @@ impl __sdk::Reducer for Reducer {
                     plant_type: plant_type.clone(),
                 })
             }
-            Reducer::PlantTree { hex_id } => {
-                __sats::bsatn::to_vec(&plant_tree_reducer::PlantTreeArgs {
-                    hex_id: hex_id.clone(),
-                })
-            }
+            Reducer::PlantTree {
+                hex_id,
+                slot_x,
+                slot_y,
+            } => __sats::bsatn::to_vec(&plant_tree_reducer::PlantTreeArgs {
+                hex_id: hex_id.clone(),
+                slot_x: slot_x.clone(),
+                slot_y: slot_y.clone(),
+            }),
             Reducer::PublishListing {
                 title,
                 description,
@@ -388,6 +398,7 @@ pub struct DbUpdate {
     hex_tile: __sdk::TableUpdate<HexTile>,
     idle_gain: __sdk::TableUpdate<IdleGain>,
     market_listing: __sdk::TableUpdate<MarketListing>,
+    object_removed: __sdk::TableUpdate<ObjectRemoved>,
     player: __sdk::TableUpdate<Player>,
     player_cosmetic: __sdk::TableUpdate<CosmeticOwned>,
     player_item: __sdk::TableUpdate<PlayerItem>,
@@ -421,6 +432,9 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
                 "market_listing" => db_update
                     .market_listing
                     .append(market_listing_table::parse_table_update(table_update)?),
+                "object_removed" => db_update
+                    .object_removed
+                    .append(object_removed_table::parse_table_update(table_update)?),
                 "player" => db_update
                     .player
                     .append(player_table::parse_table_update(table_update)?),
@@ -498,6 +512,9 @@ impl __sdk::DbUpdate for DbUpdate {
         diff.market_listing = cache
             .apply_diff_to_table::<MarketListing>("market_listing", &self.market_listing)
             .with_updates_by_pk(|row| &row.listing_id);
+        diff.object_removed = cache
+            .apply_diff_to_table::<ObjectRemoved>("object_removed", &self.object_removed)
+            .with_updates_by_pk(|row| &row.key);
         diff.player = cache
             .apply_diff_to_table::<Player>("player", &self.player)
             .with_updates_by_pk(|row| &row.address);
@@ -571,6 +588,9 @@ impl __sdk::DbUpdate for DbUpdate {
                 "market_listing" => db_update
                     .market_listing
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "object_removed" => db_update
+                    .object_removed
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "player" => db_update
                     .player
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
@@ -635,6 +655,9 @@ impl __sdk::DbUpdate for DbUpdate {
                 "market_listing" => db_update
                     .market_listing
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "object_removed" => db_update
+                    .object_removed
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "player" => db_update
                     .player
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
@@ -693,6 +716,7 @@ pub struct AppliedDiff<'r> {
     hex_tile: __sdk::TableAppliedDiff<'r, HexTile>,
     idle_gain: __sdk::TableAppliedDiff<'r, IdleGain>,
     market_listing: __sdk::TableAppliedDiff<'r, MarketListing>,
+    object_removed: __sdk::TableAppliedDiff<'r, ObjectRemoved>,
     player: __sdk::TableAppliedDiff<'r, Player>,
     player_cosmetic: __sdk::TableAppliedDiff<'r, CosmeticOwned>,
     player_item: __sdk::TableAppliedDiff<'r, PlayerItem>,
@@ -729,6 +753,11 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
         callbacks.invoke_table_row_callbacks::<MarketListing>(
             "market_listing",
             &self.market_listing,
+            event,
+        );
+        callbacks.invoke_table_row_callbacks::<ObjectRemoved>(
+            "object_removed",
+            &self.object_removed,
             event,
         );
         callbacks.invoke_table_row_callbacks::<Player>("player", &self.player, event);
@@ -1452,6 +1481,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
         hex_tile_table::register_table(client_cache);
         idle_gain_table::register_table(client_cache);
         market_listing_table::register_table(client_cache);
+        object_removed_table::register_table(client_cache);
         player_table::register_table(client_cache);
         player_cosmetic_table::register_table(client_cache);
         player_item_table::register_table(client_cache);
@@ -1471,6 +1501,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
         "hex_tile",
         "idle_gain",
         "market_listing",
+        "object_removed",
         "player",
         "player_cosmetic",
         "player_item",

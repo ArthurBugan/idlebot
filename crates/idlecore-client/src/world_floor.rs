@@ -1,12 +1,11 @@
-//! Renders the streamed hex world as 2D isometric tile sprites.
+//! Renders the streamed hex world as a Stardew-style square tile floor.
 //!
-//! One parent entity per loaded chunk, with per-hex `Sprite` children built
-//! from the `Isometric Miniature` packs (`assets/models/.../`): hand-drawn
-//! 256px diamonds (Dungeon dirt/stone, Prototype grass/floor) that need little
-//! upscaling at the default zoom, plus generated flat-blue water diamonds
-//! (crisp at any zoom, shaded by water class) and pine-tree overlays on
-//! forested terrain. Chunks are spawned lazily as they stream in and despawned
-//! when they leave the rendered radius.
+//! One parent entity per loaded chunk. The ground is a grid of square slots
+//! (`idlecore_core::slots`, one 16px Tiny* art tile each): every slot is
+//! drawn as a square sprite tinted by the terrain of the hex that owns it
+//! (flat blue squares for water). Hexes remain the gameplay grid — walkability,
+//! actions and replication — but the visible floor is seamless squares.
+//! Chunks spawn lazily as they stream in and despawn out of range.
 
 use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
@@ -14,30 +13,11 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use spacetimedb_sdk::Table;
 use std::collections::HashMap;
 use idlecore_core::hex::world_pos_to_hex;
+use idlecore_core::slots::{slot_center, slot_hex, world_pos_to_slot, SLOT_SIZE};
 use idlecore_core::terrain::TerrainType;
-use idlecore_core::world_gen::{WorldGenConfig, WaterClass, hex_to_chunk_coord};
+use idlecore_core::world_gen::{WaterClass, WorldGenConfig, hex_to_chunk_coord};
 use crate::player::PlayerTransform;
 use crate::plugins::world::StreamingWorldResource;
-
-/// Overlap factor applied to floor hexagons: real hexagons interlock
-/// exactly, so only a hair of overscale is needed to guarantee neighbouring
-/// antialiased edges always overlap instead of revealing background seams.
-const FLOOR_OVERLAP: f32 = 1.03;
-
-/// Floor hex circumradius in world units (hex radius 10 × overlap).
-const TILE_R: f32 = WorldGenConfig::HEX_SIZE * FLOOR_OVERLAP;
-
-/// Floor sprite size: bounding box of a pointy-top hexagon (width √3·R,
-/// height 2·R). Taller than the 1.5·s row pitch — hexes interlock vertically,
-/// stacked south-over-north by the draw-order depth below.
-const FLOOR_W: f32 = 1.7320508075688772 * TILE_R;
-const FLOOR_H: f32 = 2.0 * TILE_R;
-
-/// Decoration-art sizing base (trees/rocks/grass were tuned against this
-/// scale; kept separate from the floor overlap).
-const DECOR_SCALE: f32 = 1.35;
-const TILE_W: f32 = 1.7320508075688772 * WorldGenConfig::HEX_SIZE * DECOR_SCALE;
-const TILE_H: f32 = 1.5 * WorldGenConfig::HEX_SIZE * DECOR_SCALE;
 
 /// Ground-band draw order: floor tiles only, south over north. Kept in its
 /// own low band ([−25k, 25k]) so no tile can ever paint over a prop.
@@ -54,49 +34,37 @@ pub fn prop_depth(y: f32) -> f32 {
 }
 
 // Server-authoritative resource-node art (rendered from `world_object` rows).
-pub(crate) const TREE_ART_PATH: &str = "models/Isometric Miniature Tiles/Isometric/treePine.png";
-pub(crate) const ROCK_ART_PATH: &str =
-    "models/Isometric Miniature Overworld/extracted/Isometric/grassStoneLarge_S.png";
-pub(crate) const GRASS_TUFT_PATHS: [&str; 2] = [
-    "models/Isometric Nature/PNG/naturePack_011_2.png",
-    "models/Isometric Nature/PNG/naturePack_012_3.png",
-];
-
 // ============================================================================
 // Action-target box (Stardew-style ground cursor)
 // ============================================================================
 
-/// Hex currently targeted for ground actions (plant/harvest/gather/clean),
-/// driven by the mouse cursor; defaults to the player's own hex.
+/// Ground slot currently targeted for actions (plant/harvest/gather/clean),
+/// driven by the mouse cursor and snapped to the 16px slot grid (see
+/// `idlecore_core::slots`); defaults to the player's own slot. `q`/`r` are
+/// the axial coords of the hex that owns the slot.
 #[derive(Resource, Default, Debug, Clone, Copy)]
 pub struct ActionTarget {
     pub q: i32,
     pub r: i32,
+    pub slot_x: i32,
+    pub slot_y: i32,
 }
 
 #[derive(Component)]
 pub(crate) struct ActionBoxMarker;
 
-/// Hollow hexagon outline (the targeting box), AA edges like the fill tiles.
-fn hex_outline_image(width: u32, height: u32, srgb: [f32; 3], thickness_px: f32) -> Image {
+/// Square slot-outline cursor (Stardew-style), AA edges like the fill tiles.
+fn slot_outline_image(width: u32, height: u32, srgb: [f32; 3], thickness_px: f32) -> Image {
     let mut pixels = vec![0u8; (width * height * 4) as usize];
     let [r, g, b] = srgb.map(|c| (c * 255.0).round() as u8);
-    let cx = width as f32 / 2.0;
-    let cy = height as f32 / 2.0;
-    let radius = height as f32 / 2.0;
-    let apothem = radius * 1.7320508075688772 / 2.0;
     for y in 0..height {
         for x in 0..width {
-            let px = x as f32 + 0.5 - cx;
-            let py = y as f32 + 0.5 - cy;
-            let m = px
-                .abs()
-                .max((0.5 * px + 0.8660254037844386 * py).abs())
-                .max((0.5 * px - 0.8660254037844386 * py).abs());
-            let inside = apothem - m;
-            // Opaque band centered on the edge, fading over ~1 px each side.
-            let half = thickness_px * 0.5 + 0.5;
-            let alpha = (half - inside.abs()).clamp(0.0, 1.0);
+            // Distance from this pixel to the nearest square edge (px).
+            let dx = (x as f32 + 0.5).min(width as f32 - x as f32 - 0.5);
+            let dy = (y as f32 + 0.5).min(height as f32 - y as f32 - 0.5);
+            let edge = dx.min(dy);
+            // Hollow ring: opaque band of `thickness_px` fading over ~1 px.
+            let alpha = (thickness_px - edge + 0.5).clamp(0.0, 1.0);
             let i = ((y * width + x) * 4) as usize;
             pixels[i] = r;
             pixels[i + 1] = g;
@@ -114,15 +82,15 @@ fn hex_outline_image(width: u32, height: u32, srgb: [f32; 3], thickness_px: f32)
 }
 
 pub fn spawn_action_box(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
-    let w = (FLOOR_W * 12.0).round() as u32;
-    let h = (FLOOR_H * 12.0).round() as u32;
-    let handle = images.add(hex_outline_image(w, h, [1.0, 0.95, 0.5], 3.0));
+    let w = (SLOT_SIZE * 12.0).round() as u32;
+    let handle = images.add(slot_outline_image(w, w, [1.0, 0.95, 0.5], 2.0));
     commands.spawn((
         Name::new("action-box"),
         ActionBoxMarker,
         Sprite {
             image: handle,
-            custom_size: Some(Vec2::new(FLOOR_W * 1.04, FLOOR_H * 1.04)),
+            // Smaller than the slot itself so it reads as a cursor, not a wall.
+            custom_size: Some(Vec2::splat(SLOT_SIZE * 0.62)),
             ..default()
         },
         Transform::from_xyz(f32::MAX, f32::MAX, 0.0),
@@ -131,6 +99,8 @@ pub fn spawn_action_box(mut commands: Commands, mut images: ResMut<Assets<Image>
 }
 
 /// Drive the targeting box from the cursor and refresh the target resource.
+/// The box snaps to the ground slot under the cursor (player's slot by
+/// default), Stardew-style; actions apply to the slot's owning hex.
 #[allow(clippy::type_complexity)]
 pub fn update_action_box(
     windows: Query<&Window>,
@@ -146,11 +116,10 @@ pub fn update_action_box(
 ) {
     let Ok((mut transform, mut sprite, mut visibility)) = box_q.single_mut() else { return };
 
-    // Default target: the hex the player stands on.
-    let mut next = world_pos_to_hex(
+    // Default target: the slot the player stands on.
+    let mut next = world_pos_to_slot(
         player_transform.translation.x,
         player_transform.translation.y,
-        WorldGenConfig::HEX_SIZE,
     );
 
     // Cursor override unless hovering UI/minimap.
@@ -165,33 +134,31 @@ pub fn update_action_box(
             if !over_widget && !over_minimap {
                 if let Ok((camera, cam_transform)) = cameras.single() {
                     if let Ok(world) = camera.viewport_to_world_2d(cam_transform, cursor) {
-                        next = world_pos_to_hex(world.x, world.y, WorldGenConfig::HEX_SIZE);
+                        next = world_pos_to_slot(world.x, world.y);
                     }
                 }
             }
         }
     }
-    target.q = next.0;
-    target.r = next.1;
+    let (sx, sy) = next;
+    let (q, r) = slot_hex(sx, sy);
+    target.slot_x = sx;
+    target.slot_y = sy;
+    target.q = q;
+    target.r = r;
 
-    let (wx, wy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
-        target.q,
-        target.r,
-        WorldGenConfig::HEX_SIZE,
-    );
-    transform.translation = Vec3::new(wx, wy, crate::world_floor::prop_depth(wy) + 0.4);
+    let (cx, cy) = slot_center(sx, sy);
+    transform.translation = Vec3::new(cx, cy, crate::world_floor::prop_depth(cy) + 0.4);
     *visibility = Visibility::Visible;
 
-    // Green while within the server's 1-hex interaction range, dim otherwise.
+    // Green while the slot's hex is within the server's 1-hex interaction
+    // range, dim otherwise.
     let player_hex = world_pos_to_hex(
         player_transform.translation.x,
         player_transform.translation.y,
         WorldGenConfig::HEX_SIZE,
     );
-    let dq = (target.q - player_hex.0).abs();
-    let dr = (target.r - player_hex.1).abs();
-    let ds = ((target.q + target.r) - (player_hex.0 + player_hex.1)).abs();
-    let in_range = dq.max(dr).max(ds) <= 1;
+    let in_range = idlecore_core::hex_grid::HexGrid::distance(q, r, player_hex.0, player_hex.1) <= 1;
     let tint = if in_range { Color::srgba(0.6, 1.0, 0.5, 0.95) } else { Color::srgba(0.9, 0.9, 0.9, 0.35) };
     sprite.color = tint;
 }
@@ -218,224 +185,191 @@ pub struct PropTextures {
     pub icon_grass: Handle<Image>,
 }
 
-pub(crate) const SAPLING_ART_PATH: &str =
-    "models/Isometric Miniature Prototype/Isometric/treePineSmall_S.png";
-
-/// Build all prop sprites once. Runs at Startup.
-pub fn init_prop_textures(
-    mut commands: Commands,
-    mut images: ResMut<Assets<Image>>,
-    asset_server: Res<AssetServer>,
-) {
-    let tuft = images.add(grass_tuft_image(128));
+/// Build all prop sprites once. Runs at Startup. All props are 16x16 tiles
+/// from the Tiny* packs; their baked backdrops are keyed by
+/// `tiny::process_key_queue`.
+pub fn init_prop_textures(mut commands: Commands, asset_server: Res<AssetServer>, mut queue: ResMut<crate::tiny::TinyKeyQueue>) {
+    fn prop(asset_server: &AssetServer, queue: &mut crate::tiny::TinyKeyQueue, path: &'static str) -> Handle<Image> {
+        let h = asset_server.load::<Image>(path);
+        queue.0.push(h.clone());
+        h
+    }
     commands.insert_resource(PropTextures {
-        grass: tuft.clone(),
+        // Grass tufts: Tiny Farm sprouts; tree: Tiny Town round tree;
+        // sapling: Tiny Farm sapling; rock: Tiny Ski boulder; wood: crate;
+        // seed: bag. All chroma-keyed via the TinyKeyQueue.
+        grass: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0017.png"),
         grass_aspect: 1.0,
-        tree: asset_server.load(TREE_ART_PATH),
-        tree_aspect: 256.0 / 216.0,
-        sapling: asset_server.load(SAPLING_ART_PATH),
-        sapling_aspect: 256.0 / 512.0,
-        rock: asset_server.load(ROCK_ART_PATH),
-        rock_aspect: 256.0 / 512.0,
-        icon_seed: asset_server.load(SAPLING_ART_PATH),
-        icon_wood: images.add(log_icon_image(64)),
-        icon_stone: images.add(stone_icon_image(64)),
-        icon_grass: tuft,
+        tree: prop(&asset_server, &mut queue, "models/Tiny Town/Tiles/tile_0004.png"),
+        tree_aspect: 1.0,
+        sapling: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0004.png"),
+        sapling_aspect: 1.0,
+        rock: prop(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0081.png"),
+        rock_aspect: 1.0,
+        icon_seed: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0009.png"),
+        icon_wood: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0076.png"),
+        icon_stone: prop(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0081.png"),
+        icon_grass: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0017.png"),
     });
 }
 
-/// Stylized grass tuft: tapered blades fanning from a base point in three
-/// shades of green. Deterministic — same canvas every run.
-fn grass_tuft_image(size_px: u32) -> Image {
-    let size = size_px as usize;
-    let mut pixels = vec![0u8; size * size * 4];
-    let cx = size as f32 * 0.5;
-    let base_y = size as f32 * 0.92;
-    let shades: [(u8, u8, u8); 3] = [(45, 96, 36), (62, 124, 47), (86, 160, 58)];
-    // Seven broad blades: angle spread, length and lean vary per blade.
-    for i in 0..7usize {
-        let t = i as f32 / 6.0; // 0..1 across the fan
-        let ang = -0.8 + t * 1.6 + ((i * 37) % 7) as f32 * 0.02;
-        let len = size as f32 * (0.55 + 0.38 * (1.0 - (t - 0.5).abs() * 1.2).max(0.25));
-        let w0 = (size as f32) * 0.11;
-        let (r, g, b) = shades[i % 3];
-        for yy in 0..size {
-            for xx in 0..size {
-                let dx = xx as f32 - cx;
-                let dy = base_y - yy as f32; // up-positive
-                if dy <= 0.0 || dy > len {
-                    continue;
-                }
-                // Rotate into blade space.
-                let ca = (-ang).cos();
-                let sa = (-ang).sin();
-                let u = dx * sa + dy * ca;
-                let v = dx * ca - dy * sa;
-                if u < 0.0 {
-                    continue;
-                }
-                let half = w0 * 0.5 * (1.0 - u / len);
-                if v.abs() <= half.max(0.6) {
-                    let k = (yy * size + xx) * 4;
-                    pixels[k] = r;
-                    pixels[k + 1] = g;
-                    pixels[k + 2] = b;
-                    pixels[k + 3] = 255;
-                }
-            }
-        }
-    }
-    Image::new(
-        Extent3d { width: size_px, height: size_px, depth_or_array_layers: 1 },
-        TextureDimension::D2,
-        pixels,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::default(),
-    )
+// ============================================================================
+// Ambient decorations — plants & critters from across the Tiny* packs
+// ============================================================================
+
+/// One decoration entry: sprite handle, on-screen height (world units).
+pub struct Deco {
+    pub image: Handle<Image>,
+    pub height: f32,
 }
 
-/// Two stacked logs — Wood icon.
-fn log_icon_image(size_px: u32) -> Image {
-    let s = size_px as usize;
-    let mut px = vec![0u8; s * s * 4];
-    let draw_log = |px: &mut [u8], cy: f32| {
-        let x0 = s as f32 * 0.12;
-        let x1 = s as f32 * 0.88;
-        let half_h = s as f32 * 0.11;
-        for y in 0..s {
-            for x in 0..s {
-                let fx = x as f32 + 0.5;
-                let fy = y as f32 + 0.5;
-                if fx >= x0 && fx <= x1 && (fy - cy).abs() <= half_h {
-                    let k = (y * s + x) * 4;
-                    let end = fx < x0 + half_h * 1.6;
-                    let (r, g, b) = if end { (200, 155, 106) } else { (138, 90, 43) };
-                    px[k] = r; px[k + 1] = g; px[k + 2] = b; px[k + 3] = 255;
-                }
-            }
-        }
+/// Ambient decoration set per terrain: `plants` are common garnish,
+/// `critters` are rare animals/props that make the world feel alive.
+/// Purely visual — deterministic per slot, no server data involved.
+#[derive(Resource, Default)]
+pub struct DecoTextures {
+    pub by_terrain: HashMap<TerrainType, DecoSet>,
+}
+
+#[derive(Default)]
+pub struct DecoSet {
+    pub plants: Vec<Deco>,
+    pub critters: Vec<Deco>,
+}
+
+/// Load every decoration tile once (chroma-keyed via the TinyKeyQueue).
+pub fn init_deco_textures(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut queue: ResMut<crate::tiny::TinyKeyQueue>,
+) {
+    fn deco(
+        asset_server: &AssetServer,
+        queue: &mut crate::tiny::TinyKeyQueue,
+        path: &'static str,
+        height: f32,
+    ) -> Deco {
+        let h = asset_server.load::<Image>(path);
+        queue.0.push(h.clone());
+        Deco { image: h, height }
+    }
+    let mut sets: HashMap<TerrainType, DecoSet> = HashMap::new();
+    let mut add = |terrain: TerrainType, critter: bool, d: Deco| {
+        let set = sets.entry(terrain).or_default();
+        if critter { set.critters.push(d) } else { set.plants.push(d) }
     };
-    draw_log(&mut px, s as f32 * 0.38);
-    draw_log(&mut px, s as f32 * 0.64);
-    Image::new(
-        Extent3d { width: size_px, height: size_px, depth_or_array_layers: 1 },
-        TextureDimension::D2,
-        px,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::default(),
-    )
-}
-
-/// Faceted gray chunk — Stone icon.
-fn stone_icon_image(size_px: u32) -> Image {
-    let s = size_px as usize;
-    let mut px = vec![0u8; s * s * 4];
-    let cx = s as f32 * 0.5;
-    let cy = s as f32 * 0.55;
-    let r = s as f32 * 0.36;
-    let n = 7usize;
-    let verts: Vec<(f32, f32)> = (0..n)
-        .map(|i| {
-            let a = i as f32 / n as f32 * std::f32::consts::TAU - 0.35;
-            let rr = r * (0.78 + 0.27 * ((i * 53) % 7) as f32 / 6.0);
-            (cx + a.cos() * rr, cy + a.sin() * rr)
-        })
-        .collect();
-    for y in 0..s {
-        for x in 0..s {
-            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-            let mut inside = false;
-            let mut j = n - 1;
-            for i in 0..n {
-                let (xi, yi) = verts[i];
-                let (xj, yj) = verts[j];
-                if (yi > fy) != (yj > fy) && fx < (xj - xi) * (fy - yi) / (yj - yi) + xi {
-                    inside = !inside;
-                }
-                j = i;
-            }
-            if inside {
-                let k = (y * s + x) * 4;
-                let dark = fy > cy;
-                let (rr, gg, bb) = if dark { (100, 103, 110) } else { (138, 142, 150) };
-                px[k] = rr; px[k + 1] = gg; px[k + 2] = bb; px[k + 3] = 255;
-            }
-        }
+    // Meadow: sprouts, wheat, berries — plus the odd chicken.
+    for path in [
+        "models/Tiny Town/Tiles/tile_0008.png",
+        "models/Tiny Town/Tiles/tile_0009.png",
+        "models/Tiny Town/Tiles/tile_0017.png",
+        "models/Tiny Farm/Tiles/tile_0005.png",
+        "models/Tiny Farm/Tiles/tile_0082.png",
+    ] {
+        add(TerrainType::Grass, false, deco(&asset_server, &mut queue, path, 1.0));
     }
-    Image::new(
-        Extent3d { width: size_px, height: size_px, depth_or_array_layers: 1 },
-        TextureDimension::D2,
-        px,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::default(),
-    )
+    add(TerrainType::Grass, true, deco(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0122.png", 1.1));
+    add(TerrainType::Grass, false, deco(&asset_server, &mut queue, "models/Tiny Town/Tiles/tile_0029.png", 0.8));
+    // Plains: wheat, with cows and sheep grazing.
+    for path in [
+        "models/Tiny Town/Tiles/tile_0009.png",
+        "models/Tiny Farm/Tiles/tile_0066.png",
+    ] {
+        add(TerrainType::Grassland, false, deco(&asset_server, &mut queue, path, 1.1));
+    }
+    add(TerrainType::Grassland, true, deco(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0121.png", 1.7));
+    add(TerrainType::Grassland, true, deco(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0120.png", 1.5));
+    // Woods: mushrooms and ferns under the trees.
+    for (path, h) in [
+        ("models/Tiny Town/Tiles/tile_0029.png", 0.9),
+        ("models/Tiny Town/Tiles/tile_0030.png", 0.8),
+        ("models/Tiny Town/Tiles/tile_0017.png", 0.9),
+    ] {
+        add(TerrainType::Forest, false, deco(&asset_server, &mut queue, path, h));
+    }
+    // Jungle: gourds and golden cane.
+    add(TerrainType::TropicalRainforest, false, deco(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0078.png", 1.1));
+    add(TerrainType::TropicalRainforest, false, deco(&asset_server, &mut queue, "models/Tiny Town/Tiles/tile_0021.png", 1.3));
+    // Desert: scattered stones.
+    add(TerrainType::Desert, false, deco(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0081.png", 0.9));
+    // Tundra: ice blocks and the odd abandoned sled.
+    add(TerrainType::Tundra, false, deco(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0078.png", 1.0));
+    add(TerrainType::Tundra, true, deco(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0068.png", 1.0));
+    // Taiga: dead trees, stones — and wolves.
+    add(TerrainType::Taiga, false, deco(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0007.png", 1.8));
+    add(TerrainType::Taiga, false, deco(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0081.png", 0.9));
+    add(TerrainType::Taiga, true, deco(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0072.png", 1.4));
+    add(TerrainType::Taiga, true, deco(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0076.png", 1.4));
+    // Highlands: stones.
+    add(TerrainType::Mountain, false, deco(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0081.png", 1.0));
+
+    commands.insert_resource(DecoTextures { by_terrain: sets });
+}
+
+/// Deterministic per-slot hash with a salt (independent streams for
+/// variant pick vs deco decision vs jitter).
+fn slot_hash(sx: i32, sy: i32, salt: u32) -> u32 {
+    let mut x = (sx as u32).wrapping_mul(0x9E37_79B9)
+        ^ (sy as u32).wrapping_mul(0x85EB_CA6B)
+        ^ salt.wrapping_mul(0xC2B2_AE35);
+    x ^= x >> 13;
+    x = x.wrapping_mul(0x27D4_EB2F);
+    x ^= x >> 16;
+    x
 }
 
 // ============================================================================
-// Solid biome-colored floor
+// Solid square floor tiles
 // ============================================================================
 
-/// Flat, opaque, biome-colored pointy-top hexagon for every land terrain,
-/// generated once from `TerrainType::minimap_color`. Fully opaque (1px
-/// antialiased edge only) so adjacent tiles interlock with no translucent
-/// gaps — the floor reads as a solid green/blue/yellow sheet
-/// (forest = green, desert = yellow, sea = blue, …).
+/// Square floor tiles per land terrain: each slot renders one 16px Tiny*
+/// tile directly (no baking), tinted per variant. The per-slot pick is
+/// hashed from the slot coordinates so the ground doesn't repeat.
 #[derive(Resource, Default)]
 pub struct SolidFloorTextures {
-    pub by_terrain: HashMap<TerrainType, Handle<Image>>,
+    pub by_terrain: HashMap<TerrainType, Vec<(Handle<Image>, [f32; 3])>>,
 }
 
-/// Pointy-top hexagon tile (hard interior, 1px antialiased edge) colored
-/// with `srgb`. The texture must match the hexagon aspect (√3·R × 2·R) so the
-/// shape fills the sprite exactly; adjacent tiles then interlock with no
-/// background showing through.
-fn hex_tile_image(width: u32, height: u32, srgb: [f32; 3]) -> Image {
-    let mut pixels = vec![0u8; (width * height * 4) as usize];
-    let [r, g, b] = srgb.map(|c| (c * 255.0).round() as u8);
-    let cx = width as f32 / 2.0;
-    let cy = height as f32 / 2.0;
-    let radius = height as f32 / 2.0;
-    // Apothem (center → edge-midpoint distance) of the pointy-top hexagon;
-    // edges face 0°, ±60°, so inside ⇔ |nᵢ·p| ≤ apothem for all three.
-    let apothem = radius * 1.7320508075688772 / 2.0;
-    for y in 0..height {
-        for x in 0..width {
-            let px = x as f32 + 0.5 - cx;
-            let py = y as f32 + 0.5 - cy;
-            let m = px
-                .abs()
-                .max((0.5 * px + 0.8660254037844386 * py).abs())
-                .max((0.5 * px - 0.8660254037844386 * py).abs());
-            // Signed distance in px; +0.5 centers coverage on the edge.
-            let alpha = (apothem - m + 0.5).clamp(0.0, 1.0);
-            let i = ((y * width + x) * 4) as usize;
-            pixels[i] = r;
-            pixels[i + 1] = g;
-            pixels[i + 2] = b;
-            pixels[i + 3] = (alpha * 255.0).round() as u8;
-        }
-    }
-    Image::new(
-        Extent3d { width, height, depth_or_array_layers: 1 },
-        TextureDimension::D2,
-        pixels,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::default(),
-    )
-}
-
-/// Generate the solid floor textures once (before the floor pass uses them).
+/// Load the floor tile handles (raw 16x16 art; streams in async).
 pub fn init_solid_floor_textures(
-    mut images: ResMut<Assets<Image>>,
+    images: ResMut<Assets<Image>>,
     mut solid: ResMut<SolidFloorTextures>,
+    asset_server: Res<AssetServer>,
+    mut handles: Local<Option<Vec<(TerrainType, Handle<Image>, [f32; 3])>>>,
+    mut solid_done: Local<bool>,
 ) {
     if !solid.by_terrain.is_empty() {
         return;
     }
-    // Half-resolution hexagon: flat color, so GPU upscaling is invisible.
-    let w = (FLOOR_W * 12.0).round().max(4.0) as u32;
-    let h = (FLOOR_H * 12.0).round().max(4.0) as u32;
-    for terrain in [
+    if *solid_done {
+        return;
+    }
+    let handles = handles.get_or_insert_with(|| {
+        let mut all: Vec<(TerrainType, Handle<Image>, [f32; 3])> = Vec::new();
+        for terrain in terrains_iter() {
+            for (path, tint) in floor_tiles_for(terrain) {
+                let handle = asset_server.load::<Image>(*path);
+                all.push((terrain, handle, *tint));
+            }
+        }
+        all
+    });
+    if handles.iter().any(|(_, handle, _)| images.get(handle).is_none()) {
+        return; // not streamed yet — retry next frame
+    }
+    for (terrain, handle, tint) in handles.iter() {
+        solid
+            .by_terrain
+            .entry(*terrain)
+            .or_default()
+            .push((handle.clone(), *tint));
+    }
+    *solid_done = true;
+}
+
+/// Terrain order matching the handle list built above.
+fn terrains_iter() -> impl Iterator<Item = TerrainType> {
+    [
         TerrainType::Grass,
         TerrainType::Forest,
         TerrainType::Desert,
@@ -446,11 +380,85 @@ pub fn init_solid_floor_textures(
         TerrainType::TropicalRainforest,
         TerrainType::Mountain,
         TerrainType::City,
-    ] {
-        let [r, g, b] = terrain.minimap_color();
-        let handle = images.add(hex_tile_image(w, h, [r, g, b]));
-        solid.by_terrain.insert(terrain, handle);
+    ]
+    .into_iter()
+}
+
+/// Seamless Tiny* tile variants per terrain (with per-variant tints), mixing
+/// the whole Tiny* family — they share one visual identity. Only border-free
+/// tiles qualify — bordered patch tiles would band when tiled.
+fn floor_tiles_for(terrain: TerrainType) -> &'static [(&'static str, [f32; 3])] {
+    match terrain {
+        // Meadow grass: Tiny Town.
+        TerrainType::Grass => &[
+            ("models/Tiny Town/Tiles/tile_0001.png", [1.0, 1.0, 1.0]),
+            ("models/Tiny Town/Tiles/tile_0000.png", [1.0, 1.0, 1.0]),
+            ("models/Tiny Town/Tiles/tile_0002.png", [1.0, 1.0, 1.0]),
+        ],
+        // Dry plain: warm-tinted Town grass.
+        TerrainType::Grassland => &[
+            ("models/Tiny Town/Tiles/tile_0000.png", [1.05, 1.05, 0.95]),
+            ("models/Tiny Town/Tiles/tile_0001.png", [1.05, 1.05, 0.95]),
+        ],
+        // Deep woods: cool dark grass + Farm soil patches for variety.
+        TerrainType::Forest => &[
+            ("models/Tiny Town/Tiles/tile_0001.png", [0.68, 0.82, 0.68]),
+            ("models/Tiny Town/Tiles/tile_0000.png", [0.68, 0.82, 0.68]),
+            ("models/Tiny Farm/Tiles/tile_0001.png", [0.72, 0.85, 0.72]),
+        ],
+        // Jungle: lush green + dark undergrowth.
+        TerrainType::TropicalRainforest => &[
+            ("models/Tiny Town/Tiles/tile_0002.png", [1.0, 1.0, 1.0]),
+            ("models/Tiny Town/Tiles/tile_0001.png", [0.9, 1.05, 0.9]),
+            ("models/Tiny Dungeon/Tiles/tile_0013.png", [0.85, 1.0, 0.8]),
+        ],
+        // Dunes: Tiny Town seamless dirt (25 = border-free sand earth).
+        TerrainType::Desert => &[
+            ("models/Tiny Town/Tiles/tile_0025.png", [1.0, 1.0, 1.0]),
+            ("models/Tiny Town/Tiles/tile_0025.png", [1.07, 0.97, 0.86]),
+            ("models/Tiny Town/Tiles/tile_0025.png", [0.95, 0.9, 1.02]),
+        ],
+        // Snow: Tiny Ski.
+        TerrainType::Tundra => &[
+            ("models/Tiny Ski/Tiles/tile_0000.png", [1.0, 1.0, 1.0]),
+            ("models/Tiny Ski/Tiles/tile_0002.png", [1.0, 1.0, 1.0]),
+        ],
+        // Boreal snow: colder blue tint.
+        TerrainType::Taiga => &[
+            ("models/Tiny Ski/Tiles/tile_0000.png", [0.82, 0.9, 1.08]),
+            ("models/Tiny Ski/Tiles/tile_0002.png", [0.82, 0.9, 1.08]),
+        ],
+        // Rocky highlands: Dungeon scree, strongly greyed so the warm
+        // brown base reads as bare rock.
+        TerrainType::Mountain => &[
+            ("models/Tiny Dungeon/Tiles/tile_0012.png", [0.66, 0.66, 0.76]),
+            ("models/Tiny Dungeon/Tiles/tile_0013.png", [0.6, 0.6, 0.72]),
+            ("models/Tiny Dungeon/Tiles/tile_0012.png", [0.78, 0.78, 0.88]),
+        ],
+        // Asphalt + road markings: Tiny Battle streets.
+        TerrainType::City => &[
+            ("models/Tiny Battle/Tiles/tile_0108.png", [1.0, 1.0, 1.0]),
+            ("models/Tiny Battle/Tiles/tile_0109.png", [1.0, 1.0, 1.0]),
+            ("models/Tiny Battle/Tiles/tile_0110.png", [1.0, 1.0, 1.0]),
+        ],
+        // Blighted ground: scree with a sickly green tint.
+        TerrainType::Polluted => &[
+            ("models/Tiny Dungeon/Tiles/tile_0012.png", [0.85, 1.0, 0.85]),
+            ("models/Tiny Dungeon/Tiles/tile_0013.png", [0.75, 0.9, 0.75]),
+        ],
+        TerrainType::Water => &[
+            ("models/Tiny Town/Tiles/tile_0000.png", [1.0, 1.0, 1.0]), // unused
+        ],
     }
+}
+
+/// Deterministic per-slot variant pick: same slot, same variant, always.
+fn cell_variant(q: i32, r: i32, n: usize) -> usize {
+    let mut x = (q as u32).wrapping_mul(0x9E37_79B9) ^ (r as u32).wrapping_mul(0x85EB_CA6B);
+    x ^= x >> 13;
+    x = x.wrapping_mul(0xC2B2_AE35);
+    x ^= x >> 16;
+    (x % n as u32) as usize
 }
 
 // ============================================================================
@@ -464,29 +472,16 @@ pub fn init_solid_floor_textures(
 pub struct WorldObjectState {
     pub visuals: HashMap<u64, Entity>,
     pub rendered: HashMap<u64, (String, bool, i32, i32)>,
-    pub aspects: HashMap<String, f32>,
-}
-
-/// Pixel aspect (width/height) of the object art files — these are static
-/// files, and runtime lookups through `Assets<Image>` are unreliable for
-/// render-only textures, so the values live here.
-fn known_aspect(path: &str) -> f32 {
-    match path {
-        p if p.ends_with("treePine.png") => 256.0 / 216.0,
-        p if p.ends_with("grassStoneLarge_S.png") => 256.0 / 512.0,
-        p if GRASS_TUFT_PATHS.contains(&p) => 220.0 / 379.0,
-        _ => 1.0,
-    }
 }
 
 /// Target on-screen height (world units) per object kind.
 fn kind_height(kind: &str, mature: bool) -> f32 {
     match kind {
-        "Grass" => 5.2,
-        "Rock" => 4.5,
-        "Tree" if mature => 7.5,
-        "Tree" => 4.2,
-        _ => 3.0,
+        "Grass" => 1.8,
+        "Rock" => 2.2,
+        "Tree" if mature => 4.2,
+        "Tree" => 2.4,
+        _ => 2.0,
     }
 }
 
@@ -519,6 +514,9 @@ pub fn update_world_object_visuals(
         .unwrap_or(0);
 
     let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    // Rows needing a (re)spawn this pass, sorted near-first and capped so a
+    // burst of replication can't create hundreds of sprites in one frame.
+    let mut pending: Vec<(f32, u64)> = Vec::new();
     for row in crate::net::gen::WorldObjectTableAccess::world_object(&conn.db).iter() {
         seen.insert(row.object_id);
         let coord = idlecore_core::hex::HexCoord::from_id(row.hex_id);
@@ -529,6 +527,39 @@ pub fn update_world_object_visuals(
             continue;
         }
 
+        let mature = row.mature_at == 0 || now >= row.mature_at;
+        let key = (
+            row.kind.clone(),
+            mature,
+            (wx * 16.0) as i32,
+            (wy * 16.0) as i32,
+        );
+        if state.rendered.get(&row.object_id) == Some(&key) {
+            continue;
+        }
+        let dx = wx - px;
+        let dy = wy - py;
+        pending.push((dx * dx + dy * dy, row.object_id));
+    }
+
+    if pending.len() > SPRITE_SPAWNS_PER_PASS {
+        pending.sort_by(|a, b| a.0.total_cmp(&b.0));
+        pending.truncate(SPRITE_SPAWNS_PER_PASS);
+    }
+
+    for (_, object_id) in pending {
+        // Re-fetch the row so descriptors are computed only for spawned
+        // sprites, not for every near row on every pass.
+        let Some(row) = crate::net::gen::WorldObjectTableAccess::world_object(&conn.db)
+            .object_id()
+            .find(&object_id)
+        else {
+            continue;
+        };
+        let coord = idlecore_core::hex::HexCoord::from_id(row.hex_id);
+        let (hx, hy) = row_world_center(coord.q, coord.r);
+        let wx = hx + row.offset_x;
+        let wy = hy + row.offset_y;
         let mature = row.mature_at == 0 || now >= row.mature_at;
         // Descriptor: sprite + target height + flip; trees grow sapling->full.
         let flip = row.object_id % 2 == 0;
@@ -553,16 +584,12 @@ pub fn update_world_object_visuals(
             }
         };
         let size = Vec2::new(height * aspect, height);
-
         let key = (
             row.kind.clone(),
             mature,
             (wx * 16.0) as i32,
             (wy * 16.0) as i32,
         );
-        if state.rendered.get(&row.object_id) == Some(&key) {
-            continue;
-        }
 
         if let Some(entity) = state.visuals.get(&row.object_id).copied() {
             commands.entity(entity).despawn();
@@ -599,19 +626,17 @@ pub fn update_world_object_visuals(
 }
 
 // ============================================================================
-// Generated water textures
+// Water tiles
 // ============================================================================
 
-/// Flat-blue hexagon textures for water hexes, shaded by water class. Built
-/// once from raw pixels so they stay pixel-perfect at any zoom (no art pack
-/// contains water tiles).
+/// Water tint per class (deep blue ocean → light inland water), applied to a
+/// shared white square. No art pack contains water tiles.
 #[derive(Resource, Default)]
 pub struct WaterTextures {
-    pub by_class: HashMap<WaterClass, Handle<Image>>,
+    pub by_class: HashMap<WaterClass, [f32; 3]>,
+    /// Shared 8×8 white square tinted per class.
+    pub white: Option<Handle<Image>>,
 }
-
-/// Create a solid-color hexagon tile image sized to the tile slot, with a 1px
-/// anti-aliased edge so adjacent water hexes meet without gaps.
 
 /// Water color per class: deep blue for ocean, lighter for inland water.
 fn water_color(class: WaterClass) -> [f32; 3] {
@@ -626,17 +651,22 @@ fn water_color(class: WaterClass) -> [f32; 3] {
     }
 }
 
-/// Generate the water textures once (before the floor pass uses them).
+/// Build the water tints + shared white square once.
 pub fn init_water_textures(
     mut images: ResMut<Assets<Image>>,
     mut water: ResMut<WaterTextures>,
 ) {
-    if !water.by_class.is_empty() {
+    if water.white.is_some() {
         return;
     }
-    // Half-resolution hexagon: flat color, so GPU upscaling is invisible.
-    let w = (FLOOR_W * 12.0).round().max(4.0) as u32;
-    let h = (FLOOR_H * 12.0).round().max(4.0) as u32;
+    let mut white = vec![255u8; 8 * 8 * 4];
+    let handle = images.add(Image::new(
+        Extent3d { width: 8, height: 8, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        std::mem::take(&mut white),
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    ));
     for class in [
         WaterClass::Ocean,
         WaterClass::Sea,
@@ -645,129 +675,205 @@ pub fn init_water_textures(
         WaterClass::River,
         WaterClass::Wetland,
     ] {
-        let handle = images.add(hex_tile_image(w, h, water_color(class)));
-        water.by_class.insert(class, handle);
+        water.by_class.insert(class, water_color(class));
     }
+    water.white = Some(handle);
 }
 
-/// Marker for the parent entity of a rendered chunk.
-#[derive(Component)]
-pub struct WorldChunk;
-
-/// Tracks spawned chunk entities so we only (re)create on changes.
+/// Tracks live floor-tile entities by slot so only tiles near the player
+/// exist at all (slot-granular streaming, no chunk parents).
 #[derive(Resource, Default)]
-pub struct WorldFloor {
-    pub entities: std::collections::HashMap<(i32, i32), Entity>,
-    /// Player hex of the last rebuilt render set; unchanged → skip the pass.
-    pub last_player_hex: Option<(i32, i32)>,
+pub struct FloorTiles {
+    pub live: HashMap<(i32, i32), Entity>,
+    /// Player slot of the last completed rebuild; unchanged → skip the pass.
+    pub last_player_slot: Option<(i32, i32)>,
 }
 
-/// Chunk radius around the player that is rendered.
-const RENDER_RADIUS_CHUNKS: i32 = 5;
+/// Floor tiles spawn within this many slots of the player (≈87 units —
+/// several screens at the default zoom). Nothing beyond this exists.
+pub const FLOOR_SPAWN_RADIUS_SLOTS: i32 = 20;
 
-/// World-space radius around the player to show.
-const RENDER_RADIUS_HEXES: f32 = 20.0 * WorldGenConfig::HEX_SIZE;
+/// Live tiles despawn past this radius (hysteresis so border-walking
+/// doesn't churn spawns/despawns every slot crossing).
+const FLOOR_DESPAWN_RADIUS_SLOTS: i32 = 24;
 
-/// Spawn/despawn chunk entities around the player position.
+/// Max floor tiles spawned per rebuild pass; the pass re-runs until the
+/// wanted set is complete, so teleports fill in over a few frames instead
+/// of hitching once.
+const FLOOR_SPAWNS_PER_PASS: usize = 512;
+
+/// World-space radius around the player to show world-object/plant sprites.
+const RENDER_RADIUS_HEXES: f32 = 12.0 * WorldGenConfig::HEX_SIZE;
+
+/// Max world-object sprites created per 150 ms scan; spreads replication
+/// bursts across frames instead of hitching once.
+const SPRITE_SPAWNS_PER_PASS: usize = 32;
+
+/// Spawn/despawn floor tiles around the player: only slots within
+/// `FLOOR_SPAWN_RADIUS_SLOTS` exist; everything else is despawned.
 pub fn update_world_floor(
     mut commands: Commands,
     streaming_world: Res<StreamingWorldResource>,
     player_transform: Res<PlayerTransform>,
-    mut floor: ResMut<WorldFloor>,
+    mut tiles: ResMut<FloorTiles>,
     water: Res<WaterTextures>,
     solid: Res<SolidFloorTextures>,
+    deco: Option<Res<DecoTextures>>,
 ) {
-    let px = player_transform.translation.x;
-    let py = player_transform.translation.y;
-
-    let (hq, hr) = world_pos_to_hex(px, py, WorldGenConfig::HEX_SIZE);
-
-    // Perf: rebuild the render set when the player's hex changes (the wanted
-    // set only shifts as the player crosses tile boundaries). Chunk-granular
-    // gating missed updates because a chunk (32 hexes) is larger than the
-    // render radius (20 hexes).
-    if !floor.entities.is_empty() && Some((hq, hr)) == floor.last_player_hex {
+    // The solid textures stream in async; building tiles before they exist
+    // would register empty slots that then never spawn.
+    if solid.by_terrain.is_empty() {
         return;
     }
-    floor.last_player_hex = Some((hq, hr));
+    let px = player_transform.translation.x;
+    let py = player_transform.translation.y;
+    let player_slot = world_pos_to_slot(px, py);
 
+    // Perf: rebuild only when the player crosses a slot boundary (or when a
+    // previous pass hit the spawn cap and left work unfinished).
+    if tiles.last_player_slot == Some(player_slot) {
+        return;
+    }
+
+    let (psx, psy) = player_slot;
+    let spawn_r = FLOOR_SPAWN_RADIUS_SLOTS as f32 * SLOT_SIZE;
+    let spawn_r2 = spawn_r * spawn_r;
+
+    // Terrain per hex for the nearby chunks — one map built per pass, so the
+    // per-slot lookups below are O(1).
+    let (hq, hr) = world_pos_to_hex(px, py, WorldGenConfig::HEX_SIZE);
     let (ccq, ccr) = hex_to_chunk_coord(hq, hr, WorldGenConfig::CHUNK_SIZE);
-
-    // Determine the set of chunks we want rendered.
-    let mut wanted: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
-    for dcq in -RENDER_RADIUS_CHUNKS..=RENDER_RADIUS_CHUNKS {
-        for dcr in -RENDER_RADIUS_CHUNKS..=RENDER_RADIUS_CHUNKS {
-            let cq = ccq + dcq;
-            let cr = ccr + dcr;
+    // A chunk spans 32 hexes (~554 units); ±2 chunks always covers the
+    // spawn radius with margin.
+    let mut terrain_of: HashMap<u64, (TerrainType, WaterClass)> = HashMap::new();
+    for cq in (ccq - 2)..=(ccq + 2) {
+        for cr in (ccr - 2)..=(ccr + 2) {
             let Some(chunk) = streaming_world.chunks.chunks.get(&(cq, cr)) else { continue };
-            let mut close_enough = false;
             for cell in &chunk.cells {
-                let (wx, wy) = cell.world_pos(WorldGenConfig::HEX_SIZE);
-                let dx = wx - px;
-                let dy = wy - py;
-                if dx * dx + dy * dy <= RENDER_RADIUS_HEXES * RENDER_RADIUS_HEXES {
-                    close_enough = true;
-                    break;
-                }
-            }
-            if close_enough {
-                wanted.insert((cq, cr));
+                let id = idlecore_core::hex::HexCoord::new(cell.q, cell.r).to_id();
+                terrain_of.insert(id, (cell.terrain, cell.water));
             }
         }
     }
 
-    // Despawn chunks that left the render radius or unloaded.
-    let stale: Vec<(i32, i32)> = floor
-        .entities
-        .keys()
-        .filter(|k| !wanted.contains(k))
-        .cloned()
-        .collect();
-    for key in stale {
-        if let Some(entity) = floor.entities.remove(&key) {
-            commands.entity(entity).despawn();
+    // Wanted set: slots in the square around the player, culled to a circle.
+    // Sorted near-first so a capped pass fills the view center first.
+    let mut wanted: Vec<(f32, i32, i32, TerrainType, WaterClass)> = Vec::new();
+    for sx in (psx - FLOOR_SPAWN_RADIUS_SLOTS)..=(psx + FLOOR_SPAWN_RADIUS_SLOTS) {
+        for sy in (psy - FLOOR_SPAWN_RADIUS_SLOTS)..=(psy + FLOOR_SPAWN_RADIUS_SLOTS) {
+            let (cx, cy) = slot_center(sx, sy);
+            let dx = cx - px;
+            let dy = cy - py;
+            let d2 = dx * dx + dy * dy;
+            if d2 > spawn_r2 {
+                continue;
+            }
+            let (hq, hr) = slot_hex(sx, sy);
+            let Some(&(terrain, wat)) =
+                terrain_of.get(&idlecore_core::hex::HexCoord::new(hq, hr).to_id())
+            else {
+                continue; // chunk not streamed yet — picked up on a later pass
+            };
+            wanted.push((d2, sx, sy, terrain, wat));
         }
     }
+    wanted.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-    // Spawn new chunks (existing ones are kept as-is).
-    for (cq, cr) in &wanted {
-        if floor.entities.contains_key(&(*cq, *cr)) {
+    // Spawn missing tiles, nearest-first, capped per pass.
+    let mut spawned = 0usize;
+    let mut complete = true;
+    for (_, sx, sy, terrain, wat) in &wanted {
+        if tiles.live.contains_key(&(*sx, *sy)) {
             continue;
         }
-        let Some(chunk) = streaming_world.chunks.chunks.get(&(*cq, *cr)) else { continue };
-
-        let mut parent = commands.spawn((
-            Name::new(format!("WorldChunk({cq},{cr})")),
-            WorldChunk,
-            Transform::default(),
-            GlobalTransform::default(),
-            Visibility::default(),
-        ));
-
-        for cell in &chunk.cells {
-            let (wx, wy) = cell.world_pos(WorldGenConfig::HEX_SIZE);
-            let handle = if cell.terrain == TerrainType::Water {
-                water
-                    .by_class
-                    .get(&cell.water)
-                    .or_else(|| water.by_class.values().next())
-                    .cloned()
-            } else {
-                solid.by_terrain.get(&cell.terrain).cloned()
-            };
-            let Some(handle) = handle else { continue };
-            parent.with_child((
-                Name::new(format!("tile({},{})", cell.q, cell.r)),
+        if spawned >= FLOOR_SPAWNS_PER_PASS {
+            complete = false;
+            break;
+        }
+        let (cx, cy) = slot_center(*sx, *sy);
+        let (image, tint) = if *terrain == TerrainType::Water {
+            let Some(white) = water.white.clone() else { continue };
+            let tint = water
+                .by_class
+                .get(&wat)
+                .or_else(|| water.by_class.values().next())
+                .copied()
+                .unwrap_or([0.15, 0.36, 0.58]);
+            (white, tint)
+        } else {
+            let Some(variants) = solid.by_terrain.get(&terrain) else { continue };
+            if variants.is_empty() {
+                continue;
+            }
+            let (handle, tint) = variants[cell_variant(*sx, *sy, variants.len())].clone();
+            (handle, tint)
+        };
+        let entity = commands
+            .spawn((
+                Name::new(format!("tile({sx},{sy})")),
                 Sprite {
-                    image: handle,
-                    custom_size: Some(Vec2::new(FLOOR_W, FLOOR_H)),
+                    image,
+                    custom_size: Some(Vec2::splat(SLOT_SIZE * 1.02)),
+                    color: Color::srgb(tint[0], tint[1], tint[2]),
                     ..default()
                 },
-                Transform::from_xyz(wx, wy, floor_depth(wy)),
-            ));
+                Transform::from_xyz(cx, cy, floor_depth(cy)),
+            ))
+            .id();
+        // Ambient decoration: a plant garnish on ~1 in 6 land slots, a rare
+        // critter on ~1 in 29. Child of the tile so it despawns with it.
+        if let Some(deco) = deco.as_ref() {
+            if let Some(set) = deco.by_terrain.get(terrain) {
+                let h = slot_hash(*sx, *sy, 0xDE_C0_DE0);
+                let tier = if h % 29 == 0 && !set.critters.is_empty() {
+                    Some((&set.critters, 1.15))
+                } else if h % 6 == 0 && !set.plants.is_empty() {
+                    Some((&set.plants, 1.0))
+                } else {
+                    None
+                };
+                if let Some((list, scale)) = tier {
+                    let d = &list[(h >> 8) as usize % list.len()];
+                    let jx = ((h >> 13) % 9) as f32 / 9.0 - 0.4;
+                    let jy = ((h >> 17) % 9) as f32 / 9.0 - 0.4;
+                    let dy = cy + jy * SLOT_SIZE;
+                    commands.entity(entity).with_child((
+                        Name::new("deco"),
+                        Sprite {
+                            image: d.image.clone(),
+                            custom_size: Some(Vec2::splat(d.height * scale)),
+                            ..default()
+                        },
+                        // Bottom-anchored at a jittered spot in the slot; the
+                        // +2 z lift clears the next tile row to the south.
+                        bevy::sprite::Anchor::BOTTOM_CENTER,
+                        Transform::from_xyz(cx + jx * SLOT_SIZE, dy + SLOT_SIZE * 0.2, 2.0),
+                    ));
+                }
+            }
         }
+        tiles.live.insert((*sx, *sy), entity);
+        spawned += 1;
+    }
 
-        floor.entities.insert((*cq, *cr), parent.id());
+    // Despawn tiles beyond the hysteresis radius.
+    let despawn_r2 = (FLOOR_DESPAWN_RADIUS_SLOTS as f32 * SLOT_SIZE).powi(2);
+    let px2 = px;
+    let py2 = py;
+    tiles.live.retain(|(sx, sy), entity| {
+        let (cx, cy) = slot_center(*sx, *sy);
+        let dx = cx - px2;
+        let dy = cy - py2;
+        if dx * dx + dy * dy > despawn_r2 {
+            commands.entity(*entity).despawn();
+            return false;
+        }
+        true
+    });
+
+    // Only latch the rebuild trigger once the wanted set is fully live.
+    if complete {
+        tiles.last_player_slot = Some(player_slot);
     }
 }
 
@@ -856,9 +962,13 @@ pub fn update_plant_visuals(
     let px = player_transform.translation.x;
     let py = player_transform.translation.y;
     let (hq, hr) = world_pos_to_hex(px, py, WorldGenConfig::HEX_SIZE);
-    let max_dist = RENDER_RADIUS_HEXES / WorldGenConfig::HEX_SIZE + 2.0;
+    // Plant/pollution discs are small; only build them for hexes close to
+    // the player (8 hexes ≈ 140 units) so far replicated rows stay data-only.
+    let max_dist = 8.0f32;
 
     let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    // Hexes whose plant/pollution visual needs (re)building this pass.
+    let mut plant_pending: Vec<(f32, u64)> = Vec::new();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -874,16 +984,6 @@ pub fn update_plant_visuals(
 
         let is_polluted = row.is_polluted;
 
-        // Determine desired visual: pollution disc, plant diamond, or nothing.
-        let mut kind: Option<Sprite> = None;
-        if is_polluted {
-            kind = Some(Sprite {
-                color: Color::srgb(0.18, 0.2, 0.16),
-                custom_size: Some(Vec2::splat(2.4)),
-                ..default()
-            });
-        }
-        let mut mature = false;
         // Perf: skip the serde_json parse entirely when the raw column is
         // unchanged; only maturity (a pure time comparison) is recomputed.
         let raw_changed = state.raw.get(&row.hex_id).map(String::as_str) != row.plant.as_deref();
@@ -899,24 +999,60 @@ pub fn update_plant_visuals(
             match parsed {
                 Some(p) => {
                     state.raw.insert(row.hex_id, row.plant.clone().unwrap_or_default());
-                    state.parsed.insert(row.hex_id, p.clone());
-                    kind = Some(plant_sprite(&p.kind_name, now >= p.mature_at));
+                    state.parsed.insert(row.hex_id, p);
                 }
                 None => {
                     state.raw.remove(&row.hex_id);
                     state.parsed.remove(&row.hex_id);
                 }
             }
-        } else if let Some(p) = state.parsed.get(&row.hex_id) {
-            mature = now >= p.mature_at;
-            kind = Some(plant_sprite(&p.kind_name, mature));
         }
+        let mature = state
+            .parsed
+            .get(&row.hex_id)
+            .map(|p| now >= p.mature_at)
+            .unwrap_or(false);
 
         let cached = state.stage.get(&row.hex_id).cloned();
         let band = eco_band(row.eco_rating);
         if cached == Some((is_polluted, mature, band)) {
             continue;
         }
+
+        // Defer the actual sprite work to the budgeted pass below.
+        plant_pending.push((0.0f32, row.hex_id));
+    }
+
+    // Budgeted respawn pass: same cap as world objects so a burst of new
+    // tiles can't create hundreds of sprites in one frame.
+    if plant_pending.len() > SPRITE_SPAWNS_PER_PASS {
+        plant_pending.truncate(SPRITE_SPAWNS_PER_PASS);
+    }
+    for (_, hex_id) in plant_pending {
+        let Some(row) = crate::net::gen::HexTileTableAccess::hex_tile(&conn.db)
+            .hex_id()
+            .find(&hex_id)
+        else {
+            continue;
+        };
+        let is_polluted = row.is_polluted;
+
+        // Desired visual: plant diamond when one exists, else pollution disc.
+        let kind: Option<Sprite> = state
+            .parsed
+            .get(&hex_id)
+            .map(|p| plant_sprite(&p.kind_name, now >= p.mature_at))
+            .or_else(|| is_polluted.then(|| Sprite {
+                color: Color::srgb(0.18, 0.2, 0.16),
+                custom_size: Some(Vec2::splat(2.4)),
+                ..default()
+            }));
+        let mature = state
+            .parsed
+            .get(&hex_id)
+            .map(|p| now >= p.mature_at)
+            .unwrap_or(false);
+        let band = eco_band(row.eco_rating);
 
         let (wx, wy) = row_world_center(row.hex_q, row.hex_r);
         let existing = state.visuals.get(&row.hex_id).copied();
@@ -987,6 +1123,48 @@ pub fn update_plant_visuals(
 
 fn row_world_center(q: i32, r: i32) -> (f32, f32) {
     idlecore_core::hex_grid::HexGrid::axial_to_world(q, r, WorldGenConfig::HEX_SIZE)
+}
+
+#[cfg(test)]
+mod tests_floor_variants {
+    use super::*;
+    use idlecore_core::terrain::TerrainType;
+
+    #[test]
+    fn every_terrain_has_multiple_seamless_variants() {
+        for terrain in [
+            TerrainType::Grass,
+            TerrainType::Grassland,
+            TerrainType::Forest,
+            TerrainType::TropicalRainforest,
+            TerrainType::Desert,
+            TerrainType::Tundra,
+            TerrainType::Taiga,
+            TerrainType::Mountain,
+            TerrainType::City,
+            TerrainType::Polluted,
+        ] {
+            let variants = floor_tiles_for(terrain);
+            assert!(variants.len() >= 2, "{terrain:?} needs >= 2 floor variants");
+            for (path, tint) in variants {
+                assert!(path.contains("Tiny"), "{terrain:?} non-tiny tile {path}");
+                assert!(tint.iter().all(|c| (0.5..=1.3).contains(c)));
+            }
+        }
+    }
+
+    #[test]
+    fn cell_variant_is_deterministic_and_in_range() {
+        for q in -50..50 {
+            for r in -50..50 {
+                let v = cell_variant(q, r, 3);
+                assert!(v < 3);
+                assert_eq!(v, cell_variant(q, r, 3));
+            }
+        }
+        // Adjacent cells should (statistically) differ; spot-check a pair.
+        assert_ne!(cell_variant(0, 0, 3), cell_variant(1, 0, 3));
+    }
 }
 
 #[cfg(test)]
@@ -1069,38 +1247,17 @@ mod tests_plants {
     }
 
     #[test]
-    fn hex_outline_alpha_is_a_hollow_ring() {
-        let img = hex_outline_image(18, 20, [1.0, 1.0, 0.0], 2.0);
+    fn slot_outline_alpha_is_a_hollow_square_ring() {
+        let img = slot_outline_image(18, 20, [1.0, 1.0, 0.0], 2.0);
         let data = img.data.expect("has pixels");
         let w = 18u32;
         let alpha = |x: u32, y: u32| data[((y * w + x) * 4 + 3) as usize];
         // Hollow interior.
         assert_eq!(alpha(9, 10), 0);
-        // Opaque band at the edge midpoint (left vertex region).
+        // Opaque band along each edge midpoint.
         assert!(alpha(0, 10) > 200 || alpha(1, 10) > 200);
-        // Outside corners stay empty.
-        assert_eq!(alpha(0, 0), 0);
-    }
-
-    #[test]
-    fn hex_tile_alpha_is_a_pointy_top_hexagon() {
-        let img = hex_tile_image(18, 20, [1.0, 0.0, 0.0]);
-        let data = img.data.expect("has pixels");
-        let w = 18u32;
-        let alpha = |x: u32, y: u32| data[((y * w + x) * 4 + 3) as usize];
-        // Center is opaque, texture corners are transparent.
-        assert!(alpha(9, 10) > 240);
-        for (x, y) in [(0, 0), (17, 0), (0, 19), (17, 19)] {
-            assert_eq!(alpha(x, y), 0, "corner ({x},{y})");
-        }
-        // Left/right edge midpoints are the side vertices: opaque just inside,
-        // faded at the very tip (AA).
-        assert!(alpha(2, 10) > 240);
-        assert!(alpha(0, 10) < alpha(2, 10));
-        assert!(alpha(15, 10) > 240);
-        // Top/bottom vertices reach the texture edges (pointy-top); the very
-        // tip pixel is AA-faded but not empty.
-        assert!(alpha(9, 1) > 240);
-        assert!(alpha(9, 0) > 0 && alpha(9, 0) < 255);
+        assert!(alpha(9, 0) > 200);
+        // Corners are part of the ring (square, not hexagonal).
+        assert!(alpha(0, 0) > 200);
     }
 }

@@ -21,18 +21,18 @@ use std::time::{Duration, Instant};
 #[path = "../net/gen/mod.rs"]
 mod gen;
 
-use spacetimedb_sdk::DbContext;
-use spacetimedb_sdk::__codegen::TableLike;
-use gen::player_table::PlayerTableAccess;
 use gen::hex_tile_table::HexTileTableAccess;
 use gen::login;
 use gen::move_player;
 use gen::plant;
+use gen::player_table::PlayerTableAccess;
 use gen::teleport_player;
 use gen::update_profile;
+use spacetimedb_sdk::__codegen::TableLike;
+use spacetimedb_sdk::DbContext;
 
-const URI: &str = "http://127.0.0.1:3000";
-const DB: &str = "idlebot";
+const URI: &str = "https://db.nestfeed.app";
+const DB: &str = "nestfeed";
 const TIMEOUT: Duration = Duration::from_secs(25);
 
 fn main() {
@@ -79,7 +79,10 @@ fn main() {
     println!("[4] teleport(1,0) round trip");
     let sent = Instant::now();
     let mut rtt: Option<Duration> = None;
-    if let Err(e) = conn.reducers().teleport_player_then(1, 0, move |_ctx, _res| {}) {
+    if let Err(e) = conn
+        .reducers()
+        .teleport_player_then(1, 0, move |_ctx, _res| {})
+    {
         failures.push(format!("teleport send failed: {e}"));
     } else {
         let moved = wait_until_fine(&conn, TIMEOUT, || {
@@ -167,15 +170,11 @@ fn main() {
             }
 
             let pos_ok = wait_until(&conn2, TIMEOUT, || {
-                conn2
-                    .db
-                    .player()
-                    .iter()
-                    .any(|p| {
-                        p.address == wallet_b
-                            && (p.position_x - x).abs() < 0.01
-                            && (p.position_y - y).abs() < 0.01
-                    })
+                conn2.db.player().iter().any(|p| {
+                    p.address == wallet_b
+                        && (p.position_x - x).abs() < 0.01
+                        && (p.position_y - y).abs() < 0.01
+                })
             });
             if pos_ok {
                 println!("[9] PASS: position ({x:.1},{y:.1}) persisted across reconnect");
@@ -204,7 +203,10 @@ fn main() {
 
     // --- Summary ------------------------------------------------------------
     if failures.is_empty() {
-        println!("PASS: integration smoke complete (teleport RTT ~{} ms)", rtt.map(|d| d.as_millis()).unwrap_or(0));
+        println!(
+            "PASS: integration smoke complete (teleport RTT ~{} ms)",
+            rtt.map(|d| d.as_millis()).unwrap_or(0)
+        );
     } else {
         for f in &failures {
             println!("FAIL: {f}");
@@ -271,7 +273,15 @@ fn economy_phases(
         .find(|p| p.address == wallet)
         .map(|p| (p.position_x, p.position_y))
         .unwrap_or((0.0, 0.0));
-    if let Err(e) = conn.reducers().move_player_then(1.0, 0.0, 5.0, 1.0, prev.0 + 4.0, prev.1, move |_ctx, _res| {}) {
+    if let Err(e) = conn.reducers().move_player_then(
+        1.0,
+        0.0,
+        5.0,
+        1.0,
+        prev.0 + 4.0,
+        prev.1,
+        move |_ctx, _res| {},
+    ) {
         failures.push(format!("move_player send failed: {e}"));
     }
     let moved = wait_until(conn, TIMEOUT, || {
@@ -335,7 +345,15 @@ fn economy_phases(
             );
             if conn
                 .reducers()
-                .move_player_then(1.0, 0.0, 10.0, 1.0, pos.0 + 8.0, pos.1, move |_ctx, _res| {})
+                .move_player_then(
+                    1.0,
+                    0.0,
+                    10.0,
+                    1.0,
+                    pos.0 + 8.0,
+                    pos.1,
+                    move |_ctx, _res| {},
+                )
                 .is_err()
             {
                 failures.push("plant retry move send failed".to_string());
@@ -352,13 +370,16 @@ fn economy_phases(
         println!("[7] attempt {attempt}: planting at hex {hex_id} ({pos:?})");
         let outcome_cell = Arc::new(Mutex::new(None::<String>));
         let oc = outcome_cell.clone();
-        if let Err(e) = conn.reducers().plant_then(hex_id, "Wheat".to_string(), move |_ctx, res| {
-            *oc.lock().unwrap() = Some(match res {
-                Ok(Ok(())) => "ok".to_string(),
-                Ok(Err(e)) => format!("rejected: {e}"),
-                Err(e) => format!("sdk error: {e}"),
-            });
-        }) {
+        if let Err(e) = conn
+            .reducers()
+            .plant_then(hex_id, "Wheat".to_string(), move |_ctx, res| {
+                *oc.lock().unwrap() = Some(match res {
+                    Ok(Ok(())) => "ok".to_string(),
+                    Ok(Err(e)) => format!("rejected: {e}"),
+                    Err(e) => format!("sdk error: {e}"),
+                });
+            })
+        {
             failures.push(format!("plant send failed: {e}"));
             break;
         }
@@ -401,12 +422,10 @@ fn economy_phases(
     // --- Phase 8: profile avatar -------------------------------------------
     let avatar = "zombieA".to_string();
     println!("[8] update_profile avatar={avatar}");
-    if let Err(e) = conn.reducers().update_profile_then(
-        None,
-        Some(avatar.clone()),
-        None,
-        move |_ctx, _res| {},
-    ) {
+    if let Err(e) =
+        conn.reducers()
+            .update_profile_then(None, Some(avatar.clone()), None, move |_ctx, _res| {})
+    {
         failures.push(format!("update_profile send failed: {e}"));
     }
     let av_ok = wait_until(conn, TIMEOUT, || {
@@ -438,10 +457,13 @@ fn login_phase(conn: &gen::DbConnection, wallet: &str, label: &str, failures: &m
     let reducer_ok = std::sync::Arc::new(AtomicBool::new(false));
     let acked = reducer_acked.clone();
     let ok = reducer_ok.clone();
-    if let Err(e) = conn.reducers().login_then(wallet.to_string(), move |_ctx, res| {
-        acked.store(true, Ordering::Relaxed);
-        ok.store(matches!(res, Ok(Ok(_))), Ordering::Relaxed);
-    }) {
+    if let Err(e) = conn
+        .reducers()
+        .login_then(wallet.to_string(), move |_ctx, res| {
+            acked.store(true, Ordering::Relaxed);
+            ok.store(matches!(res, Ok(Ok(_))), Ordering::Relaxed);
+        })
+    {
         println!("FAIL: login_then send error: {e}");
         std::process::exit(1);
     }

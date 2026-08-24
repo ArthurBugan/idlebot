@@ -5,24 +5,24 @@
 //! [`Net`], renders other players as markers, and exposes reducer actions to
 //! the rest of the client.
 
+use super::hud::{reducer_report, send_reducer};
+use crate::plugins::player::PhysicsBody;
 use bevy::prelude::*;
+use spacetimedb_sdk::__codegen::{TableLike, TableWithPrimaryKey, WithDelete, WithInsert};
+use spacetimedb_sdk::DbContext;
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender};
-use spacetimedb_sdk::DbContext;
-use spacetimedb_sdk::__codegen::{TableLike, TableWithPrimaryKey, WithDelete, WithInsert};
-use crate::plugins::player::PhysicsBody;
-use super::hud::{reducer_report, send_reducer};
 
+use crate::player::ClientPlayer;
 use idlecore_core::hex::{world_pos_to_hex, HexCoord};
 use idlecore_core::world_gen::WorldGenConfig;
-use crate::player::ClientPlayer;
 
 use super::gen::*;
 
 /// Node address of the local SpacetimeDB instance.
-pub const SERVER_URI: &str = "http://127.0.0.1:3000";
+pub const SERVER_URI: &str = "https://db.nestfeed.app";
 /// Module (database) name published by `idlecore-server`.
-pub const MODULE_NAME: &str = "idlebot";
+pub const MODULE_NAME: &str = "nestfeed";
 /// Demo wallet used until chain verification lands (Spec 013/014).
 pub const DEMO_WALLET: &str = "0xIdleBotDemo0001";
 
@@ -30,12 +30,21 @@ pub const DEMO_WALLET: &str = "0xIdleBotDemo0001";
 /// thread, drained by [`Net::drain`] each frame.
 #[derive(Debug, Clone)]
 pub enum NetEvent {
-    Connected { identity: String },
+    Connected {
+        identity: String,
+    },
     ConnectError(String),
     Disconnected(String),
-    ReducerResult { name: &'static str, ok: bool, msg: String },
+    ReducerResult {
+        name: &'static str,
+        ok: bool,
+        msg: String,
+    },
     /// A teleport confirmed by the server; the sim must move the player.
-    Teleported { q: i32, r: i32 },
+    Teleported {
+        q: i32,
+        r: i32,
+    },
     ServerMessage(String),
 }
 
@@ -136,7 +145,11 @@ impl Net {
                                     Ok(Err(e)) => (false, e.clone()),
                                     Err(e) => (false, format!("send error: {e}")),
                                 };
-                                let _ = tx.send(NetEvent::ReducerResult { name: "login", ok, msg });
+                                let _ = tx.send(NetEvent::ReducerResult {
+                                    name: "login",
+                                    ok,
+                                    msg,
+                                });
                             }
                         });
                     }
@@ -186,7 +199,10 @@ impl Net {
                 let tx = self.tx.clone();
                 move |_ctx, identity, token| {
                     save_token(&identity.to_string(), token);
-                    tx.send(NetEvent::Connected { identity: identity.to_string() }).ok();
+                    tx.send(NetEvent::Connected {
+                        identity: identity.to_string(),
+                    })
+                    .ok();
                 }
             })
             .on_connect_error({
@@ -217,7 +233,10 @@ impl Net {
             let tx = self.tx.clone();
             let dirty = dirty.clone();
             move |_ctx, row| {
-                let _ = tx.send(NetEvent::ServerMessage(format!("player joined {}", row.address)));
+                let _ = tx.send(NetEvent::ServerMessage(format!(
+                    "player joined {}",
+                    row.address
+                )));
                 dirty.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         });
@@ -225,7 +244,10 @@ impl Net {
             let tx = self.tx.clone();
             let dirty = dirty.clone();
             move |_ctx, row| {
-                let _ = tx.send(NetEvent::ServerMessage(format!("player left {}", row.address)));
+                let _ = tx.send(NetEvent::ServerMessage(format!(
+                    "player left {}",
+                    row.address
+                )));
                 dirty.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         });
@@ -255,12 +277,15 @@ impl Net {
     /// Mark the replicated `player` set as changed (called after any reducer
     /// we send that mutates player rows; SDK row-insert/delete also bump it).
     pub fn mark_players_dirty(&mut self) {
-        self.players_dirty.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.players_dirty
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// True if the replicated `player` table changed since the last poll.
     pub fn poll_players_dirty(&mut self) -> bool {
-        let version = self.players_dirty.load(std::sync::atomic::Ordering::Relaxed);
+        let version = self
+            .players_dirty
+            .load(std::sync::atomic::Ordering::Relaxed);
         let changed = version != self.players_dirty_last;
         self.players_dirty_last = version;
         changed
@@ -272,7 +297,6 @@ impl Net {
         HexCoord::new(q, r).to_id()
     }
 }
-
 
 /// Marker component for spawned remote-player markers.
 #[derive(Component)]
@@ -307,10 +331,8 @@ fn animate_remote_markers(
 
 /// Path of the persisted identity token (same identity across restarts).
 fn identity_token_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(
-        std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
-    )
-    .join(".idlebot_client_identity")
+    std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
+        .join(".idlebot_client_identity")
 }
 
 /// Load the saved access token, if any.
@@ -337,16 +359,20 @@ pub struct NetPlugin;
 impl Plugin for NetPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Net::default())
-.init_resource::<PositionSync>()
+            .init_resource::<PositionSync>()
             .add_systems(Startup, auto_connect)
             .add_systems(PreUpdate, (net_frame_tick, net_drain).chain())
-            .add_systems(Update, (
-                animate_remote_markers,
-                send_heartbeat,
-                sync_remote_players,
-                sync_player_position,
-                interact_key_press,
-            ));
+            .add_systems(
+                Update,
+                (
+                    animate_remote_markers,
+                    send_heartbeat,
+                    sync_remote_players,
+                    sync_player_position,
+                    interact_key_press,
+                    super::hud::toggle_debug_hud,
+                ),
+            );
     }
 }
 
@@ -393,20 +419,41 @@ fn interact_key_press(
         };
         let tx = net.sender();
 
-        // Interactables on the tile come first: gather grass, mine rocks,
-        // harvest trees — regardless of the held item.
-        let mut node: Option<(u64, String, bool)> = None;
+        // Interactables come first: gather grass, mine rocks, harvest trees —
+        // the node nearest the targeted slot wins (Stardew-style aiming).
+        // Priority: mature tree > grass/rock > still-growing sapling.
+        let (hex_cx, hex_cy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
+            target.q,
+            target.r,
+            idlecore_core::world_gen::WorldGenConfig::HEX_SIZE,
+        );
+        let slot_dx = idlecore_core::slots::slot_center(target.slot_x, target.slot_y).0 - hex_cx;
+        let slot_dy = idlecore_core::slots::slot_center(target.slot_x, target.slot_y).1 - hex_cy;
+        let rank = |kind: &str, mature: bool| match (kind, mature) {
+            ("Tree", true) => 0,
+            ("Tree", false) => 2,
+            _ => 1,
+        };
+        let mut node: Option<(usize, f32, u64, String, bool)> = None;
         for obj in conn.db.world_object().iter().filter(|o| o.hex_id == hex_id) {
+            let dx = obj.offset_x - slot_dx;
+            let dy = obj.offset_y - slot_dy;
+            let dist2 = dx * dx + dy * dy;
             let mature = obj.mature_at == 0;
-            match (&obj.kind[..], mature, &node) {
-                ("Grass", _, None) => node = Some((obj.object_id, "Grass".into(), true)),
-                ("Rock", _, None) => node = Some((obj.object_id, "Rock".into(), true)),
-                ("Tree", true, _) | ("Tree", false, None) => {
-                    node = Some((obj.object_id, "Tree".into(), mature))
-                }
-                _ => {}
+            let kind = match &obj.kind[..] {
+                k @ ("Grass" | "Rock" | "Tree") => k,
+                _ => continue,
+            };
+            let r = rank(kind, mature);
+            let better = match &node {
+                None => true,
+                Some((best_rank, best_dist, _, _, _)) => (r, dist2) < (*best_rank, *best_dist),
+            };
+            if better {
+                node = Some((r, dist2, obj.object_id, kind.to_string(), mature));
             }
         }
+        let node = node.map(|(_, _, id, kind, mature)| (id, kind, mature));
         if let Some((object_id, kind, mature)) = node {
             if kind == "Tree" && !mature {
                 net.push(NetEvent::ServerMessage("E: tree still growing".to_string()));
@@ -416,7 +463,11 @@ fn interact_key_press(
                 r.gather_object_then(
                     object_id,
                     super::hud::reducer_report(
-                        if kind == "Grass" { "gather" } else { "harvest_tree" },
+                        if kind == "Grass" {
+                            "gather"
+                        } else {
+                            "harvest_tree"
+                        },
                         tx.clone(),
                         hex_id,
                     ),
@@ -425,7 +476,9 @@ fn interact_key_press(
             return;
         }
         let Some(hex) = conn.db.hex_tile().hex_id().find(&hex_id) else {
-            net.push(NetEvent::ServerMessage(format!("E: hex {hex_id} not found")));
+            net.push(NetEvent::ServerMessage(format!(
+                "E: hex {hex_id} not found"
+            )));
             return;
         };
         if let Some(plant_json) = &hex.plant {
@@ -437,7 +490,10 @@ fn interact_key_press(
                         .as_secs();
                     if now >= plant.planted_at + plant.growth_time {
                         super::hud::send_reducer(&mut net, |r| {
-                            r.harvest_then(hex_id, super::hud::reducer_report("harvest", tx.clone(), hex_id))
+                            r.harvest_then(
+                                hex_id,
+                                super::hud::reducer_report("harvest", tx.clone(), hex_id),
+                            )
                         });
                     } else {
                         net.push(NetEvent::ServerMessage(format!(
@@ -451,13 +507,20 @@ fn interact_key_press(
             }
         } else if hex.is_polluted {
             super::hud::send_reducer(&mut net, |r| {
-                r.clean_then(hex_id, super::hud::reducer_report("clean", tx.clone(), hex_id))
+                r.clean_then(
+                    hex_id,
+                    super::hud::reducer_report("clean", tx.clone(), hex_id),
+                )
             });
         } else if inventory.active_item().map(String::as_str) == Some("Seed") {
-            // Empty natural tile with a seed in hand: grow a tree here.
+            // Empty natural tile with a seed in hand: grow a tree in the
+            // targeted slot (Stardew-style placement).
+            let (slot_x, slot_y) = (target.slot_x, target.slot_y);
             super::hud::send_reducer(&mut net, |r| {
                 r.plant_tree_then(
                     hex_id,
+                    slot_x,
+                    slot_y,
                     super::hud::reducer_report("plant_tree", tx.clone(), hex_id),
                 )
             });
@@ -492,7 +555,10 @@ fn net_drain(
     mut burst: ResMut<crate::assets::BurstFx>,
     mut latency: ResMut<ServerLatency>,
     mut player_transform: ResMut<crate::player::PlayerTransform>,
-    mut bodies: Query<(&mut Transform, &mut crate::player::ClientPlayer), With<crate::plugins::player::PhysicsBody>>,
+    mut bodies: Query<
+        (&mut Transform, &mut crate::player::ClientPlayer),
+        With<crate::plugins::player::PhysicsBody>,
+    >,
 ) {
     let teleports = net.drain();
     if teleports.is_empty() {
@@ -502,11 +568,8 @@ fn net_drain(
         return;
     };
     for (q, r) in teleports {
-        let (wx, wy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
-            q,
-            r,
-            WorldGenConfig::HEX_SIZE,
-        );
+        let (wx, wy) =
+            idlecore_core::hex_grid::HexGrid::axial_to_world(q, r, WorldGenConfig::HEX_SIZE);
         // 2D world: x = east, y = north; z carries the draw order.
         transform.translation = Vec3::new(wx, wy, crate::world_floor::prop_depth(wy) + 50.0);
         player.position = Vec3::new(wx, wy, 0.0);
@@ -554,7 +617,9 @@ fn sync_player_position(
     mut state: ResMut<PositionSync>,
     bodies: Query<(&Transform, &ClientPlayer), (With<PhysicsBody>, Without<RemotePlayerMarker>)>,
 ) {
-    let Ok((body, player)) = bodies.single() else { return };
+    let Ok((body, player)) = bodies.single() else {
+        return;
+    };
     if net.conn.is_none() || net.address.is_none() {
         return;
     }
@@ -583,15 +648,17 @@ fn sync_player_position(
     // Log the hex the movement ended in (pos is the reported destination).
     let hex_id = Net::hex_id_at(pos.x, pos.y);
     let tx = net.sender();
-    send_reducer(&mut net, |r| r.move_player_then(
-        dir.x,
-        dir.y,
-        speed,
-        dt,
-        pos.x,
-        pos.y,
-        reducer_report("move", tx.clone(), hex_id),
-    ));
+    send_reducer(&mut net, |r| {
+        r.move_player_then(
+            dir.x,
+            dir.y,
+            speed,
+            dt,
+            pos.x,
+            pos.y,
+            reducer_report("move", tx.clone(), hex_id),
+        )
+    });
 }
 
 /// Mirror the authoritative `player` table into `Net.players`, spawn 2D
@@ -605,9 +672,16 @@ fn sync_remote_players(
     mut player_transform: ResMut<crate::player::PlayerTransform>,
     mut pos_sync: ResMut<PositionSync>,
     mut commands: Commands,
-    mut markers: Query<(Entity, &RemotePlayerMarker, &mut Transform, Option<&mut MarkerMove>)>,
+    mut markers: Query<(
+        Entity,
+        &RemotePlayerMarker,
+        &mut Transform,
+        Option<&mut MarkerMove>,
+    )>,
 ) {
-    let Some(mine) = net.address.clone() else { return };
+    let Some(mine) = net.address.clone() else {
+        return;
+    };
 
     // Perf: rebuild is O(rows * markers); skip it entirely unless the
     // replicated player set changed (row callbacks or reducers we sent).
@@ -615,7 +689,9 @@ fn sync_remote_players(
     if !net.poll_players_dirty() && !net.players.is_empty() {
         return;
     }
-    let Some(conn) = net.conn.as_ref() else { return };
+    let Some(conn) = net.conn.as_ref() else {
+        return;
+    };
 
     // Spec 018 T2.4: only players within 3 hexes are visible.
     let own_hex: Option<(i32, i32)> = player
@@ -623,10 +699,13 @@ fn sync_remote_players(
         .ok()
         .and_then(|p| p.current_hex.map(|h| (h.q, h.r)))
         .or_else(|| {
-            player
-                .single()
-                .ok()
-                .map(|p| idlecore_core::hex::world_pos_to_hex(p.position.x, p.position.y, WorldGenConfig::HEX_SIZE))
+            player.single().ok().map(|p| {
+                idlecore_core::hex::world_pos_to_hex(
+                    p.position.x,
+                    p.position.y,
+                    WorldGenConfig::HEX_SIZE,
+                )
+            })
         });
     let in_view = |row_hex_id: u64| -> bool {
         let Some((q, r)) = own_hex else { return true };
@@ -656,10 +735,17 @@ fn sync_remote_players(
                 // Persisted spawn: once per session, land on the row position.
                 if !p.position_restored {
                     if let Ok(mut t) = bodies.single_mut() {
-                        t.translation = Vec3::new(row.position_x, row.position_y, crate::world_floor::prop_depth(row.position_y) + 50.0);
+                        t.translation = Vec3::new(
+                            row.position_x,
+                            row.position_y,
+                            crate::world_floor::prop_depth(row.position_y) + 50.0,
+                        );
                     }
                     p.position = Vec3::new(row.position_x, row.position_y, 0.0);
-                    p.current_hex = Some(crate::player::CurrentHex { q: row.hex_q, r: row.hex_r });
+                    p.current_hex = Some(crate::player::CurrentHex {
+                        q: row.hex_q,
+                        r: row.hex_r,
+                    });
                     player_transform.translation = p.position;
                     p.position_restored = true;
                     // Baseline the position sync at the restored spot so the
@@ -697,7 +783,11 @@ fn sync_remote_players(
         );
         // 2D: x = east, y = north; z = draw order (above tiles, below the
         // local player's +50 offset).
-        let pos = Vec3::new(row.position_x, row.position_y, crate::world_floor::prop_depth(row.position_y) + 40.0);
+        let pos = Vec3::new(
+            row.position_x,
+            row.position_y,
+            crate::world_floor::prop_depth(row.position_y) + 40.0,
+        );
         let mut found = false;
         for (entity, marker, transform, interp_slot) in markers.iter_mut() {
             let _ = entity;
@@ -714,7 +804,10 @@ fn sync_remote_players(
                     },
                 };
                 let dist = (pos - transform.translation).length();
-                let since = now.saturating_duration_since(interp.last_seen).as_secs_f32().max(0.05);
+                let since = now
+                    .saturating_duration_since(interp.last_seen)
+                    .as_secs_f32()
+                    .max(0.05);
                 interp.speed = dist / since;
                 interp.target = pos;
                 interp.last_seen = now;
@@ -753,9 +846,15 @@ fn sync_remote_players(
             .with_child((
                 Name::new("player-name-label"),
                 Text2d::new(short_addr(&row.address)),
-                TextFont { font_size: 12.0.into(), ..default() },
+                TextFont {
+                    font_size: 12.0.into(),
+                    ..default()
+                },
                 TextColor(Color::srgb(0.95, 0.95, 1.0)),
-                TextShadow { color: Color::BLACK, offset: Vec2::new(1.0, 1.0) },
+                TextShadow {
+                    color: Color::BLACK,
+                    offset: Vec2::new(1.0, 1.0),
+                },
                 Transform::from_xyz(0.0, 1.6, -1.0),
             ));
     }
@@ -811,7 +910,10 @@ pub struct LatencyWindow {
 
 impl Default for LatencyWindow {
     fn default() -> Self {
-        Self { samples: VecDeque::new(), max: 60 }
+        Self {
+            samples: VecDeque::new(),
+            max: 60,
+        }
     }
 }
 
@@ -869,7 +971,10 @@ mod latency_tests {
 
     #[test]
     fn window_averages_and_rolls_off() {
-        let mut w = LatencyWindow { max: 3, ..Default::default() };
+        let mut w = LatencyWindow {
+            max: 3,
+            ..Default::default()
+        };
         w.push_ms(10.0);
         w.push_ms(20.0);
         w.push_ms(30.0);
@@ -924,7 +1029,10 @@ mod sync_tests {
         assert_eq!(axial_hex_distance((0, 0), (2, -2)), 2);
         assert_eq!(axial_hex_distance((5, 3), (5, 3)), 0);
         // Symmetric.
-        assert_eq!(axial_hex_distance((2, -2), (0, 0)), axial_hex_distance((0, 0), (2, -2)));
+        assert_eq!(
+            axial_hex_distance((2, -2), (0, 0)),
+            axial_hex_distance((0, 0), (2, -2))
+        );
         // Adjacent hexes.
         assert_eq!(axial_hex_distance((0, 0), (1, 0)), 1);
         assert_eq!(axial_hex_distance((0, 0), (1, -1)), 1);

@@ -902,8 +902,18 @@ pub fn render_visible_tiles(
     mut minimap_assets: ResMut<MinimapAssets>,
     mut images: ResMut<Assets<Image>>,
     mut tile_query: Query<(&mut Node, &mut ImageNode), With<MapTileNode>>,
+    mut next_render: Local<f64>,
+    time: Res<Time>,
 ) {
     let Some(player_pos) = minimap_state.player_pos else { return };
+
+    // Perf: while moving, the view key changes every frame and this pass
+    // relayouts every visible minimap node. Gate to ~10 Hz; the skip-key
+    // below still avoids all work when standing still.
+    if time.elapsed_secs_f64() < *next_render {
+        return;
+    }
+    *next_render = time.elapsed_secs_f64() + 0.1;
 
     let map_content_entity = match map_content_query.single() {
         Ok(e) => e,

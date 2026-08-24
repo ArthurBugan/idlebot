@@ -34,8 +34,18 @@ pub const SPRINT_MULTIPLIER: f32 = 2.0;
 
 /// Acceleration/deceleration rate (1/s): the actual velocity converges on the
 /// commanded speed with a 1/k time constant. Smooth start/stop; when input
-/// stops the desired velocity is zero and the player glides to a halt.
-const ACCELERATION: f32 = 8.0;
+/// stops the desired velocity is zero and the player glides briefly.
+const ACCELERATION: f32 = 12.0;
+
+/// Below this speed (u/s) with no input, snap to zero instead of gliding —
+/// long exponential tails read as laggy input, especially on web where frame
+/// pacing is uneven.
+const STOP_EPSILON: f32 = 0.6;
+
+/// Max simulated delta per frame: web tabs can stall for hundreds of ms
+/// between frames; without a clamp one catch-up step would teleport the
+/// player through walkability checks and feel like a lag spike.
+const MAX_FRAME_DT: f32 = 1.0 / 20.0;
 
 /// Marker for the player's sprite entity. Kept as the "player body" marker so
 /// shared systems (net sync, VFX) query one concept regardless of rendering.
@@ -52,13 +62,26 @@ fn register_player_orientation(mut commands: Commands) {
     commands.insert_resource(PlayerOrientation::default());
 }
 
+/// One controller integration step: ease `velocity` toward the commanded
+/// `dir * speed`, snapping to a stop when input is released and the glide
+/// falls under `STOP_EPSILON`. Pure so the feel is unit-testable.
+fn step_velocity(velocity: Vec2, dir: Vec2, speed: f32, dt: f32) -> Vec2 {
+    let blend = 1.0 - (-ACCELERATION * dt.min(MAX_FRAME_DT)).exp();
+    let v = velocity.lerp(dir * speed, blend);
+    if dir == Vec2::ZERO && v.length() < STOP_EPSILON {
+        Vec2::ZERO
+    } else {
+        v
+    }
+}
+
 /// Move the player sprite from WASD input; y = north.
 fn player_movement(
     keyboard: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     mut player_query: Query<(&mut Transform, &mut ClientPlayer), With<PhysicsBody>>,
-    mut player_transform: ResMut<PlayerTransform>,
-    mut orientation: ResMut<PlayerOrientation>,
+    player_transform: ResMut<PlayerTransform>,
+    orientation: ResMut<PlayerOrientation>,
     streaming_world: Option<Res<StreamingWorldResource>>,
 ) {
     let Ok((mut transform, mut player)) = player_query.single_mut() else { return };
@@ -79,10 +102,10 @@ fn player_movement(
     }
 
     // Exp-lerp the actual velocity toward the commanded one; the player
-    // accelerates on key press and decelerates to a stop on release.
-    let dt = time.delta_secs();
-    let blend = 1.0 - (-ACCELERATION * dt).exp();
-    player.velocity = player.velocity.lerp(dir * speed, blend);
+    // accelerates on key press and decelerates to a stop on release. dt is
+    // clamped so a stalled web frame can't teleport the player.
+    let dt = time.delta_secs().min(MAX_FRAME_DT);
+    player.velocity = step_velocity(player.velocity, dir, speed, time.delta_secs());
     let next_x = transform.translation.x + player.velocity.x * dt;
     let next_y = transform.translation.y + player.velocity.y * dt;
 
@@ -157,6 +180,15 @@ pub struct VehicleIndicator {
     pub label: Option<Entity>,
 }
 
+/// Vehicle art from the Tiny* packs: real sprites where the packs have them
+/// (Tiny Battle boats/planes), tinted diamonds for the rest.
+#[derive(Resource, Default)]
+pub struct VehicleSprites {
+    pub white: Option<Handle<Image>>,
+    pub boat: Option<Handle<Image>>,
+    pub airplane: Option<Handle<Image>>,
+}
+
 fn vehicle_color(vehicle: &idlecore_core::Vehicle) -> Color {
     match vehicle {
         idlecore_core::Vehicle::None => Color::srgba(0.2, 0.2, 0.2, 0.0),
@@ -168,7 +200,30 @@ fn vehicle_color(vehicle: &idlecore_core::Vehicle) -> Color {
     }
 }
 
-fn spawn_vehicle_indicator(mut commands: Commands, mut indicator: ResMut<VehicleIndicator>) {
+fn spawn_vehicle_indicator(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut images: ResMut<Assets<Image>>,
+    mut queue: ResMut<crate::tiny::TinyKeyQueue>,
+    mut indicator: ResMut<VehicleIndicator>,
+) {
+    let mut art = |path: &'static str| -> Handle<Image> {
+        let h = asset_server.load::<Image>(path);
+        queue.0.push(h.clone());
+        h
+    };
+    let white = images.add(bevy::image::Image::new_fill(
+        bevy::render::render_resource::Extent3d { width: 4, height: 4, depth_or_array_layers: 1 },
+        bevy::render::render_resource::TextureDimension::D2,
+        &[255, 255, 255, 255],
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        bevy::asset::RenderAssetUsages::default(),
+    ));
+    commands.insert_resource(VehicleSprites {
+        white: Some(white),
+        boat: Some(art("models/Tiny Battle/Tiles/tile_0139.png")),
+        airplane: Some(art("models/Tiny Battle/Tiles/tile_0136.png")),
+    });
     let plate = commands
         .spawn((
             Name::new("vehicle-plate"),
@@ -198,6 +253,7 @@ fn spawn_vehicle_indicator(mut commands: Commands, mut indicator: ResMut<Vehicle
 fn update_vehicle_indicator(
     body: Query<(&Transform, &ClientPlayer), With<PhysicsBody>>,
     indicator: Option<Res<VehicleIndicator>>,
+    sprites: Res<VehicleSprites>,
     mut entities: ParamSet<(
         Query<(&mut Transform, &mut Visibility, &mut Sprite), (Without<Text2d>, Without<PhysicsBody>)>,
         Query<(&mut Transform, &mut Visibility, &mut Text2d), (Without<Sprite>, Without<PhysicsBody>)>,
@@ -217,7 +273,30 @@ fn update_vehicle_indicator(
                 Some(v) => {
                     t.translation = Vec3::new(body_t.translation.x, body_t.translation.y, TILE_DEPTH_BASE - body_t.translation.y + PLAYER_DEPTH_OFFSET - 1.0);
                     *vis = Visibility::Visible;
-                    sprite.color = vehicle_color(v);
+                    // Real art where the packs have it; tinted diamond otherwise.
+                    let art = match v {
+                        idlecore_core::Vehicle::Boat => sprites.boat.clone(),
+                        idlecore_core::Vehicle::Airplane => sprites.airplane.clone(),
+                        _ => None,
+                    }
+                    .or_else(|| sprites.white.clone());
+                    match art {
+                        Some(art) => {
+                            sprite.image = art;
+                            let is_art = matches!(
+                                v,
+                                idlecore_core::Vehicle::Boat | idlecore_core::Vehicle::Airplane
+                            );
+                            sprite.color = if is_art { Color::WHITE } else { vehicle_color(v) };
+                            sprite.custom_size = Some(Vec2::splat(if is_art { 3.4 } else { 3.6 }));
+                            t.rotation = if is_art {
+                                Quat::IDENTITY
+                            } else {
+                                Quat::from_rotation_z(std::f32::consts::FRAC_PI_4)
+                            };
+                        }
+                        None => {}
+                    }
                 }
                 None => {
                     t.translation.y = -1000.0;
@@ -305,5 +384,36 @@ fn update_aura_light(
         None => {
             *vis = Visibility::Hidden;
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn velocity_accelerates_toward_commanded_speed() {
+        let mut v = Vec2::ZERO;
+        for _ in 0..60 {
+            v = step_velocity(v, Vec2::X, BASE_SPEED, 1.0 / 60.0);
+        }
+        assert!((v.x - BASE_SPEED).abs() < 0.5, "did not reach walk speed: {v}");
+    }
+
+    #[test]
+    fn velocity_snaps_to_zero_after_release() {
+        let mut v = Vec2::new(BASE_SPEED, 0.0);
+        for _ in 0..90 {
+            v = step_velocity(v, Vec2::ZERO, BASE_SPEED, 1.0 / 60.0);
+        }
+        assert_eq!(v, Vec2::ZERO, "glide tail should end in a hard stop");
+    }
+
+    #[test]
+    fn stalled_frame_dt_is_clamped() {
+        // A 500 ms web stall must not exceed the clamped step: the velocity
+        // after one huge frame equals the velocity after a 50 ms frame.
+        let huge = step_velocity(Vec2::ZERO, Vec2::X, BASE_SPEED, 0.5);
+        let clamped = step_velocity(Vec2::ZERO, Vec2::X, BASE_SPEED, MAX_FRAME_DT);
+        assert_eq!(huge, clamped);
     }
 }

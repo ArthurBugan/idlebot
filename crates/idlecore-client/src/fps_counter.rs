@@ -12,8 +12,10 @@ pub struct FpsText;
 pub struct FpsCounter {
     /// Current frame rate (FPS).
     pub fps: u32,
-    /// Time remaining until the next display update (1-second interval).
+    /// Time accumulated in the current measurement window.
     pub accumulator: f32,
+    /// Frames rendered inside the current measurement window.
+    pub frames: u32,
 }
 
 /// FPS counter UI is spawned as a child of the minimap UI in minimap.rs
@@ -24,18 +26,22 @@ pub fn update_fps_counter(
     mut counter: ResMut<FpsCounter>,
     mut text_query: Query<&mut Text, With<FpsText>>,
 ) {
-    let delta = time.delta_secs();
-    counter.accumulator += delta;
+    counter.accumulator += time.delta_secs();
+    counter.frames += 1;
 
+    // Average frames over the whole window: reporting 1/last-delta made a
+    // single slow frame read as "20 FPS" while Bevy ran at a steady 60.
     if counter.accumulator >= 0.5 {
-        counter.fps = (1.0 / delta).floor() as u32;
+        let fps = ((counter.frames as f32) / counter.accumulator).floor() as u32;
+        counter.fps = fps;
         counter.accumulator = 0.0;
+        counter.frames = 0;
 
         if let Some(mut text) = text_query.iter_mut().next() {
-            **text = format!("FPS: {}", counter.fps);
+            **text = format!("FPS: {}", fps);
         }
-        if counter.fps < 58 {
-            info!("FPS: {}", counter.fps);
+        if fps > 0 && fps < 45 {
+            info!("FPS: {}", fps);
         }
     }
 }

@@ -69,10 +69,10 @@ impl Plugin for NetHudPlugin {
 
 /// Toggled with F1 so it never blocks inventory interaction.
 #[derive(Component)]
-struct DebugHudRoot;
+pub(super) struct DebugHudRoot;
 
 #[derive(Resource, Default)]
-struct DebugHudVisible(bool);
+pub(super) struct DebugHudVisible(pub(super) bool);
 
 #[derive(Component)]
 struct HudStatusText;
@@ -460,8 +460,9 @@ fn hud_buttons(
                             continue;
                         }
                         let hex = idlecore_core::hex::HexCoord::new(action_target.q, action_target.r).to_id();
+                        let (slot_x, slot_y) = (action_target.slot_x, action_target.slot_y);
                         send_reducer(&mut net, |r| {
-                            r.plant_tree_then(hex, reducer_report("plant_tree", tx.clone(), hex))
+                            r.plant_tree_then(hex, slot_x, slot_y, reducer_report("plant_tree", tx.clone(), hex))
                         });
                     }
                     HudAction::ClaimIdle => {
@@ -487,9 +488,9 @@ fn hud_buttons(
                         // painted on the model, then persist the choice as
                         // the avatar column so it survives reconnects.
                         crate::skins::cycle_skin_dir(&mut skins, 1);
-                        let skin_name = crate::skins::TOON_CHARACTERS
-                            .get(skins.current)
-                            .map(|s| s.to_string())
+                        let skin_name = crate::skins::CHARACTERS
+                            .first()
+                            .map(|n| n.to_string())
                             .unwrap_or_default();
                         send_reducer(&mut net, |r| r.update_profile_then(
                             None,
@@ -587,7 +588,7 @@ fn eco_rank(ep: u64) -> (&'static str, Option<u64>) {
 }
 
 /// F1 hides/shows the whole debug panel (status, buttons, log).
-fn toggle_debug_hud(
+pub(super) fn toggle_debug_hud(
     keys: Res<ButtonInput<KeyCode>>,
     mut state: ResMut<DebugHudVisible>,
     mut panel: Query<&mut Node, With<DebugHudRoot>>,

@@ -27,24 +27,67 @@ fn obj_hash(hex_id: u64, slot: u8) -> u64 {
     x.wrapping_mul(0x9E37_79B9_7F4A_7C15)
 }
 
+/// Axial neighbor offsets (pointy-top hex grid).
+const AXIAL_NEIGHBORS: [(i32, i32); 6] =
+    [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)];
+
+/// Spacing radius (in axial hex distance) between natural resource nodes:
+/// a hex only spawns when its priority hash beats every hex within this
+/// radius, so two nodes are always at least SPACING_RADIUS + 1 hexes apart.
+const SPACING_RADIUS: i32 = 3;
+
+/// Scarcity spacing rule: a hex may host natural nodes only when its
+/// priority hash beats every hex within `SPACING_RADIUS`. This keeps nodes
+/// far apart, is a pure function of geometry (so the result never depends
+/// on tile generation order or timing), and needs no table reads.
+/// Water/city hexes compete too — they just never spawn — which only
+/// thins coastlines further.
+fn hex_wins_spacing(hex_id: u64) -> bool {
+    let coord = idlecore_core::hex::HexCoord::from_id(hex_id);
+    let my = obj_hash(hex_id, 0);
+    for dq in -SPACING_RADIUS..=SPACING_RADIUS {
+        for dr in -SPACING_RADIUS..=SPACING_RADIUS {
+            if dq == 0 && dr == 0 {
+                continue;
+            }
+            // Axial distance from the center hex to this offset.
+            let dist = dq.abs().max(dr.abs()).max((dq + dr).abs());
+            if dist > SPACING_RADIUS {
+                continue;
+            }
+            let n = idlecore_core::hex::HexCoord::new(coord.q + dq, coord.r + dr);
+            if obj_hash(n.to_id(), 0) >= my {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Whether a natural node spawns in `slot` for this terrain, and its kind.
 fn natural_spawn(terrain: TerrainType, slot: u8, h: u64) -> Option<&'static str> {
     let roll = h % 100;
     let kind = match terrain {
+        // Spawn rates are intentionally very scarce: resources are meant to
+        // be hunted, not farmed in place, and every replicated node costs the
+        // client a sprite and draw-call budget.
+        // Spawn rates are intentionally scarce, and the spacing rule already
+        // caps density at ~1 eligible hex per 7 — rolls below are for the
+        // hexes that win that competition.
         TerrainType::Grass => {
             if slot == 5 {
-                (roll < 10).then_some(OBJ_ROCK) // scattered boulders
+                (roll < 2).then_some(OBJ_ROCK) // scattered boulders
             } else if slot <= 2 {
-                (roll < 85).then_some(OBJ_GRASS)
+                (roll < 22).then_some(OBJ_GRASS)
             } else {
                 None
             }
         }
         TerrainType::Grassland => {
             if slot == 5 {
-                (roll < 12).then_some(OBJ_ROCK)
+                (roll < 2).then_some(OBJ_ROCK)
             } else if slot <= 1 {
-                (roll < 75).then_some(OBJ_GRASS)
+                (roll < 24).then_some(OBJ_GRASS)
             } else {
                 None
             }
@@ -53,27 +96,27 @@ fn natural_spawn(terrain: TerrainType, slot: u8, h: u64) -> Option<&'static str>
         | TerrainType::Taiga
         | TerrainType::TropicalRainforest => {
             if slot == 5 {
-                (roll < 8).then_some(OBJ_ROCK)
+                (roll < 2).then_some(OBJ_ROCK)
             } else if slot <= 2 {
-                (roll < 70).then_some(OBJ_GRASS)
+                (roll < 20).then_some(OBJ_GRASS)
             } else {
                 None
             }
         }
         TerrainType::Desert | TerrainType::Tundra => {
             if slot == 5 {
-                (roll < 15).then_some(OBJ_ROCK)
+                (roll < 6).then_some(OBJ_ROCK)
             } else if slot == 0 {
-                (roll < 30).then_some(OBJ_GRASS)
+                (roll < 6).then_some(OBJ_GRASS)
             } else {
                 None
             }
         }
         TerrainType::Mountain => {
             if slot == 4 {
-                (roll < 35).then_some(OBJ_ROCK)
+                (roll < 45).then_some(OBJ_ROCK)
             } else if slot == 0 {
-                (roll < 15).then_some(OBJ_GRASS)
+                (roll < 5).then_some(OBJ_GRASS)
             } else {
                 None
             }
@@ -85,7 +128,30 @@ fn natural_spawn(terrain: TerrainType, slot: u8, h: u64) -> Option<&'static str>
 
 /// Roll any missing natural nodes for one hex. Idempotent per slot: existing
 /// rows are never touched, so backfilling old tiles changes nothing visible.
+/// Hexes that lose the spacing rule against a neighbor never spawn here —
+/// resources keep a minimum distance from each other. Gathered slots stay
+/// empty until their `respawn_at` (10-60 min) elapses, then roll again.
 pub fn ensure_objects(ctx: &ReducerContext, hex_id: u64, terrain: TerrainType) -> usize {
+    if !hex_wins_spacing(hex_id) {
+        return 0;
+    }
+    let now = crate::types::now_secs(ctx);
+    // Free slots whose respawn timer has elapsed: delete the stale record so
+    // the deterministic roller can bring the node back.
+    let expired: Vec<String> = ctx
+        .db
+        .object_removed()
+        .removed_by_hex()
+        .filter(hex_id)
+        .filter(|r| now >= r.respawn_at)
+        .map(|r| r.key.clone())
+        .collect();
+    for key in expired {
+        if let Some(row) = ctx.db.object_removed().key().find(key.clone()) {
+            let _ = row;
+            ctx.db.object_removed().key().delete(key);
+        }
+    }
     let occupied: std::collections::HashSet<u8> = ctx
         .db
         .world_object()
@@ -166,10 +232,33 @@ pub fn count_item(ctx: &ReducerContext, address: &str, item: &str) -> u64 {
 
 /// Record a consumed natural slot so the deterministic roller never
 /// resurrects it (and so planted trees keep their slot reserved).
+/// Deterministic respawn delay for one consumed slot: 10-60 minutes.
+fn respawn_delay(hex_id: u64, slot: u8) -> u64 {
+    crate::types::RESPAWN_MIN_SECS
+        + obj_hash(hex_id, slot) % (crate::types::RESPAWN_MAX_SECS - crate::types::RESPAWN_MIN_SECS)
+}
+
+/// Consume a natural node: record a timed respawn (10-60 min, deterministic
+/// per hex+slot) so the node stays gone until then.
 pub fn consume_slot(ctx: &ReducerContext, hex_id: u64, slot: u8) {
-    let key = format!("{{hex_id}}:{{slot}}");
-    if ctx.db.object_removed().key().find(key.clone()).is_none() {
-        ctx.db.object_removed().insert(crate::types::ObjectRemoved { key, hex_id, slot });
+    // NB: plain braces — the doubled `{{...}}` form used to emit the literal
+    // "{hex_id}:{slot}" for every row, colliding on the PK so all but the
+    // first tombstone were silently dropped and nodes respawned instantly.
+    let key = format!("{}:{}", hex_id, slot);
+    let respawn_at = crate::types::now_secs(ctx) + respawn_delay(hex_id, slot);
+    match ctx.db.object_removed().key().find(key.clone()) {
+        Some(mut row) => {
+            row.respawn_at = respawn_at;
+            ctx.db.object_removed().key().update(row);
+        }
+        None => {
+            ctx.db.object_removed().insert(crate::types::ObjectRemoved {
+                key,
+                hex_id,
+                slot,
+                respawn_at,
+            });
+        }
     }
 }
 
@@ -254,8 +343,16 @@ pub fn gather_object(
     Ok(())
 }
 
-/// Plant a tree on an adjacent land hex, consuming one seed.
-pub fn plant_tree(ctx: &ReducerContext, address: &str, hex_id: u64) -> Result<(), String> {
+/// Plant a tree on an adjacent land hex, consuming one seed. The tree is
+/// placed at the center of the requested ground slot (Stardew-style square
+/// cell, see `idlecore_core::slots`); the slot must lie inside `hex_id`.
+pub fn plant_tree(
+    ctx: &ReducerContext,
+    address: &str,
+    hex_id: u64,
+    slot_x: i32,
+    slot_y: i32,
+) -> Result<(), String> {
     use crate::types::{hex_coords_of, hex_distance, hex_tile, now_secs};
     let now = now_secs(ctx);
     let mut p = find_player(ctx, &address.to_lowercase())
@@ -281,6 +378,11 @@ pub fn plant_tree(ctx: &ReducerContext, address: &str, hex_id: u64) -> Result<()
     if !plantable {
         return Err(format!("Cannot grow trees on {} here", tile.terrain));
     }
+    // The requested slot must be owned by the targeted hex — no planting
+    // across hex borders by aiming at a shared edge slot.
+    if idlecore_core::slots::slot_hex(slot_x, slot_y) != (hq, hr) {
+        return Err("Slot is outside the selected hex".to_string());
+    }
 
     let used: std::collections::HashSet<u8> = ctx
         .db
@@ -296,9 +398,15 @@ pub fn plant_tree(ctx: &ReducerContext, address: &str, hex_id: u64) -> Result<()
         .then_some(())
         .ok_or_else(|| "No seeds — destroy tall grass first".to_string())?;
 
-    let h = obj_hash(hex_id, slot.wrapping_add(97));
-    let offset_x = ((h >> 8) & 0xFF) as f32 / 255.0 * 9.0 - 4.5;
-    let offset_y = ((h >> 16) & 0xFF) as f32 / 255.0 * 9.0 - 4.5;
+    // Snap the tree to the slot's center (offset relative to the hex center).
+    let (hx, hy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
+        hq,
+        hr,
+        idlecore_core::world_gen::WorldGenConfig::HEX_SIZE,
+    );
+    let (cx, cy) = idlecore_core::slots::slot_center(slot_x, slot_y);
+    let offset_x = cx - hx;
+    let offset_y = cy - hy;
     ctx.db.world_object().insert(WorldObjectRow {
         object_id: 0,
         hex_id,
@@ -311,7 +419,7 @@ pub fn plant_tree(ctx: &ReducerContext, address: &str, hex_id: u64) -> Result<()
     });
     add_xp(ctx, &mut p, 1, "plant_tree");
     touch(ctx, &p.address, now);
-    tracing::info!("PLANT-TREE {address} @hex {hex_id} slot {slot}");
+    tracing::info!("PLANT-TREE {address} @hex {hex_id} slot {slot} cell ({slot_x},{slot_y})");
     Ok(())
 }
 
@@ -355,6 +463,77 @@ mod tests {
                 assert!((-4.5..=4.5).contains(&ox));
                 assert!((-4.5..=4.5).contains(&oy));
             }
+        }
+    }
+
+    #[test]
+    fn respawn_delay_is_between_10_and_60_minutes() {
+        for hex_id in [0u64, 7, 123_456_789, u64::MAX] {
+            for slot in 0..MAX_OBJECTS_PER_HEX {
+                let d = respawn_delay(hex_id, slot);
+                assert!(
+                    (crate::types::RESPAWN_MIN_SECS..crate::types::RESPAWN_MAX_SECS).contains(&d),
+                    "delay {d} out of range for ({hex_id},{slot})"
+                );
+            }
+        }
+        // Deterministic: same inputs, same delay.
+        assert_eq!(respawn_delay(42, 3), respawn_delay(42, 3));
+    }
+
+    #[test]
+    fn natural_nodes_keep_distance_from_each_other() {
+        use idlecore_core::hex::HexCoord;
+
+        // Over a patch of hexes, no two hexes within SPACING_RADIUS of each
+        // other may both win the spacing gate — every node keeps a wide,
+        // guaranteed gap to the next resource.
+        let wins: std::collections::HashSet<u64> = (-40..=40)
+            .flat_map(|q| (-40..=40).map(move |r| (q, r)))
+            .map(|(q, r)| HexCoord::new(q, r).to_id())
+            .filter(|&id| hex_wins_spacing(id))
+            .collect();
+
+        let mut winners = 0usize;
+        for q in -40..=40 {
+            for r in -40..=40 {
+                let id = HexCoord::new(q, r).to_id();
+                if !wins.contains(&id) {
+                    continue;
+                }
+                winners += 1;
+                for dq in -SPACING_RADIUS..=SPACING_RADIUS {
+                    for dr in -SPACING_RADIUS..=SPACING_RADIUS {
+                        let dist = dq.abs().max(dr.abs()).max((dq + dr).abs());
+                        if dist == 0 || dist > SPACING_RADIUS {
+                            continue;
+                        }
+                        let neighbor = HexCoord::new(q + dq, r + dr).to_id();
+                        assert!(
+                            !wins.contains(&neighbor),
+                            "hexes ({q},{r}) and ({},{}) are {dist} apart but both host nodes",
+                            q + dq,
+                            r + dr
+                        );
+                    }
+                }
+            }
+        }
+        // Sanity: the gate must actually pass sometimes (radius-3 disc has
+        // 37 hexes, so ~1/37 of the patch should win).
+        assert!(winners > 20, "spacing gate rejected everything ({winners} winners)");
+    }
+
+    #[test]
+    fn spacing_gate_is_pure_and_stable() {
+        use idlecore_core::hex::HexCoord;
+
+        let ids: Vec<u64> = [(-13, 7), (0, 0), (512, -1024), (i32::MAX, i32::MIN)]
+            .iter()
+            .map(|&(q, r)| HexCoord::new(q, r).to_id())
+            .collect();
+        for id in ids {
+            assert_eq!(hex_wins_spacing(id), hex_wins_spacing(id));
         }
     }
 }

@@ -39,14 +39,33 @@ impl Plugin for CameraPlugin {
     }
 }
 
-/// Camera follow system (2D: x = east, y = north). Follows the player sprite
-/// entity directly (covers teleports/restores), falling back to the
+/// Camera follow smoothing (1/s): the camera converges on the player with a
+/// 1/k time constant, absorbing per-frame jitter (visible on web where frame
+/// pacing is uneven). Distances beyond this threshold snap instantly so
+/// teleports/session restores don't swoosh across the planet.
+const FOLLOW_RATE: f32 = 10.0;
+const SNAP_DISTANCE: f32 = 50.0;
+
+/// One follow step: exponential ease toward `target`, snapping when far
+/// (teleports). Pure so the feel is unit-testable.
+fn follow_step(cam: Vec2, target: Vec2, dt: f32) -> Vec2 {
+    let delta = target - cam;
+    if delta.length() > SNAP_DISTANCE {
+        return target;
+    }
+    let blend = 1.0 - (-FOLLOW_RATE * dt.min(1.0 / 20.0)).exp();
+    cam + delta * blend
+}
+
+/// Camera follow system (2D: x = east, y = north). Eases toward the player
+/// sprite entity (covers teleports/restores), falling back to the
 /// `PlayerTransform` resource before the sprite exists.
 fn follow_camera(
     player_transform: Res<PlayerTransform>,
     zoom: Res<CameraZoom>,
     body: Query<&Transform, (With<PhysicsBody>, Without<Camera2d>)>,
     mut camera: Query<(&mut Transform, &mut Projection), With<Camera2d>>,
+    time: Res<Time>,
 ) {
     let Ok((mut camera_transform, mut projection)) = camera.single_mut() else {
         return;
@@ -56,8 +75,16 @@ fn follow_camera(
         .ok()
         .map(|t| t.translation)
         .unwrap_or(player_transform.translation);
-    camera_transform.translation.x = target.x;
-    camera_transform.translation.y = target.y;
+
+    // Exponential ease with snap for teleports: smooth at walk range,
+    // instant across continents.
+    let next = follow_step(
+        camera_transform.translation.xy(),
+        target.xy(),
+        time.delta_secs(),
+    );
+    camera_transform.translation.x = next.x;
+    camera_transform.translation.y = next.y;
     if let Projection::Orthographic(ortho) = projection.as_mut() {
         // Bevy 0.19 `scale` is world-units-per-pixel (higher = zoomed OUT),
         // while `CameraZoom` tracks pixels per world unit (higher = zoomed IN).
@@ -113,5 +140,28 @@ fn handle_zoom(
     if keys.just_pressed(KeyCode::Minus) || keys.just_pressed(KeyCode::NumpadSubtract) {
         zoom.scale = (zoom.scale / factor).clamp(MIN_ZOOM, MAX_ZOOM);
         info!("Camera zoom: {:.1} px/unit", zoom.scale);
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn camera_snaps_over_long_distances() {
+        let cam = Vec2::ZERO;
+        let far = Vec2::new(10_000.0, 0.0);
+        assert_eq!(follow_step(cam, far, 1.0 / 60.0), far);
+    }
+
+    #[test]
+    fn camera_eases_and_converges_when_close() {
+        let mut cam = Vec2::ZERO;
+        let target = Vec2::new(10.0, 0.0);
+        for _ in 0..120 {
+            cam = follow_step(cam, target, 1.0 / 60.0);
+        }
+        assert!((cam - target).length() < 0.05, "did not converge: {cam}");
+        // Never overshoots (pure lerp).
+        assert!(cam.x <= target.x + 1e-4);
     }
 }
