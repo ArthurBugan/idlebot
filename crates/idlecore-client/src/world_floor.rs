@@ -195,10 +195,10 @@ pub fn init_prop_textures(mut commands: Commands, asset_server: Res<AssetServer>
         h
     }
     commands.insert_resource(PropTextures {
-        // Grass tufts: Tiny Farm sprouts; tree: Tiny Town round tree;
-        // sapling: Tiny Farm sapling; rock: Tiny Ski boulder; wood: crate;
-        // seed: bag. All chroma-keyed via the TinyKeyQueue.
-        grass: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0017.png"),
+        // Grass tufts: Tiny Farm round grass plant (tile_0056); tree: Tiny
+        // Town round tree; sapling: Tiny Farm sapling; rock: Tiny Ski
+        // boulder; wood: crate; seed: bag. All chroma-keyed via TinyKeyQueue.
+        grass: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0056.png"),
         grass_aspect: 1.0,
         tree: prop(&asset_server, &mut queue, "models/Tiny Town/Tiles/tile_0004.png"),
         tree_aspect: 1.0,
@@ -209,7 +209,7 @@ pub fn init_prop_textures(mut commands: Commands, asset_server: Res<AssetServer>
         icon_seed: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0009.png"),
         icon_wood: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0076.png"),
         icon_stone: prop(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0081.png"),
-        icon_grass: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0017.png"),
+        icon_grass: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0056.png"),
     });
 }
 
@@ -389,28 +389,28 @@ fn terrains_iter() -> impl Iterator<Item = TerrainType> {
 /// tiles qualify — bordered patch tiles would band when tiled.
 fn floor_tiles_for(terrain: TerrainType) -> &'static [(&'static str, [f32; 3])] {
     match terrain {
-        // Meadow grass: Tiny Town.
+        // Meadow grass: Tiny Town — plain green only (tile 2 has flowers
+        // baked in; flowers belong to the deco layer, not the floor).
         TerrainType::Grass => &[
             ("models/Tiny Town/Tiles/tile_0001.png", [1.0, 1.0, 1.0]),
             ("models/Tiny Town/Tiles/tile_0000.png", [1.0, 1.0, 1.0]),
-            ("models/Tiny Town/Tiles/tile_0002.png", [1.0, 1.0, 1.0]),
         ],
         // Dry plain: warm-tinted Town grass.
         TerrainType::Grassland => &[
             ("models/Tiny Town/Tiles/tile_0000.png", [1.05, 1.05, 0.95]),
             ("models/Tiny Town/Tiles/tile_0001.png", [1.05, 1.05, 0.95]),
         ],
-        // Deep woods: cool dark grass + Farm soil patches for variety.
+        // Deep woods: the same grass, cooler and darker — growth biomes
+        // stay pure grass (soil-looking tiles are reserved for future farm
+        // plots).
         TerrainType::Forest => &[
-            ("models/Tiny Town/Tiles/tile_0001.png", [0.68, 0.82, 0.68]),
-            ("models/Tiny Town/Tiles/tile_0000.png", [0.68, 0.82, 0.68]),
-            ("models/Tiny Farm/Tiles/tile_0001.png", [0.72, 0.85, 0.72]),
+            ("models/Tiny Town/Tiles/tile_0001.png", [0.66, 0.82, 0.62]),
+            ("models/Tiny Town/Tiles/tile_0000.png", [0.66, 0.82, 0.62]),
         ],
-        // Jungle: lush green + dark undergrowth.
+        // Jungle: lush saturated grass.
         TerrainType::TropicalRainforest => &[
-            ("models/Tiny Town/Tiles/tile_0002.png", [1.0, 1.0, 1.0]),
-            ("models/Tiny Town/Tiles/tile_0001.png", [0.9, 1.05, 0.9]),
-            ("models/Tiny Dungeon/Tiles/tile_0013.png", [0.85, 1.0, 0.8]),
+            ("models/Tiny Town/Tiles/tile_0001.png", [0.88, 1.06, 0.85]),
+            ("models/Tiny Town/Tiles/tile_0000.png", [0.95, 1.1, 0.9]),
         ],
         // Dunes: Tiny Town seamless dirt (25 = border-free sand earth).
         TerrainType::Desert => &[
@@ -603,8 +603,14 @@ pub fn update_world_object_visuals(
                 flip_x: flip,
                 ..default()
             },
-            // Bottom-center anchor: the sprite's base sits on the hex.
-            Transform::from_xyz(wx, wy + size.y * 0.5, prop_depth(wy) + 0.55),
+            // Bottom-center anchor: the base sits a quarter-slot below the
+            // slot center, so small plants read as inside their tile while
+            // tall trees still grow upward from their slot.
+            Transform::from_xyz(
+                wx,
+                wy - idlecore_core::slots::SLOT_SIZE * 0.25 + size.y * 0.5,
+                prop_depth(wy) + 0.55,
+            ),
             Visibility::Visible,
         ));
         state.visuals.insert(row.object_id, sprite.id());
@@ -689,13 +695,14 @@ pub struct FloorTiles {
     pub last_player_slot: Option<(i32, i32)>,
 }
 
-/// Floor tiles spawn within this many slots of the player (≈87 units —
-/// several screens at the default zoom). Nothing beyond this exists.
-pub const FLOOR_SPAWN_RADIUS_SLOTS: i32 = 20;
+/// Floor tiles spawn within this many slots of the player (≈69 units —
+/// comfortably more than a screen at the default zoom). Nothing beyond this
+/// exists.
+pub const FLOOR_SPAWN_RADIUS_SLOTS: i32 = 16;
 
 /// Live tiles despawn past this radius (hysteresis so border-walking
 /// doesn't churn spawns/despawns every slot crossing).
-const FLOOR_DESPAWN_RADIUS_SLOTS: i32 = 24;
+const FLOOR_DESPAWN_RADIUS_SLOTS: i32 = 19;
 
 /// Max floor tiles spawned per rebuild pass; the pass re-runs until the
 /// wanted set is complete, so teleports fill in over a few frames instead

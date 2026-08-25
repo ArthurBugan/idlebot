@@ -193,18 +193,31 @@ fn update_hud_text(
             .as_ref()
             .and_then(|c| c.db.player().address().find(addr))
             .and_then(|p| p.display_name.clone())
-            .unwrap_or_default();
-        if !display_name.is_empty() {
-            status_line.push_str(&format!("\n{display_name} ({addr})"));
-        } else {
-            status_line.push_str(&format!("\nwallet {addr}"));
+            .filter(|n| !n.is_empty());
+        // The login name IS the address until wallet auth lands, so render
+        // it as the player's name; "wallet …" only for address-shaped keys.
+        match display_name {
+            Some(name) => status_line.push_str(&format!("\n{name}")),
+            None if addr.starts_with("0x") && addr.len() > 10 => {
+                status_line.push_str(&format!("\nwallet {addr}"))
+            }
+            None => status_line.push_str(&format!("\n{addr}")),
         }
     }
-    let online = net
-        .players
-        .values()
-        .filter(|p| p.online)
-        .count();
+    let mut online = net.players.values().filter(|p| p.online).count();
+    // Our own row is mirrored separately (never lands in `net.players`),
+    // so count it from the authoritative table directly.
+    if let Some(addr) = &net.address {
+        let self_online = net
+            .conn
+            .as_ref()
+            .and_then(|c| c.db.player().address().find(addr))
+            .map(|p| p.status == "online")
+            .unwrap_or(false);
+        if self_online {
+            online += 1;
+        }
+    }
     status_line.push_str(&format!("\nplayers: {online} online"));
     if let Ok(mut t) = status_q.single_mut() {
         t.0 = status_line;

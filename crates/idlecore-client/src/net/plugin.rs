@@ -23,8 +23,6 @@ use super::gen::*;
 pub const SERVER_URI: &str = "https://db.nestfeed.app";
 /// Module (database) name published by `idlecore-server`.
 pub const MODULE_NAME: &str = "nestfeed";
-/// Demo wallet used until chain verification lands (Spec 013/014).
-pub const DEMO_WALLET: &str = "0xIdleBotDemo0001";
 
 /// One-way messages from the SDK callbacks (network thread) to the main
 /// thread, drained by [`Net::drain`] each frame.
@@ -35,6 +33,10 @@ pub enum NetEvent {
     },
     ConnectError(String),
     Disconnected(String),
+    /// The server rejected our saved identity token (401/InvalidSignature —
+    /// happens after the server re-keys). The token file has been cleared;
+    /// reconnect once without it.
+    StaleToken,
     ReducerResult {
         name: &'static str,
         ok: bool,
@@ -73,12 +75,17 @@ pub struct Net {
     pub conn: Option<DbConnection>,
     /// Our bound wallet address (set after a successful `login`).
     pub address: Option<String>,
+    /// Name picked on the login page, awaiting the login reducer result.
+    pub pending_name: Option<String>,
     /// Our identity as issued by the server.
     pub identity: String,
     /// Snapshot of every player row we know about (including ourselves).
     pub players: HashMap<String, ServerPlayerSnapshot>,
     /// Recent server/connection messages for the HUD log.
     pub log: VecDeque<String>,
+    /// One-shot guard: after a stale-token reconnect we never auto-retry
+    /// again (prevents loops if even the anonymous connect fails).
+    auth_retried: bool,
     /// Version counter bumped by SDK row callbacks; the per-frame
     /// `sync_remote_players` rebuild early-outs while it is unchanged.
     players_dirty: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -94,9 +101,11 @@ impl Default for Net {
             status: NetStatus::Disconnected,
             conn: None,
             address: None,
+            pending_name: None,
             identity: String::new(),
             players: HashMap::new(),
             log: VecDeque::new(),
+            auth_retried: false,
             players_dirty: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             players_dirty_last: 0,
             tx,
@@ -132,37 +141,50 @@ impl Net {
                     self.identity = identity;
                     self.status = NetStatus::Connected;
                     self.log_line("Connected to SpacetimeDB");
-                    // Reducers can only be sent once the handshake is done,
-                    // so log in from here rather than on button click.
-                    // The server normalises wallet addresses to lowercase.
-                    self.address = Some(DEMO_WALLET.to_lowercase());
-                    if let Some(conn) = &self.conn {
-                        let tx = self.tx.clone();
-                        let _ = conn.reducers.login_then(DEMO_WALLET.to_string(), {
-                            move |_ctx, res| {
-                                let (ok, msg) = match &res {
-                                    Ok(Ok(())) => (true, format!("logged in as {DEMO_WALLET}")),
-                                    Ok(Err(e)) => (false, e.clone()),
-                                    Err(e) => (false, format!("send error: {e}")),
-                                };
-                                let _ = tx.send(NetEvent::ReducerResult {
-                                    name: "login",
-                                    ok,
-                                    msg,
-                                });
-                            }
-                        });
+                    // Reducers can only be sent once the handshake is done.
+                    // The login itself waits for the name picked on the
+                    // login page (no auto-demo-login anymore).
+                    match self.pending_name.clone() {
+                        Some(name) => self.send_login(&name),
+                        None => self.log_line("enter a name to join the world"),
                     }
                 }
                 NetEvent::ConnectError(msg) => {
                     self.status = NetStatus::Error(msg.clone());
                     self.log_line(&format!("Connect error: {msg}"));
                 }
+                NetEvent::StaleToken => {
+                    if self.auth_retried {
+                        self.log_line("stale token, but already retried — giving up");
+                        continue;
+                    }
+                    self.auth_retried = true;
+                    self.status = NetStatus::Disconnected;
+                    self.conn = None;
+                    self.log_line("token rejected (server re-key?) — reconnecting anonymously");
+                    self.connect();
+                }
                 NetEvent::Disconnected(reason) => {
                     self.status = NetStatus::Disconnected;
                     self.log_line(&format!("Disconnected: {reason}"));
                 }
                 NetEvent::ReducerResult { name, ok, msg } => {
+                    if name == "login" {
+                        if ok {
+                            // Bind the account only on server confirmation.
+                            if self.address.is_none() {
+                                self.address = self.pending_name.clone();
+                            }
+                            self.pending_name = None;
+                            self.log_line(&format!("login: {msg}"));
+                        } else {
+                            // Free the name so the player can retry on the
+                            // login page (e.g. rapid-login ban).
+                            self.pending_name = None;
+                            self.log_line(&format!("login FAILED: {msg}"));
+                        }
+                        continue;
+                    }
                     let line = if ok {
                         format!("{name}: {msg}")
                     } else {
@@ -184,6 +206,52 @@ impl Net {
         }
     }
 
+    /// Queue a login for `name` — the account key until wallet auth lands
+    /// (Spec 013 chain SDK). Sanitized to ≤20 alphanumeric/`_` chars (the
+    /// server lowercases). Fires immediately when already connected,
+    /// otherwise on the next successful handshake.
+    pub fn request_login(&mut self, raw: String) {
+        // The server lowercases the address into the player row — normalize
+        // here too, or our own row would look "remote" to the sync pass
+        // (stray marker + name label chasing the player).
+        let name: String = raw
+            .trim()
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '_')
+            .take(20)
+            .collect::<String>()
+            .to_lowercase();
+        if name.is_empty() {
+            self.log_line("pick a name first (letters, numbers, _)");
+            return;
+        }
+        self.pending_name = Some(name.clone());
+        if matches!(self.status, NetStatus::Connected) {
+            self.send_login(&name);
+        } else {
+            self.log_line(&format!("connecting as {name}…"));
+        }
+    }
+
+    /// Send the `login` reducer for `name` (requires an open connection).
+    fn send_login(&mut self, name: &str) {
+        let Some(conn) = self.conn.as_ref() else { return };
+        let tx = self.tx.clone();
+        let name = name.to_string();
+        let _ = conn.reducers.login_then(name.clone(), move |_ctx, res| {
+            let (ok, msg) = match &res {
+                Ok(Ok(())) => (true, format!("welcome, {name}")),
+                Ok(Err(e)) => (false, e.clone()),
+                Err(e) => (false, format!("send error: {e}")),
+            };
+            let _ = tx.send(NetEvent::ReducerResult {
+                name: "login",
+                ok,
+                msg,
+            });
+        });
+    }
+
     /// Open the connection and start receiving (call once).
     pub fn connect(&mut self) {
         if !matches!(self.status, NetStatus::Disconnected) {
@@ -191,6 +259,7 @@ impl Net {
         }
         self.status = NetStatus::Connecting;
         let saved = load_saved_token();
+        let had_saved = saved.is_some();
         let conn = match DbConnection::builder()
             .with_uri(SERVER_URI)
             .with_database_name(MODULE_NAME)
@@ -208,7 +277,20 @@ impl Net {
             .on_connect_error({
                 let tx = self.tx.clone();
                 move |_ctx, err| {
-                    tx.send(NetEvent::ConnectError(err.to_string())).ok();
+                    let msg = err.to_string();
+                    tx.send(NetEvent::ConnectError(msg.clone())).ok();
+                    // A re-keyed server invalidates every old token
+                    // (401 / InvalidSignature). Drop the stale file and let
+                    // the drain loop reconnect anonymously once.
+                    if had_saved
+                        && (msg.contains("401")
+                            || msg.contains("InvalidSignature")
+                            || msg.to_lowercase().contains("invalid token")
+                            || msg.to_lowercase().contains("unauthorized"))
+                    {
+                        clear_saved_token();
+                        tx.send(NetEvent::StaleToken).ok();
+                    }
                 }
             })
             .on_disconnect({
@@ -354,12 +436,18 @@ fn save_token(identity: &str, token: &str) {
     let _ = std::fs::write(identity_token_path(), format!("{identity}\n{token}\n"));
 }
 
+/// Delete the saved identity pair (stale after a server re-key).
+fn clear_saved_token() {
+    let _ = std::fs::remove_file(identity_token_path());
+}
+
 pub struct NetPlugin;
 
 impl Plugin for NetPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Net::default())
             .init_resource::<PositionSync>()
+            .add_plugins(super::login::LoginPlugin)
             .add_systems(Startup, auto_connect)
             .add_systems(PreUpdate, (net_frame_tick, net_drain).chain())
             .add_systems(
@@ -717,7 +805,7 @@ fn sync_remote_players(
     let tx = net.sender();
     let mut known: std::collections::HashSet<String> = std::collections::HashSet::new();
     for row in &rows {
-        if row.address == *mine {
+        if row.address.eq_ignore_ascii_case(mine.as_str()) {
             // Authoritative state for our own wallet → mirror into the local sim.
             if let Ok(mut p) = player.single_mut() {
                 let old_level = p.level;
@@ -766,9 +854,11 @@ fn sync_remote_players(
             }
             continue;
         }
-        if !in_view(row.hex_id) {
-            // Outside the view radius: don't light the marker, but keep the
-            // row known so the marker despawn logic leaves it alone.
+        if !in_view(row.hex_id) || row.status != "online" {
+            // Outside the view radius — or an offline session: no marker.
+            // Frozen ghosts of old sessions read as dark squares lurking
+            // around the spawn. Keep the row known so existing markers for
+            // it despawn cleanly.
             known.insert(row.address.clone());
             continue;
         }
@@ -828,35 +918,20 @@ fn sync_remote_players(
         } else {
             Color::srgb(0.4, 0.4, 0.5)
         };
-        commands
-            .spawn((
-                RemotePlayerMarker(row.address.clone()),
-                MarkerMove {
-                    target: pos,
-                    speed: 0.0,
-                    last_seen: std::time::Instant::now(),
-                },
-                Sprite {
-                    color,
-                    custom_size: Some(Vec2::splat(1.0)),
-                    ..default()
-                },
-                Transform::from_translation(pos),
-            ))
-            .with_child((
-                Name::new("player-name-label"),
-                Text2d::new(short_addr(&row.address)),
-                TextFont {
-                    font_size: 12.0.into(),
-                    ..default()
-                },
-                TextColor(Color::srgb(0.95, 0.95, 1.0)),
-                TextShadow {
-                    color: Color::BLACK,
-                    offset: Vec2::new(1.0, 1.0),
-                },
-                Transform::from_xyz(0.0, 1.6, -1.0),
-            ));
+        commands.spawn((
+            RemotePlayerMarker(row.address.clone()),
+            MarkerMove {
+                target: pos,
+                speed: 0.0,
+                last_seen: std::time::Instant::now(),
+            },
+            Sprite {
+                color,
+                custom_size: Some(Vec2::splat(1.0)),
+                ..default()
+            },
+            Transform::from_translation(pos),
+        ));
     }
 
     net.players.retain(|k, _| known.contains(k));
@@ -887,14 +962,6 @@ fn axial_hex_distance(a: (i32, i32), b: (i32, i32)) -> i32 {
     let dr = (a.1 - b.1).abs();
     let ds = (a.0 + a.1 - b.0 - b.1).abs();
     dq.max(dr).max(ds)
-}
-
-fn short_addr(s: &str) -> String {
-    if s.len() > 12 {
-        format!("{}...{}", &s[..5], &s[s.len() - 4..])
-    } else {
-        s.to_string()
-    }
 }
 
 // ============================================================================

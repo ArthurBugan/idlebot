@@ -169,12 +169,15 @@ fn side_profile(c: &mut Canvas) {
 }
 
 /// Back view: the face becomes hair (head rows only — hands stay skin).
+/// Eyes map to the same hair color as the skin, otherwise the two dark
+/// spots survive as "eyes on the back of the head".
 fn back_view(c: &mut Canvas) {
     for y in 0..10usize {
         for x in 0..16usize {
             match c[y][x] {
-                Some(col) if col == SKIN || col == SKIN_SHADE => c[y][x] = Some(HAIR),
-                Some(col) if col == EYES => c[y][x] = Some(HAIR_DARK),
+                Some(col) if col == SKIN || col == SKIN_SHADE || col == EYES => {
+                    c[y][x] = Some(HAIR)
+                }
                 _ => {}
             }
         }
@@ -221,14 +224,17 @@ fn leg_shuffle(c: &Canvas, left_dx: i32, right_dx: i32) -> Canvas {
 /// mirrored from east).
 pub fn derive_sheet(base: &Canvas) -> (Vec<Canvas>, Vec<Canvas>) {
     // (view, eye_dx) per direction; east views get mirrored into west ones.
+    // Anything up-ish (NE/N/NW) shows the back of the head — the front view
+    // with shifted eyes read as "eyes on the back of the head" while running
+    // diagonally up.
     const DIR_VIEW: [(u8, i32, bool); DIRECTIONS] = [
-        (3, 1, true),  // 0: NW  <- mirror of NE
+        (4, 0, true),  // 0: NW  <- back (mirrored; symmetric art)
         (2, 0, true),  // 1: W   <- mirror of E
         (1, 1, true),  // 2: SW  <- mirror of SE
         (0, 0, false), // 3: S
         (1, 1, false), // 4: SE
         (2, 0, false), // 5: E
-        (3, 1, false), // 6: NE
+        (4, 0, false), // 6: NE  <- back
         (4, 0, false), // 7: N
     ];
     let view_canvas = |view: u8| -> Canvas {
@@ -622,8 +628,10 @@ mod tests {
         assert_eq!(eye_cols(&idle[3 * IDLE_FRAMES]), vec![6, 9]);
         assert_eq!(eye_cols(&idle[4 * IDLE_FRAMES]), vec![7, 10]);
         assert_eq!(eye_cols(&idle[5 * IDLE_FRAMES]), vec![10]);
-        // N (back): no eyes at all — hair recolor.
-        assert!(eye_cols(&idle[7 * IDLE_FRAMES]).is_empty());
+        // N/NE/NW (back views): no eyes at all — hair recolor.
+        assert!(eye_cols(&idle[7 * IDLE_FRAMES]).is_empty(), "N");
+        assert!(eye_cols(&idle[6 * IDLE_FRAMES]).is_empty(), "NE");
+        assert!(eye_cols(&idle[0 * IDLE_FRAMES]).is_empty(), "NW");
     }
 
     #[test]
@@ -633,7 +641,7 @@ mod tests {
         back_view(&mut c);
         assert_eq!(c[12][3], Some(SKIN), "hands must not turn to hair");
         assert_eq!(c[5][5], Some(HAIR), "face skin must become hair");
-        assert_eq!(c[5][9], Some(HAIR_DARK), "eyes must become dark hair");
+        assert_eq!(c[5][9], Some(HAIR), "eyes must vanish into the hair");
     }
 
     #[test]

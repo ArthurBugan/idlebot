@@ -40,9 +40,24 @@ pub fn process_key_queue(mut images: ResMut<Assets<Image>>, mut queue: ResMut<Ti
 
 /// Flood-fill transparency from the tile borders: clears pre-cut transparent
 /// pixels and the baked backdrop ring, never interior sprite pixels.
+/// Backdrop-colored pixels that hug the sprite are KEPT — that's the 1px
+/// dark outline ring, so keyed props keep the crisp look of the source tile
+/// instead of dissolving into a soft blob.
 pub(crate) fn key_background_flood(data: &mut [u8], w: usize, h: usize) {
     const TOL: f32 = 30.0;
     let idx = |x: usize, y: usize| (y * w + x) * 4;
+    fn at(data: &[u8], w: usize, h: usize, x: i64, y: i64) -> Option<[u8; 4]> {
+        if x < 0 || y < 0 || x >= w as i64 || y >= h as i64 {
+            return None;
+        }
+        let i = (y as usize * w + x as usize) * 4;
+        Some([data[i], data[i + 1], data[i + 2], data[i + 3]])
+    }
+    let is_backdrop = |c: [u8; 4]| -> bool {
+        (c[0] as f32 - BACKDROP.0 as f32).abs() <= TOL
+            && (c[1] as f32 - BACKDROP.1 as f32).abs() <= TOL
+            && (c[2] as f32 - BACKDROP.2 as f32).abs() <= TOL
+    };
     let mut visited = vec![false; w * h];
     let mut stack: Vec<(usize, usize)> = Vec::new();
     for x in 0..w {
@@ -61,11 +76,24 @@ pub(crate) fn key_background_flood(data: &mut [u8], w: usize, h: usize) {
         visited[p] = true;
         let i = idx(x, y);
         let transparent = data[i + 3] == 0;
-        let backdrop = (data[i] as f32 - BACKDROP.0 as f32).abs() <= TOL
-            && (data[i + 1] as f32 - BACKDROP.1 as f32).abs() <= TOL
-            && (data[i + 2] as f32 - BACKDROP.2 as f32).abs() <= TOL;
+        let backdrop = is_backdrop([data[i], data[i + 1], data[i + 2], data[i + 3]]);
         if !transparent && !backdrop {
             continue;
+        }
+        if backdrop {
+            // Outline ring: a backdrop pixel touching an opaque sprite pixel
+            // stays — it is the tile's drawn border, not backdrop.
+            let touches_sprite = [
+                at(data, w, h, x as i64 - 1, y as i64),
+                at(data, w, h, x as i64 + 1, y as i64),
+                at(data, w, h, x as i64, y as i64 - 1),
+                at(data, w, h, x as i64, y as i64 + 1),
+            ]
+            .into_iter()
+            .any(|c| matches!(c, Some(c) if c[3] > 0 && !is_backdrop(c)));
+            if touches_sprite {
+                continue;
+            }
         }
         data[i + 3] = 0;
         if x > 0 {

@@ -76,6 +76,7 @@ fn step_velocity(velocity: Vec2, dir: Vec2, speed: f32, dt: f32) -> Vec2 {
 }
 
 /// Move the player sprite from WASD input; y = north.
+#[allow(clippy::too_many_arguments)]
 fn player_movement(
     keyboard: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
@@ -83,7 +84,16 @@ fn player_movement(
     player_transform: ResMut<PlayerTransform>,
     orientation: ResMut<PlayerOrientation>,
     streaming_world: Option<Res<StreamingWorldResource>>,
+    net: Option<Res<crate::net::plugin::Net>>,
+    name_edit: Option<Res<crate::net::hud::NameEdit>>,
 ) {
+    // UI owns the keyboard while the login page is up (pre-login) or a text
+    // field is being edited — WASD must not move the player then.
+    let ui_focus = net.as_ref().map(|n| n.address.is_none()).unwrap_or(false)
+        || name_edit.as_ref().map(|e| e.editing).unwrap_or(false);
+    if ui_focus {
+        return;
+    }
     let Ok((mut transform, mut player)) = player_query.single_mut() else { return };
 
     let mut input = Vec2::ZERO;

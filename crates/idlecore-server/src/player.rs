@@ -16,6 +16,10 @@ pub struct LoginOutcome {
     pub created: bool,
     pub player: Player,
     pub rapid: bool,
+    /// The stored identity was replaced (stale binding after a SpacetimeDB
+    /// server re-key — old tokens fail signature verification, so the old
+    /// identity can never authenticate again).
+    pub rebound: bool,
 }
 
 /// Pure part of login: create the account on first login, otherwise restore
@@ -34,11 +38,15 @@ pub fn resolve_login(
             created: true,
             player: new_player(&lower, identity, now),
             rapid: false,
+            rebound: false,
         });
     };
-    if !existing.identity.is_empty() && existing.identity != identity {
-        return Err("Address already claimed by another identity".to_string());
-    }
+    // A stored identity can go permanently dead: SpacetimeDB re-keys on
+    // server redeploys, invalidating every token issued before (clients
+    // then connect with a fresh identity). Wallet auth is claim-based until
+    // the chain SDK lands (Spec 013), so re-bind and flag it rather than
+    // locking the address out forever.
+    let rebound = !existing.identity.is_empty() && existing.identity != identity;
     let mut player = existing.clone();
     player.identity = identity.to_string();
 
@@ -86,6 +94,7 @@ pub fn resolve_login(
         created: false,
         player,
         rapid,
+        rebound,
     })
 }
 
@@ -99,6 +108,12 @@ pub fn login(
     let lower = address.to_lowercase();
     let existing = ctx.db.player().address().find(lower.clone());
     let outcome = resolve_login(existing.as_ref(), &lower, sender_identity, now)?;
+    if outcome.rebound {
+        tracing::warn!(
+            "REBIND {lower}: stored identity was stale (server re-key?) -> {}",
+            sender_identity
+        );
+    }
     if outcome.created {
         ctx.db.player().insert(outcome.player.clone());
     } else {
@@ -297,10 +312,12 @@ mod login_tests {
     }
 
     #[test]
-    fn claimed_address_rejected_for_other_identity() {
+    fn stale_identity_rebinds_instead_of_locking_out() {
         let existing = sample("0xa", "id-1", 0, 0);
-        let err = resolve_login(Some(&existing), "0xA", "id-2", 1_000_000).unwrap_err();
-        assert!(err.contains("claimed"));
+        let outcome = resolve_login(Some(&existing), "0xA", "id-2", 1_000_000).unwrap();
+        assert!(!outcome.created);
+        assert!(outcome.rebound, "stale binding must re-bind, not reject");
+        assert_eq!(outcome.player.identity, "id-2");
     }
 
     #[test]

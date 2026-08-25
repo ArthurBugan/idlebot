@@ -131,6 +131,8 @@ fn natural_spawn(terrain: TerrainType, slot: u8, h: u64) -> Option<&'static str>
 /// Hexes that lose the spacing rule against a neighbor never spawn here —
 /// resources keep a minimum distance from each other. Gathered slots stay
 /// empty until their `respawn_at` (10-60 min) elapses, then roll again.
+/// Nodes sit at the CENTER of a ground slot owned by the hex (Stardew-style):
+/// the client selector targets exactly the tile the sprite is on.
 pub fn ensure_objects(ctx: &ReducerContext, hex_id: u64, terrain: TerrainType) -> usize {
     if !hex_wins_spacing(hex_id) {
         return 0;
@@ -160,22 +162,65 @@ pub fn ensure_objects(ctx: &ReducerContext, hex_id: u64, terrain: TerrainType) -
         .map(|o| o.slot)
         .chain(ctx.db.object_removed().removed_by_hex().filter(hex_id).map(|r| r.slot))
         .collect();
+
+    // Ground-slot cells owned by this hex, plus the cells already visually
+    // occupied by existing rows (planted trees snap to slot centers too).
+    use idlecore_core::hex_grid::HexGrid;
+    use idlecore_core::slots::{slot_center, slot_hex, world_pos_to_slot, SLOT_SIZE};
+    use idlecore_core::world_gen::WorldGenConfig;
+    let (hq, hr) = crate::types::hex_coords_of(hex_id);
+    let (hx, hy) = HexGrid::axial_to_world(hq, hr, WorldGenConfig::HEX_SIZE);
+    let span = 2.0 * WorldGenConfig::HEX_SIZE;
+    let (sx0, sy0) = world_pos_to_slot(hx - span, hy - span);
+    let (sx1, sy1) = world_pos_to_slot(hx + span, hy + span);
+    let mut cells: Vec<(i32, i32)> = Vec::new();
+    for sx in sx0..=sx1 {
+        for sy in sy0..=sy1 {
+            if slot_hex(sx, sy) == (hq, hr) {
+                cells.push((sx, sy));
+            }
+        }
+    }
+    let existing: Vec<(f32, f32)> = ctx
+        .db
+        .world_object()
+        .object_by_hex()
+        .filter(hex_id)
+        .map(|o| (o.offset_x, o.offset_y))
+        .collect();
+    let mut used_cells: std::collections::HashSet<(i32, i32)> = existing
+        .iter()
+        .map(|(ox, oy)| world_pos_to_slot(hx + ox, hy + oy))
+        .collect();
+
     let mut created = 0usize;
     for slot in 0..MAX_OBJECTS_PER_HEX {
-        if occupied.contains(&slot) {
+        if occupied.contains(&slot) || cells.is_empty() {
             continue;
         }
         let h = obj_hash(hex_id, slot);
         let Some(kind) = natural_spawn(terrain, slot, h) else { continue };
-        let offset_x = ((h >> 8) & 0xFF) as f32 / 255.0 * 9.0 - 4.5;
-        let offset_y = ((h >> 16) & 0xFF) as f32 / 255.0 * 9.0 - 4.5;
+        // Deterministic cell pick with linear probing: no two objects in a
+        // hex share a ground slot.
+        let start = (h % cells.len() as u64) as usize;
+        let mut picked = None;
+        for j in 0..cells.len() {
+            let cell = cells[(start + j) % cells.len()];
+            if !used_cells.contains(&cell) {
+                picked = Some(cell);
+                break;
+            }
+        }
+        let Some(cell) = picked else { continue };
+        used_cells.insert(cell);
+        let (cx, cy) = slot_center(cell.0, cell.1);
         ctx.db.world_object().insert(crate::types::WorldObject {
             object_id: 0,
             hex_id,
             slot,
             kind: kind.to_string(),
-            offset_x,
-            offset_y,
+            offset_x: cx - hx,
+            offset_y: cy - hy,
             mature_at: 0,
             planted_by: None,
         });
@@ -383,6 +428,25 @@ pub fn plant_tree(
     if idlecore_core::slots::slot_hex(slot_x, slot_y) != (hq, hr) {
         return Err("Slot is outside the selected hex".to_string());
     }
+    // Snap the tree to the slot's center (offset relative to the hex center).
+    let (hx, hy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
+        hq,
+        hr,
+        idlecore_core::world_gen::WorldGenConfig::HEX_SIZE,
+    );
+    let (cx, cy) = idlecore_core::slots::slot_center(slot_x, slot_y);
+    let offset_x = cx - hx;
+    let offset_y = cy - hy;
+    // One object per ground cell: natural spawns snap to slot centers too.
+    let cell_taken = ctx
+        .db
+        .world_object()
+        .object_by_hex()
+        .filter(hex_id)
+        .any(|o| (o.offset_x - offset_x).abs() < 0.1 && (o.offset_y - offset_y).abs() < 0.1);
+    if cell_taken {
+        return Err("That spot is already taken".to_string());
+    }
 
     let used: std::collections::HashSet<u8> = ctx
         .db
@@ -398,15 +462,6 @@ pub fn plant_tree(
         .then_some(())
         .ok_or_else(|| "No seeds — destroy tall grass first".to_string())?;
 
-    // Snap the tree to the slot's center (offset relative to the hex center).
-    let (hx, hy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
-        hq,
-        hr,
-        idlecore_core::world_gen::WorldGenConfig::HEX_SIZE,
-    );
-    let (cx, cy) = idlecore_core::slots::slot_center(slot_x, slot_y);
-    let offset_x = cx - hx;
-    let offset_y = cy - hy;
     ctx.db.world_object().insert(WorldObjectRow {
         object_id: 0,
         hex_id,
@@ -454,15 +509,36 @@ mod tests {
     }
 
     #[test]
-    fn offsets_stay_inside_the_hex() {
+    fn slot_centered_offsets_stay_inside_the_hex() {
+        // The roller only places nodes on cells owned by the hex; every
+        // owned cell's center must lie within the hex circumradius, so
+        // snapped offsets can never escape the hex.
+        use idlecore_core::slots::{slot_center, slot_hex, world_pos_to_slot};
+        use idlecore_core::world_gen::WorldGenConfig;
         for hex_id in [0u64, 12345, u64::from(u32::MAX)] {
-            for slot in 0..MAX_OBJECTS_PER_HEX {
-                let h = obj_hash(hex_id, slot);
-                let ox = ((h >> 8) & 0xFF) as f32 / 255.0 * 9.0 - 4.5;
-                let oy = ((h >> 16) & 0xFF) as f32 / 255.0 * 9.0 - 4.5;
-                assert!((-4.5..=4.5).contains(&ox));
-                assert!((-4.5..=4.5).contains(&oy));
+            let (hq, hr) = crate::types::hex_coords_of(hex_id);
+            let (hx, hy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
+                hq,
+                hr,
+                WorldGenConfig::HEX_SIZE,
+            );
+            let (sq, sr) = world_pos_to_slot(hx, hy);
+            let mut owned = 0;
+            for sx in sq - 5..=sq + 5 {
+                for sy in sr - 5..=sr + 5 {
+                    if slot_hex(sx, sy) != (hq, hr) {
+                        continue;
+                    }
+                    owned += 1;
+                    let (cx, cy) = slot_center(sx, sy);
+                    let (ox, oy) = (cx - hx, cy - hy);
+                    assert!(
+                        ox * ox + oy * oy <= 10.0_f32 * 10.0 + 1e-3,
+                        "owned cell center outside hex {hex_id}"
+                    );
+                }
             }
+            assert!(owned >= 8, "hex {hex_id} should own several ground cells");
         }
     }
 
