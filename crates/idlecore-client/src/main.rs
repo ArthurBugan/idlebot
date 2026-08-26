@@ -67,6 +67,7 @@ fn main() {
         .add_plugins(net::plugin::NetPlugin)
         .add_plugins(net::hud::NetHudPlugin)
         .add_plugins(net::market::MarketPlugin)
+        .add_plugins(net::craft::CraftPlugin)
         .add_plugins(inventory::InventoryPlugin)
         .insert_resource(PlayerTransform::default())
         .insert_resource(idle::IdleGainsState::default())

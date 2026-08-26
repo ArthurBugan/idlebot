@@ -151,6 +151,50 @@ pub fn plant_at(ctx: &ReducerContext, address: &str, hex_id: u64, plant_type: &s
     Outcome::ok(format!("Planted {plant_type} (-{cost}G, +5 XP)"))
 }
 
+/// Till an empty hex with the Hoe (Spec 022 §5): plants Wheat by consuming a
+/// Seed instead of gold, reusing the crop system (same Plant row, growth and
+/// harvest flow as `plant_at`).
+pub fn till(ctx: &ReducerContext, address: &str, hex_id: u64) -> Outcome {
+    let (mut p, hex) = match preflight(ctx, address, hex_id) {
+        Ok(v) => v,
+        Err(e) => return Outcome::err(e),
+    };
+
+    if hex.plant.is_some() {
+        return Outcome::err("Hex already has a plant");
+    }
+    if hex.is_polluted {
+        return Outcome::err("Cannot till a polluted hex — clean it first");
+    }
+    if hex.terrain != "Grass" && hex.terrain != "Forest" {
+        return Outcome::err(format!("Cannot till {} terrain", hex.terrain));
+    }
+
+    if !crate::objects::remove_item(ctx, &p.address, crate::types::ITEM_SEED, 1) {
+        return Outcome::err("No seeds — destroy tall grass first".to_string());
+    }
+
+    let now = now_secs(ctx);
+    let plant = Plant {
+        plant_type: "Wheat".to_string(),
+        planted_at: now,
+        growth_time: Plant::growth_seconds("Wheat"),
+    };
+    let mut hex = hex;
+    let rating_before = hex.eco_rating;
+    hex.plant = Some(plant.to_json());
+    hex.planted_by = Some(p.address.clone());
+    hex.eco_rating = (rating_before + RATING_FOR_PLANT).min(100);
+    let after = hex.eco_rating;
+    commit_hex(ctx, hex, now);
+
+    p.plants_planted = p.plants_planted.saturating_add(1);
+    add_xp(ctx, &mut p, 5, "till");
+    ctx.db.player().address().update(p);
+
+    Outcome::ok("Tilled and planted Wheat (-1 Seed, +5 XP)")
+}
+
 /// Harvest a mature plant. +15G / +10XP for the planter only (PROPOSAL 3.3).
 pub fn harvest(ctx: &ReducerContext, address: &str, hex_id: u64) -> Outcome {
     let (mut p, hex) = match preflight(ctx, address, hex_id) {

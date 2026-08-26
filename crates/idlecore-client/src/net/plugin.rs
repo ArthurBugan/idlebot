@@ -486,11 +486,20 @@ struct HexPlant {
     growth_time: u64,
 }
 
-/// Spec 004 T5.1 — `E` performs a context action on the hex under the player:
-/// harvest a mature crop, clean pollution, or plant Wheat on empty grass.
+/// Spec 004 T5.1 / Spec 022 §5 — `E` acts on the selected slot, routed by
+/// held item + slot contents:
+///   1. held tool → tool action (Pickaxe→Rock, Axe→Tree, Shovel→Grass tuft,
+///      Hoe→till Wheat into the empty plot)
+///   2. craft bench on the slot → open the craft menu
+///   3. gather node nearest the slot (grass/rock/log/mature tree)
+///   4. harvest crop → clean pollution
+///   5. plant by held item: Seed → tree, Grass → grass tuft, else carrying
+///      4+ logs → build a craft bench
 fn interact_key_press(
     keyboard: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
     mut net: ResMut<Net>,
+    mut craft_menu: ResMut<crate::net::craft::CraftMenu>,
     player: Option<Query<&ClientPlayer>>,
     target: Res<crate::world_floor::ActionTarget>,
     inventory: Res<crate::inventory::Inventory>,
@@ -506,10 +515,13 @@ fn interact_key_press(
             return;
         };
         let tx = net.sender();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
-        // Interactables come first: gather grass, mine rocks, harvest trees —
-        // the node nearest the targeted slot wins (Stardew-style aiming).
-        // Priority: mature tree > grass/rock > still-growing sapling.
+        // Every replicated node on the hex, ranked by distance to the
+        // targeted slot (Stardew-style aiming).
         let (hex_cx, hex_cy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
             target.q,
             target.r,
@@ -517,48 +529,135 @@ fn interact_key_press(
         );
         let slot_dx = idlecore_core::slots::slot_center(target.slot_x, target.slot_y).0 - hex_cx;
         let slot_dy = idlecore_core::slots::slot_center(target.slot_x, target.slot_y).1 - hex_cy;
+        let mut nodes: Vec<(f32, u64, String, bool)> = Vec::new();
+        for obj in conn.db.world_object().iter().filter(|o| o.hex_id == hex_id) {
+            let dx = obj.offset_x - slot_dx;
+            let dy = obj.offset_y - slot_dy;
+            let dist2 = dx * dx + dy * dy;
+            let mature = obj.mature_at == 0 || now >= obj.mature_at;
+            let kind = match &obj.kind[..] {
+                k @ ("Grass" | "Rock" | "Tree" | "Log" | "CraftBench") => k,
+                _ => continue,
+            };
+            nodes.push((dist2, obj.object_id, kind.to_string(), mature));
+        }
+        // A node is "on the selected slot" only if it sits inside the targeted
+        // cell — this keeps gather/harvest honoured to the plot you aim at
+        // (Spec 022 §5 selected-plot invariant), so planting an empty slot
+        // never gets hijacked by a nearby growing node.
+        let half_slot = idlecore_core::slots::SLOT_SIZE * 0.5;
+        let nearest = |kind: &str| -> Option<(u64, bool)> {
+            nodes
+                .iter()
+                .filter(|(_, _, k, _)| k == kind)
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|(_, id, _, m)| (*id, *m))
+        };
+
+        // --- 1. Held tools act on the selected slot's contents (Spec 022 §5).
+        let held = inventory.active_item().cloned();
+        match held.as_deref() {
+            Some("Pickaxe") => {
+                match nearest("Rock") {
+                    Some((object_id, _)) => super::hud::send_reducer(&mut net, |r| {
+                        r.gather_object_then(
+                            object_id,
+                            super::hud::reducer_report("mine", tx.clone(), hex_id),
+                        )
+                    }),
+                    None => net.push(NetEvent::ServerMessage("E: no rock here to mine".to_string())),
+                }
+                return;
+            }
+            Some("Axe") => {
+                match nearest("Tree") {
+                    Some((object_id, true)) => super::hud::send_reducer(&mut net, |r| {
+                        r.gather_object_then(
+                            object_id,
+                            super::hud::reducer_report("harvest_tree", tx.clone(), hex_id),
+                        )
+                    }),
+                    Some((_, false)) => {
+                        net.push(NetEvent::ServerMessage("E: tree still growing".to_string()))
+                    }
+                    None => net.push(NetEvent::ServerMessage("E: no tree here to chop".to_string())),
+                }
+                return;
+            }
+            Some("Shovel") => {
+                match nearest("Grass") {
+                    Some((object_id, true)) => super::hud::send_reducer(&mut net, |r| {
+                        r.gather_object_then(
+                            object_id,
+                            super::hud::reducer_report("gather", tx.clone(), hex_id),
+                        )
+                    }),
+                    Some((_, false)) => {
+                        net.push(NetEvent::ServerMessage("E: grass still growing".to_string()))
+                    }
+                    None => net.push(NetEvent::ServerMessage("E: no grass here to dig".to_string())),
+                }
+                return;
+            }
+            Some("Hoe") => {
+                // Till the empty plot: the targeted cell must hold no node.
+                let cell_free = !nodes.iter().any(|(d, _, _, _)| *d < half_slot * half_slot);
+                if cell_free {
+                    super::hud::send_reducer(&mut net, |r| {
+                        r.till_then(
+                            hex_id,
+                            super::hud::reducer_report("till", tx.clone(), hex_id),
+                        )
+                    });
+                } else {
+                    net.push(NetEvent::ServerMessage("E: clear the plot before tilling".to_string()));
+                }
+                return;
+            }
+            _ => {}
+        }
+
+        // --- 2. A craft bench on the targeted slot opens the craft menu.
+        if nodes
+            .iter()
+            .any(|(d, _, k, _)| k == "CraftBench" && *d < half_slot * half_slot)
+        {
+            craft_menu.open_at(hex_id, target.slot_x, target.slot_y, time.elapsed_secs_f64());
+            net.push(NetEvent::ServerMessage("E: craft bench — fill the grid".to_string()));
+            return;
+        }
+
+        // --- 3. Gather the node on the selected slot (never another cell).
+        //        Priority within the cell: mature tree > grass/rock/log.
         let rank = |kind: &str, mature: bool| match (kind, mature) {
             ("Tree", true) => 0,
             ("Tree", false) => 2,
             _ => 1,
         };
-        let mut node: Option<(usize, f32, u64, String, bool)> = None;
-        for obj in conn.db.world_object().iter().filter(|o| o.hex_id == hex_id) {
-            let dx = obj.offset_x - slot_dx;
-            let dy = obj.offset_y - slot_dy;
-            let dist2 = dx * dx + dy * dy;
-            let mature = obj.mature_at == 0;
-            let kind = match &obj.kind[..] {
-                k @ ("Grass" | "Rock" | "Tree") => k,
-                _ => continue,
-            };
-            let r = rank(kind, mature);
-            let better = match &node {
-                None => true,
-                Some((best_rank, best_dist, _, _, _)) => (r, dist2) < (*best_rank, *best_dist),
-            };
-            if better {
-                node = Some((r, dist2, obj.object_id, kind.to_string(), mature));
-            }
-        }
-        let node = node.map(|(_, _, id, kind, mature)| (id, kind, mature));
+        let node = nodes
+            .iter()
+            .filter(|(d, _, k, _)| *k != "CraftBench" && *d < half_slot * half_slot)
+            .min_by(|a, b| {
+                let ka = rank(&a.2, a.3);
+                let kb = rank(&b.2, b.3);
+                ka.cmp(&kb).then(a.0.total_cmp(&b.0))
+            })
+            .map(|(_, id, kind, mature)| (*id, kind.clone(), *mature));
         if let Some((object_id, kind, mature)) = node {
-            if kind == "Tree" && !mature {
-                net.push(NetEvent::ServerMessage("E: tree still growing".to_string()));
+            if !mature {
+                net.push(NetEvent::ServerMessage(format!("E: {kind} still growing")));
                 return;
             }
+            let action = match kind.as_str() {
+                "Grass" => "gather",
+                "Rock" => "mine",
+                "Log" => "gather_log",
+                _ => "harvest_tree",
+            };
             super::hud::send_reducer(&mut net, |r| {
                 r.gather_object_then(
                     object_id,
-                    super::hud::reducer_report(
-                        if kind == "Grass" {
-                            "gather"
-                        } else {
-                            "harvest_tree"
-                        },
-                        tx.clone(),
-                        hex_id,
-                    ),
+                    super::hud::reducer_report(action, tx.clone(), hex_id),
                 )
             });
             return;
@@ -569,13 +668,10 @@ fn interact_key_press(
             )));
             return;
         };
+        // --- 4. Harvest a mature crop or clean pollution (hex-level).
         if let Some(plant_json) = &hex.plant {
             match serde_json::from_str::<HexPlant>(plant_json) {
                 Ok(plant) => {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
                     if now >= plant.planted_at + plant.growth_time {
                         super::hud::send_reducer(&mut net, |r| {
                             r.harvest_then(
@@ -593,30 +689,54 @@ fn interact_key_press(
                 }
                 Err(_) => net.push(NetEvent::ServerMessage("E: corrupt plant data".to_string())),
             }
-        } else if hex.is_polluted {
+            return;
+        }
+        if hex.is_polluted {
             super::hud::send_reducer(&mut net, |r| {
                 r.clean_then(
                     hex_id,
                     super::hud::reducer_report("clean", tx.clone(), hex_id),
                 )
             });
-        } else if inventory.active_item().map(String::as_str) == Some("Seed") {
-            // Empty natural tile with a seed in hand: grow a tree in the
-            // targeted slot (Stardew-style placement).
-            let (slot_x, slot_y) = (target.slot_x, target.slot_y);
-            super::hud::send_reducer(&mut net, |r| {
+            return;
+        }
+        // --- 5. Plant by held item on the empty plot (Spec 022 §1/§3).
+        let (slot_x, slot_y) = (target.slot_x, target.slot_y);
+        match held.as_deref() {
+            Some("Seed") => super::hud::send_reducer(&mut net, |r| {
                 r.plant_tree_then(
                     hex_id,
                     slot_x,
                     slot_y,
                     super::hud::reducer_report("plant_tree", tx.clone(), hex_id),
                 )
-            });
-        } else {
-            net.push(NetEvent::ServerMessage(format!(
-                "E: nothing to interact with on {}",
-                hex.terrain
-            )));
+            }),
+            Some("Grass") => super::hud::send_reducer(&mut net, |r| {
+                r.plant_grass_then(
+                    hex_id,
+                    slot_x,
+                    slot_y,
+                    super::hud::reducer_report("plant_grass", tx.clone(), hex_id),
+                )
+            }),
+            _ if inventory.counts.get("Log").copied().unwrap_or(0) >= 4 => {
+                // Carrying 4+ logs and nothing else to do: build the bench
+                // (placing IS building — Spec 022 §3).
+                super::hud::send_reducer(&mut net, |r| {
+                    r.place_craft_bench_then(
+                        hex_id,
+                        slot_x,
+                        slot_y,
+                        super::hud::reducer_report("place_craft_bench", tx.clone(), hex_id),
+                    )
+                });
+            }
+            _ => {
+                net.push(NetEvent::ServerMessage(format!(
+                    "E: nothing to interact with on {}",
+                    hex.terrain
+                )));
+            }
         }
     }
 }

@@ -233,6 +233,69 @@ pub fn plant_tree(
 }
 
 // ---------------------------------------------------------------------------
+// Crafting (Spec 022): grass regrowth, logs, craft bench, discovery crafting
+// ---------------------------------------------------------------------------
+
+/// Plant a grass tuft on the selected empty plot, consuming one Grass item;
+/// it regrows over `GRASS_GROWTH_SECS` (Spec 022 §1).
+#[reducer]
+pub fn plant_grass(
+    ctx: &ReducerContext,
+    hex_id: u64,
+    slot_x: i32,
+    slot_y: i32,
+) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    crate::objects::plant_grass(ctx, &address, hex_id, slot_x, slot_y)
+}
+
+/// Build a craft bench on the selected empty plot, consuming 4 logs
+/// (Spec 022 §3) — placing IS building; no bench item exists.
+#[reducer]
+pub fn place_craft_bench(
+    ctx: &ReducerContext,
+    hex_id: u64,
+    slot_x: i32,
+    slot_y: i32,
+) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    crate::objects::place_craft_bench(ctx, &address, hex_id, slot_x, slot_y)
+}
+
+/// Craft at the bench on the selected plot: four order-insensitive
+/// ingredients (Log ≡ Wood) matched against the fixed recipe table
+/// (Spec 022 §4). Unknown combinations consume nothing and reveal nothing.
+#[reducer]
+pub fn craft(
+    ctx: &ReducerContext,
+    hex_id: u64,
+    slot_x: i32,
+    slot_y: i32,
+    ingredients: Vec<String>,
+) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    crate::objects::craft(ctx, &address, hex_id, slot_x, slot_y, ingredients)
+}
+
+/// Till the selected hex with the Hoe: plants Wheat by consuming a Seed
+/// (Spec 022 §5), reusing the crop system.
+#[reducer]
+pub fn till(ctx: &ReducerContext, hex_id: u64) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    let result = crate::interactions::till(ctx, &address, hex_id);
+    crate::player::log_outcome(ctx, &address, "till", result.clone());
+    result.into_result()
+}
+
+// ---------------------------------------------------------------------------
 // Teleport (Spec 008)
 // ---------------------------------------------------------------------------
 

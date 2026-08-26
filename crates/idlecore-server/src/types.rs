@@ -410,11 +410,11 @@ pub struct WorldObject {
     pub hex_id: u64,
     /// Per-hex slot in 0..MAX_OBJECTS_PER_HEX (unique together with hex_id).
     pub slot: u8,
-    pub kind: String, // "Grass" | "Rock" | "Tree"
+    pub kind: String, // "Grass" | "Rock" | "Tree" | "Log" | "CraftBench"
     /// Offset from the hex center, in world units.
     pub offset_x: f32,
     pub offset_y: f32,
-    /// Unix secs when a growing Tree matures; 0 = no growth phase.
+    /// Unix secs when a growing Tree/Grass matures; 0 = no growth phase.
     pub mature_at: u64,
     pub planted_by: Option<String>,
 }
@@ -521,11 +521,22 @@ pub const MAX_OBJECTS_PER_HEX: u8 = 6;
 pub const OBJ_GRASS: &str = "Grass";
 pub const OBJ_ROCK: &str = "Rock";
 pub const OBJ_TREE: &str = "Tree";
+/// A fallen log (Spec 022): forest-floor node and bootstrap craft resource.
+pub const OBJ_LOG: &str = "Log";
+/// Player-built crafting station (Spec 022): placing IS building — no item.
+pub const OBJ_CRAFT_BENCH: &str = "CraftBench";
 /// Inventory item names.
 pub const ITEM_SEED: &str = "Seed";
 pub const ITEM_WOOD: &str = "Wood";
 pub const ITEM_STONE: &str = "Stone";
 pub const ITEM_GRASS: &str = "Grass";
+/// A gathered log (Spec 022) — the bench's raw material; crafts as Wood.
+pub const ITEM_LOG: &str = "Log";
+/// Tools crafted at the bench (Spec 022 §4). Inventory icons only.
+pub const ITEM_PICKAXE: &str = "Pickaxe";
+pub const ITEM_AXE: &str = "Axe";
+pub const ITEM_SHOVEL: &str = "Shovel";
+pub const ITEM_HOE: &str = "Hoe";
 /// Destroying a grass tuft drops this much fiber plus a chance of seeds.
 pub const GRASS_PER_TUFT: u64 = 2;
 pub const STONE_PER_ROCK: u64 = 2;
@@ -536,9 +547,55 @@ pub const WOOD_PER_TREE: u64 = 3;
 pub const SEEDS_PER_TREE: u64 = 2;
 /// A planted tree takes this long to mature.
 pub const TREE_GROWTH_SECS: u64 = 600;
+/// A planted grass tuft takes this long to regrow (Spec 022 §1).
+pub const GRASS_GROWTH_SECS: u64 = 75;
+/// Building a craft bench consumes this many logs (Spec 022 §3).
+pub const BENCH_LOG_COST: u64 = 4;
+/// XP for crafting a tool at the bench (Spec 022).
+pub const CRAFT_XP: u64 = 3;
 /// XP for gathering actions.
 pub const GATHER_XP: u64 = 2;
 pub const HARVEST_TREE_XP: u64 = 5;
+
+// ---------------------------------------------------------------------------
+// Discovery crafting (Spec 022 §4) — fixed recipe table, never shown in UI.
+// ---------------------------------------------------------------------------
+
+/// Ingredients the craft grid cycles through (the client mirrors this list).
+pub const CRAFT_INGREDIENTS: [&str; 4] = [ITEM_WOOD, ITEM_LOG, ITEM_STONE, ITEM_GRASS];
+
+/// Recipe table: exactly four ingredients, order-insensitive, with
+/// `Log` substituting `Wood`. The first matching row wins.
+pub const RECIPES: [(&str, [&str; 4]); 4] = [
+    (ITEM_PICKAXE, [ITEM_STONE, ITEM_STONE, ITEM_STONE, ITEM_WOOD]),
+    (ITEM_AXE, [ITEM_STONE, ITEM_STONE, ITEM_WOOD, ITEM_WOOD]),
+    (ITEM_SHOVEL, [ITEM_STONE, ITEM_STONE, ITEM_GRASS, ITEM_WOOD]),
+    (ITEM_HOE, [ITEM_WOOD, ITEM_WOOD, ITEM_GRASS, ITEM_GRASS]),
+];
+
+/// Crafting normalization: logs substitute wood in every recipe (Spec 022 §4).
+pub fn normalize_ingredient(item: &str) -> &str {
+    if item == ITEM_LOG {
+        ITEM_WOOD
+    } else {
+        item
+    }
+}
+
+/// Match four ingredients (any order) against the recipe table after
+/// normalization. Returns the crafted item, or `None` for unknown
+/// combinations — which must reveal nothing and consume nothing.
+pub fn match_recipe(ingredients: [&str; 4]) -> Option<&'static str> {
+    let mut got: Vec<&str> = ingredients.iter().map(|i| normalize_ingredient(i)).collect();
+    got.sort_unstable();
+    RECIPES
+        .iter()
+        .find_map(|(result, needs)| {
+            let mut need: Vec<&str> = needs.to_vec();
+            need.sort_unstable();
+            (need == got).then_some(*result)
+        })
+}
 
 /// Encode axial (q, r) into the u64 hex id: `(q << 32) | r`.
 pub fn hex_id_of(q: i32, r: i32) -> u64 {
@@ -641,5 +698,51 @@ mod tests {
         assert!(p.is_mature(1000 + 3600), "fully grown");
         assert!(p.is_mature(9000), "overgrown stays mature");
         assert_eq!(p.time_remaining(1000), 3600);
+    }
+
+    #[test]
+    fn every_recipe_crafts_a_distinct_tool() {
+        assert_eq!(RECIPES.len(), 4);
+        for (result, _) in RECIPES {
+            assert!(matches!(result, "Pickaxe" | "Axe" | "Shovel" | "Hoe"));
+        }
+        let mut results: Vec<&str> = RECIPES.iter().map(|(r, _)| *r).collect();
+        results.sort_unstable();
+        results.dedup();
+        assert_eq!(results.len(), 4, "recipes must craft distinct tools");
+    }
+
+    #[test]
+    fn recipes_match_in_any_order() {
+        assert_eq!(match_recipe(["Stone", "Wood", "Stone", "Stone"]), Some(ITEM_PICKAXE));
+        assert_eq!(match_recipe(["Wood", "Grass", "Wood", "Grass"]), Some(ITEM_HOE));
+        assert_eq!(match_recipe(["Grass", "Stone", "Wood", "Stone"]), Some(ITEM_SHOVEL));
+        assert_eq!(match_recipe(["Wood", "Wood", "Stone", "Stone"]), Some(ITEM_AXE));
+    }
+
+    #[test]
+    fn logs_substitute_wood_in_recipes() {
+        // Pickaxe: 3 Stone + Wood, with the Wood replaced by a Log.
+        assert_eq!(match_recipe(["Log", "Stone", "Stone", "Stone"]), Some(ITEM_PICKAXE));
+        // Axe: mixed Wood/Log still matches 2+2.
+        assert_eq!(match_recipe(["Log", "Log", "Stone", "Stone"]), Some(ITEM_AXE));
+        assert_eq!(match_recipe(["Log", "Wood", "Stone", "Stone"]), Some(ITEM_AXE));
+        // Shovel and Hoe accept log substitutions too.
+        assert_eq!(match_recipe(["Log", "Stone", "Stone", "Grass"]), Some(ITEM_SHOVEL));
+        assert_eq!(match_recipe(["Log", "Log", "Grass", "Grass"]), Some(ITEM_HOE));
+    }
+
+    #[test]
+    fn unknown_combinations_match_nothing() {
+        // All-same stacks never craft.
+        assert_eq!(match_recipe(["Stone", "Stone", "Stone", "Stone"]), None);
+        assert_eq!(match_recipe(["Log", "Log", "Log", "Log"]), None);
+        assert_eq!(match_recipe(["Grass", "Grass", "Grass", "Grass"]), None);
+        // Wrong counts / unknown items reveal nothing.
+        assert_eq!(match_recipe(["Stone", "Stone", "Stone", "Grass"]), None);
+        assert_eq!(match_recipe(["Seed", "Wood", "Stone", "Stone"]), None);
+        // Normalization is not bidirectional: wood never becomes a log.
+        assert_eq!(normalize_ingredient(ITEM_WOOD), ITEM_WOOD);
+        assert_eq!(normalize_ingredient(ITEM_LOG), ITEM_WOOD);
     }
 }

@@ -12,6 +12,7 @@ pub mod buy_vehicle_reducer;
 pub mod claim_idle_gains_reducer;
 pub mod clean_reducer;
 pub mod cosmetic_owned_type;
+pub mod craft_reducer;
 pub mod dispute_listing_reducer;
 pub mod eco_transaction_table;
 pub mod eco_transaction_type;
@@ -31,6 +32,8 @@ pub mod market_listing_type;
 pub mod move_player_reducer;
 pub mod object_removed_table;
 pub mod object_removed_type;
+pub mod place_craft_bench_reducer;
+pub mod plant_grass_reducer;
 pub mod plant_reducer;
 pub mod plant_tree_reducer;
 pub mod player_cosmetic_table;
@@ -55,6 +58,7 @@ pub mod scheduled_plant_growth_type;
 pub mod scheduled_voice_cleanup_table;
 pub mod scheduled_voice_cleanup_type;
 pub mod teleport_player_reducer;
+pub mod till_reducer;
 pub mod transaction_table;
 pub mod transaction_type;
 pub mod update_profile_reducer;
@@ -72,6 +76,7 @@ pub use buy_vehicle_reducer::buy_vehicle;
 pub use claim_idle_gains_reducer::claim_idle_gains;
 pub use clean_reducer::clean;
 pub use cosmetic_owned_type::CosmeticOwned;
+pub use craft_reducer::craft;
 pub use dispute_listing_reducer::dispute_listing;
 pub use eco_transaction_table::*;
 pub use eco_transaction_type::EcoTransaction;
@@ -91,6 +96,8 @@ pub use market_listing_type::MarketListing;
 pub use move_player_reducer::move_player;
 pub use object_removed_table::*;
 pub use object_removed_type::ObjectRemoved;
+pub use place_craft_bench_reducer::place_craft_bench;
+pub use plant_grass_reducer::plant_grass;
 pub use plant_reducer::plant;
 pub use plant_tree_reducer::plant_tree;
 pub use player_cosmetic_table::*;
@@ -115,6 +122,7 @@ pub use scheduled_plant_growth_type::ScheduledPlantGrowth;
 pub use scheduled_voice_cleanup_table::*;
 pub use scheduled_voice_cleanup_type::ScheduledVoiceCleanup;
 pub use teleport_player_reducer::teleport_player;
+pub use till_reducer::till;
 pub use transaction_table::*;
 pub use transaction_type::Transaction;
 pub use update_profile_reducer::update_profile;
@@ -148,6 +156,12 @@ pub enum Reducer {
     Clean {
         hex_id: u64,
     },
+    Craft {
+        hex_id: u64,
+        slot_x: i32,
+        slot_y: i32,
+        ingredients: Vec<String>,
+    },
     DisputeListing {
         listing_id: u64,
     },
@@ -178,9 +192,19 @@ pub enum Reducer {
         to_x: f32,
         to_y: f32,
     },
+    PlaceCraftBench {
+        hex_id: u64,
+        slot_x: i32,
+        slot_y: i32,
+    },
     Plant {
         hex_id: u64,
         plant_type: String,
+    },
+    PlantGrass {
+        hex_id: u64,
+        slot_x: i32,
+        slot_y: i32,
     },
     PlantTree {
         hex_id: u64,
@@ -203,6 +227,9 @@ pub enum Reducer {
     TeleportPlayer {
         target_q: i32,
         target_r: i32,
+    },
+    Till {
+        hex_id: u64,
     },
     UpdateProfile {
         display_name: Option<String>,
@@ -229,6 +256,7 @@ impl __sdk::Reducer for Reducer {
             Reducer::BuyVehicle { .. } => "buy_vehicle",
             Reducer::ClaimIdleGains => "claim_idle_gains",
             Reducer::Clean { .. } => "clean",
+            Reducer::Craft { .. } => "craft",
             Reducer::DisputeListing { .. } => "dispute_listing",
             Reducer::EquipCosmetic { .. } => "equip_cosmetic",
             Reducer::EquipVehicle { .. } => "equip_vehicle",
@@ -238,12 +266,15 @@ impl __sdk::Reducer for Reducer {
             Reducer::Login { .. } => "login",
             Reducer::Logout { .. } => "logout",
             Reducer::MovePlayer { .. } => "move_player",
+            Reducer::PlaceCraftBench { .. } => "place_craft_bench",
             Reducer::Plant { .. } => "plant",
+            Reducer::PlantGrass { .. } => "plant_grass",
             Reducer::PlantTree { .. } => "plant_tree",
             Reducer::PublishListing { .. } => "publish_listing",
             Reducer::ReleaseEscrow { .. } => "release_escrow",
             Reducer::RenewListing { .. } => "renew_listing",
             Reducer::TeleportPlayer { .. } => "teleport_player",
+            Reducer::Till { .. } => "till",
             Reducer::UpdateProfile { .. } => "update_profile",
             Reducer::VoiceJoin { .. } => "voice_join",
             Reducer::VoiceLeave { .. } => "voice_leave",
@@ -274,6 +305,17 @@ impl __sdk::Reducer for Reducer {
             }
             Reducer::Clean { hex_id } => __sats::bsatn::to_vec(&clean_reducer::CleanArgs {
                 hex_id: hex_id.clone(),
+            }),
+            Reducer::Craft {
+                hex_id,
+                slot_x,
+                slot_y,
+                ingredients,
+            } => __sats::bsatn::to_vec(&craft_reducer::CraftArgs {
+                hex_id: hex_id.clone(),
+                slot_x: slot_x.clone(),
+                slot_y: slot_y.clone(),
+                ingredients: ingredients.clone(),
             }),
             Reducer::DisputeListing { listing_id } => {
                 __sats::bsatn::to_vec(&dispute_listing_reducer::DisputeListingArgs {
@@ -322,12 +364,30 @@ impl __sdk::Reducer for Reducer {
                 to_x: to_x.clone(),
                 to_y: to_y.clone(),
             }),
+            Reducer::PlaceCraftBench {
+                hex_id,
+                slot_x,
+                slot_y,
+            } => __sats::bsatn::to_vec(&place_craft_bench_reducer::PlaceCraftBenchArgs {
+                hex_id: hex_id.clone(),
+                slot_x: slot_x.clone(),
+                slot_y: slot_y.clone(),
+            }),
             Reducer::Plant { hex_id, plant_type } => {
                 __sats::bsatn::to_vec(&plant_reducer::PlantArgs {
                     hex_id: hex_id.clone(),
                     plant_type: plant_type.clone(),
                 })
             }
+            Reducer::PlantGrass {
+                hex_id,
+                slot_x,
+                slot_y,
+            } => __sats::bsatn::to_vec(&plant_grass_reducer::PlantGrassArgs {
+                hex_id: hex_id.clone(),
+                slot_x: slot_x.clone(),
+                slot_y: slot_y.clone(),
+            }),
             Reducer::PlantTree {
                 hex_id,
                 slot_x,
@@ -366,6 +426,9 @@ impl __sdk::Reducer for Reducer {
                     target_r: target_r.clone(),
                 })
             }
+            Reducer::Till { hex_id } => __sats::bsatn::to_vec(&till_reducer::TillArgs {
+                hex_id: hex_id.clone(),
+            }),
             Reducer::UpdateProfile {
                 display_name,
                 avatar,

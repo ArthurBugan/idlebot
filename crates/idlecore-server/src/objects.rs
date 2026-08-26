@@ -9,9 +9,10 @@
 use spacetimedb::{ReducerContext, Table};
 use crate::economy::{add_xp, find_player};
 use crate::types::{
-    object_removed, player, player_item, world_object, GATHER_XP, GRASS_PER_TUFT, HARVEST_TREE_XP, ITEM_GRASS,
-    ITEM_SEED, ITEM_STONE, ITEM_WOOD, MAX_OBJECTS_PER_HEX, OBJ_GRASS, OBJ_ROCK, OBJ_TREE,
-    STONE_PER_ROCK, TREE_GROWTH_SECS, WOOD_PER_TREE,
+    match_recipe, object_removed, player, player_item, world_object, BENCH_LOG_COST,
+    CRAFT_XP, GATHER_XP, GRASS_GROWTH_SECS, GRASS_PER_TUFT, HARVEST_TREE_XP, ITEM_GRASS, ITEM_LOG,
+    ITEM_SEED, ITEM_STONE, ITEM_WOOD, MAX_OBJECTS_PER_HEX, OBJ_CRAFT_BENCH, OBJ_GRASS, OBJ_LOG,
+    OBJ_ROCK, OBJ_TREE, STONE_PER_ROCK, TREE_GROWTH_SECS, WOOD_PER_TREE,
 };
 use crate::world::ensure_hex;
 use idlecore_core::terrain::TerrainType;
@@ -98,7 +99,15 @@ fn natural_spawn(terrain: TerrainType, slot: u8, h: u64) -> Option<&'static str>
             if slot == 5 {
                 (roll < 2).then_some(OBJ_ROCK)
             } else if slot <= 2 {
-                (roll < 20).then_some(OBJ_GRASS)
+                // Forest floors: grass tufts plus fallen logs (Spec 022) —
+                // logs are the bootstrap resource for the first craft bench.
+                if roll < 20 {
+                    Some(OBJ_GRASS)
+                } else if roll < 28 {
+                    Some(OBJ_LOG)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -317,6 +326,14 @@ fn cooldown_left(p: &crate::types::Player, now: u64) -> Result<(), String> {
     Ok(())
 }
 
+/// Pure growth gate (Spec 022): `Some(error)` while a growing node is still
+/// immature. `mature_at == 0` means the kind has no growth phase (natural
+/// spawns), so those always gather.
+fn growth_block(kind: &str, mature_at: u64, now: u64) -> Option<String> {
+    (mature_at != 0 && now < mature_at)
+        .then(|| format!("{kind} still growing ({}s left)", mature_at - now))
+}
+
 fn touch(ctx: &ReducerContext, address: &str, now: u64) {
     if let Some(mut p) = find_player(ctx, address) {
         p.last_action_at = now;
@@ -324,7 +341,9 @@ fn touch(ctx: &ReducerContext, address: &str, now: u64) {
     }
 }
 
-/// Destroy a grass tuft (drops seeds) or harvest a mature tree (wood + seeds).
+/// Destroy a grass tuft (drops seeds), gather a fallen log, or harvest a
+/// mature tree (wood + seeds). Growing nodes (planted grass/trees) refuse
+/// until `mature_at` (Spec 022 §1).
 pub fn gather_object(
     ctx: &ReducerContext,
     address: &str,
@@ -350,6 +369,9 @@ pub fn gather_object(
 
     match obj.kind.as_str() {
         OBJ_GRASS => {
+            if let Some(e) = growth_block("Grass", obj.mature_at, now) {
+                return Err(e);
+            }
             ctx.db.world_object().object_id().delete(object_id);
             consume_slot(ctx, obj.hex_id, obj.slot);
             add_item(ctx, &p.address, ITEM_GRASS, GRASS_PER_TUFT);
@@ -367,12 +389,18 @@ pub fn gather_object(
             add_xp(ctx, &mut p, GATHER_XP + 1, "mine");
             tracing::info!("MINE {address}: rock @hex {}", obj.hex_id);
         }
+        OBJ_LOG => {
+            ctx.db.world_object().object_id().delete(object_id);
+            consume_slot(ctx, obj.hex_id, obj.slot);
+            // 1-2 logs per node, deterministic per object id.
+            let logs = 1 + object_id % 2;
+            add_item(ctx, &p.address, ITEM_LOG, logs);
+            add_xp(ctx, &mut p, GATHER_XP + 1, "gather_log");
+            tracing::info!("GATHER-LOG {address}: {logs} logs @hex {}", obj.hex_id);
+        }
         OBJ_TREE => {
-            if now < obj.mature_at {
-                return Err(format!(
-                    "Tree still growing ({}s left)",
-                    obj.mature_at - now
-                ));
+            if let Some(e) = growth_block("Tree", obj.mature_at, now) {
+                return Err(e);
             }
             ctx.db.world_object().object_id().delete(object_id);
             consume_slot(ctx, obj.hex_id, obj.slot);
@@ -386,6 +414,62 @@ pub fn gather_object(
     }
     touch(ctx, &p.address, now);
     Ok(())
+}
+
+/// Pure cell-occupancy check (Spec 022): does any existing object offset sit
+/// in the same ground cell? Offsets snap to slot centers, so a 0.1 tolerance
+/// is exact for snapped rows.
+fn cell_taken(existing_offsets: &[(f32, f32)], offset_x: f32, offset_y: f32) -> bool {
+    existing_offsets
+        .iter()
+        .any(|&(x, y)| (x - offset_x).abs() < 0.1 && (y - offset_y).abs() < 0.1)
+}
+
+/// Shared placement preflight (Spec 022): the slot must be owned by the
+/// targeted hex and its ground cell must be free of other objects. Returns
+/// the cell center as an offset from the hex center.
+fn require_empty_cell(
+    ctx: &ReducerContext,
+    hex_id: u64,
+    hq: i32,
+    hr: i32,
+    slot_x: i32,
+    slot_y: i32,
+) -> Result<(f32, f32), String> {
+    // No placing across hex borders by aiming at a shared edge slot.
+    if idlecore_core::slots::slot_hex(slot_x, slot_y) != (hq, hr) {
+        return Err("Slot is outside the selected hex".to_string());
+    }
+    let (hx, hy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
+        hq,
+        hr,
+        idlecore_core::world_gen::WorldGenConfig::HEX_SIZE,
+    );
+    let (cx, cy) = idlecore_core::slots::slot_center(slot_x, slot_y);
+    let offset = (cx - hx, cy - hy);
+    let existing: Vec<(f32, f32)> = ctx
+        .db
+        .world_object()
+        .object_by_hex()
+        .filter(hex_id)
+        .map(|o| (o.offset_x, o.offset_y))
+        .collect();
+    if cell_taken(&existing, offset.0, offset.1) {
+        return Err("That spot is already taken".to_string());
+    }
+    Ok(offset)
+}
+
+/// First unused slot number in a hex, if any.
+fn free_slot(ctx: &ReducerContext, hex_id: u64) -> Option<u8> {
+    let used: std::collections::HashSet<u8> = ctx
+        .db
+        .world_object()
+        .object_by_hex()
+        .filter(hex_id)
+        .map(|o| o.slot)
+        .collect();
+    (0..MAX_OBJECTS_PER_HEX).find(|s| !used.contains(s))
 }
 
 /// Plant a tree on an adjacent land hex, consuming one seed. The tree is
@@ -423,40 +507,10 @@ pub fn plant_tree(
     if !plantable {
         return Err(format!("Cannot grow trees on {} here", tile.terrain));
     }
-    // The requested slot must be owned by the targeted hex — no planting
-    // across hex borders by aiming at a shared edge slot.
-    if idlecore_core::slots::slot_hex(slot_x, slot_y) != (hq, hr) {
-        return Err("Slot is outside the selected hex".to_string());
-    }
-    // Snap the tree to the slot's center (offset relative to the hex center).
-    let (hx, hy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
-        hq,
-        hr,
-        idlecore_core::world_gen::WorldGenConfig::HEX_SIZE,
-    );
-    let (cx, cy) = idlecore_core::slots::slot_center(slot_x, slot_y);
-    let offset_x = cx - hx;
-    let offset_y = cy - hy;
-    // One object per ground cell: natural spawns snap to slot centers too.
-    let cell_taken = ctx
-        .db
-        .world_object()
-        .object_by_hex()
-        .filter(hex_id)
-        .any(|o| (o.offset_x - offset_x).abs() < 0.1 && (o.offset_y - offset_y).abs() < 0.1);
-    if cell_taken {
-        return Err("That spot is already taken".to_string());
-    }
-
-    let used: std::collections::HashSet<u8> = ctx
-        .db
-        .world_object()
-        .object_by_hex()
-        .filter(hex_id)
-        .map(|o| o.slot)
-        .collect();
-    let slot = (0..MAX_OBJECTS_PER_HEX).find(|s| !used.contains(s));
-    let Some(slot) = slot else { return Err("Hex is full".to_string()) };
+    let (offset_x, offset_y) = require_empty_cell(ctx, hex_id, hq, hr, slot_x, slot_y)?;
+    let Some(slot) = free_slot(ctx, hex_id) else {
+        return Err("Hex is full".to_string());
+    };
 
     remove_item(ctx, &p.address, ITEM_SEED, 1)
         .then_some(())
@@ -475,6 +529,207 @@ pub fn plant_tree(
     add_xp(ctx, &mut p, 1, "plant_tree");
     touch(ctx, &p.address, now);
     tracing::info!("PLANT-TREE {address} @hex {hex_id} slot {slot} cell ({slot_x},{slot_y})");
+    Ok(())
+}
+
+/// Plant a grass tuft on an empty plot, consuming one Grass item (Spec 022
+/// §1). The tuft regrows: gathering it again only succeeds after
+/// `GRASS_GROWTH_SECS`, closing the resource loop.
+pub fn plant_grass(
+    ctx: &ReducerContext,
+    address: &str,
+    hex_id: u64,
+    slot_x: i32,
+    slot_y: i32,
+) -> Result<(), String> {
+    use crate::types::{hex_coords_of, hex_distance, hex_tile, now_secs};
+    let now = now_secs(ctx);
+    let mut p = find_player(ctx, &address.to_lowercase())
+        .ok_or_else(|| "Player not found".to_string())?;
+    cooldown_left(&p, now)?;
+
+    let (hq, hr) = hex_coords_of(hex_id);
+    ensure_hex(ctx, hq, hr);
+    let tile = ctx
+        .db
+        .hex_tile()
+        .hex_id()
+        .find(hex_id)
+        .ok_or_else(|| "Hex not found".to_string())?;
+    if hex_distance(p.hex_q, p.hex_r, hq, hr) > 1 {
+        return Err("Out of range (1 hex)".to_string());
+    }
+    // Grass grows wherever trees do — every natural land terrain.
+    let plantable = matches!(
+        tile.terrain.as_str(),
+        "Grass" | "Forest" | "Grassland" | "Taiga" | "TropicalRainforest" | "Tundra" | "Desert"
+    );
+    if !plantable {
+        return Err(format!("Cannot grow grass on {} here", tile.terrain));
+    }
+    let (offset_x, offset_y) = require_empty_cell(ctx, hex_id, hq, hr, slot_x, slot_y)?;
+    let Some(slot) = free_slot(ctx, hex_id) else {
+        return Err("Hex is full".to_string());
+    };
+
+    remove_item(ctx, &p.address, ITEM_GRASS, 1)
+        .then_some(())
+        .ok_or_else(|| "No grass — gather a mature tuft first".to_string())?;
+
+    ctx.db.world_object().insert(WorldObjectRow {
+        object_id: 0,
+        hex_id,
+        slot,
+        kind: OBJ_GRASS.to_string(),
+        offset_x,
+        offset_y,
+        mature_at: now + GRASS_GROWTH_SECS,
+        planted_by: Some(p.address.clone()),
+    });
+    add_xp(ctx, &mut p, 1, "plant_grass");
+    touch(ctx, &p.address, now);
+    tracing::info!("PLANT-GRASS {address} @hex {hex_id} slot {slot} cell ({slot_x},{slot_y})");
+    Ok(())
+}
+
+/// Build a craft bench on an empty plot of an adjacent hex by consuming
+/// `BENCH_LOG_COST` logs (Spec 022 §3). No bench item exists — placing IS
+/// building the bench, the only recipe that works without a bench.
+pub fn place_craft_bench(
+    ctx: &ReducerContext,
+    address: &str,
+    hex_id: u64,
+    slot_x: i32,
+    slot_y: i32,
+) -> Result<(), String> {
+    use crate::types::{hex_coords_of, hex_distance, hex_tile, now_secs};
+    let now = now_secs(ctx);
+    let mut p = find_player(ctx, &address.to_lowercase())
+        .ok_or_else(|| "Player not found".to_string())?;
+    cooldown_left(&p, now)?;
+
+    let (hq, hr) = hex_coords_of(hex_id);
+    ensure_hex(ctx, hq, hr);
+    let tile = ctx
+        .db
+        .hex_tile()
+        .hex_id()
+        .find(hex_id)
+        .ok_or_else(|| "Hex not found".to_string())?;
+    if hex_distance(p.hex_q, p.hex_r, hq, hr) > 1 {
+        return Err("Out of range (1 hex)".to_string());
+    }
+    // A workbench on water would be optimistic; anywhere else on land works.
+    if tile.terrain == "Water" {
+        return Err("Cannot build a bench on water".to_string());
+    }
+    let (offset_x, offset_y) = require_empty_cell(ctx, hex_id, hq, hr, slot_x, slot_y)?;
+    let Some(slot) = free_slot(ctx, hex_id) else {
+        return Err("Hex is full".to_string());
+    };
+
+    if !remove_item(ctx, &p.address, ITEM_LOG, BENCH_LOG_COST) {
+        return Err(format!(
+            "Need {BENCH_LOG_COST} logs to build a craft bench — gather fallen logs in forests"
+        ));
+    }
+
+    ctx.db.world_object().insert(WorldObjectRow {
+        object_id: 0,
+        hex_id,
+        slot,
+        kind: OBJ_CRAFT_BENCH.to_string(),
+        offset_x,
+        offset_y,
+        mature_at: 0,
+        planted_by: Some(p.address.clone()),
+    });
+    add_xp(ctx, &mut p, 2, "place_bench");
+    touch(ctx, &p.address, now);
+    tracing::info!("PLACE-BENCH {address} @hex {hex_id} slot {slot} cell ({slot_x},{slot_y})");
+    Ok(())
+}
+
+/// Craft at the bench occupying the targeted plot (Spec 022 §4): the
+/// order-insensitive 4-ingredient multiset (Log ≡ Wood) is matched against
+/// the fixed recipe table. Unknown combinations fail with "nothing happened"
+/// and consume nothing; the bench stays put either way.
+pub fn craft(
+    ctx: &ReducerContext,
+    address: &str,
+    hex_id: u64,
+    slot_x: i32,
+    slot_y: i32,
+    ingredients: Vec<String>,
+) -> Result<(), String> {
+    use crate::types::{hex_coords_of, hex_distance, now_secs, CRAFT_INGREDIENTS};
+    let now = now_secs(ctx);
+    let mut p = find_player(ctx, &address.to_lowercase())
+        .ok_or_else(|| "Player not found".to_string())?;
+    cooldown_left(&p, now)?;
+
+    let (hq, hr) = hex_coords_of(hex_id);
+    if hex_distance(p.hex_q, p.hex_r, hq, hr) > 1 {
+        return Err("Out of range (1 hex)".to_string());
+    }
+    // The target plot must hold the bench: exact cell, exact kind.
+    if idlecore_core::slots::slot_hex(slot_x, slot_y) != (hq, hr) {
+        return Err("Slot is outside the selected hex".to_string());
+    }
+    let (hx, hy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
+        hq,
+        hr,
+        idlecore_core::world_gen::WorldGenConfig::HEX_SIZE,
+    );
+    let (cx, cy) = idlecore_core::slots::slot_center(slot_x, slot_y);
+    let (ox, oy) = (cx - hx, cy - hy);
+    let has_bench = ctx
+        .db
+        .world_object()
+        .object_by_hex()
+        .filter(hex_id)
+        .any(|o| {
+            o.kind == OBJ_CRAFT_BENCH
+                && (o.offset_x - ox).abs() < 0.1
+                && (o.offset_y - oy).abs() < 0.1
+        });
+    if !has_bench {
+        return Err("Craft at a craft bench".to_string());
+    }
+
+    // Validate + match before consuming anything.
+    if ingredients.len() != 4 {
+        return Err("Nothing happened.".to_string());
+    }
+    let mut ings: [&str; 4] = [""; 4];
+    for (slot, item) in ingredients.iter().enumerate() {
+        if !CRAFT_INGREDIENTS.contains(&item.as_str()) {
+            return Err("Nothing happened.".to_string());
+        }
+        ings[slot] = item.as_str();
+    }
+    let Some(result) = match_recipe(ings) else {
+        return Err("Nothing happened.".to_string());
+    };
+
+    // Consume each ingredient stack (multiplicity-aware) only after
+    // verifying the player owns everything — a failed craft consumes nothing.
+    let mut wanted: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
+    for item in ings {
+        *wanted.entry(item).or_insert(0) += 1;
+    }
+    for (item, count) in &wanted {
+        if count_item(ctx, &p.address, item) < *count {
+            return Err(format!("Not enough {item}"));
+        }
+    }
+    for (item, count) in &wanted {
+        remove_item(ctx, &p.address, item, *count);
+    }
+    add_item(ctx, &p.address, result, 1);
+    add_xp(ctx, &mut p, CRAFT_XP, "craft");
+    touch(ctx, &p.address, now);
+    tracing::info!("CRAFT {address}: {result} @bench hex {hex_id}");
     Ok(())
 }
 
@@ -506,6 +761,78 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn logs_spawn_only_in_forested_terrains() {
+        // Spec 022 §2: fallen logs are forest-floor nodes — never elsewhere.
+        for slot in 0..MAX_OBJECTS_PER_HEX {
+            for seed in 0..256u64 {
+                let h = obj_hash(seed, slot);
+                for terrain in [
+                    TerrainType::Grass,
+                    TerrainType::Grassland,
+                    TerrainType::Desert,
+                    TerrainType::Tundra,
+                    TerrainType::Mountain,
+                    TerrainType::Water,
+                    TerrainType::City,
+                    TerrainType::Polluted,
+                ] {
+                    assert_ne!(
+                        natural_spawn(terrain, slot, h),
+                        Some(OBJ_LOG),
+                        "log spawned on non-forested {terrain:?}"
+                    );
+                }
+                let forested = [
+                    TerrainType::Forest,
+                    TerrainType::Taiga,
+                    TerrainType::TropicalRainforest,
+                ];
+                let any = forested
+                    .iter()
+                    .any(|t| natural_spawn(*t, slot, h) == Some(OBJ_LOG));
+                if slot > 2 {
+                    assert!(!any, "log spawned outside the grass/log slot band");
+                }
+            }
+        }
+        // The forest band must actually produce both grass and logs.
+        let mut grass = 0;
+        let mut logs = 0;
+        for slot in 0..=2u8 {
+            for seed in 0..256u64 {
+                match natural_spawn(TerrainType::Forest, slot, obj_hash(seed, slot)) {
+                    Some(k) if k == OBJ_GRASS => grass += 1,
+                    Some(k) if k == OBJ_LOG => logs += 1,
+                    _ => {}
+                }
+            }
+        }
+        assert!(grass > 10 && logs > 5, "forest band barren: grass {grass}, logs {logs}");
+    }
+
+    #[test]
+    fn growth_gate_blocks_only_before_maturity() {
+        // Spec 022 §1: immature planted grass refuses with "still growing".
+        assert_eq!(growth_block("Grass", 1000, 999).as_deref(), Some("Grass still growing (1s left)"));
+        assert_eq!(growth_block("Grass", 1000, 1000), None, "mature at exact time");
+        // Natural spawns carry mature_at == 0 — no growth phase, always open.
+        assert_eq!(growth_block("Grass", 0, 0), None);
+        // Trees share the same gate.
+        assert!(growth_block("Tree", 600, 1).is_some());
+        assert_eq!(growth_block("Tree", 600, 600), None);
+    }
+
+    #[test]
+    fn cell_taken_matches_only_nearby_offsets() {
+        let existing = [(1.0, 2.0), (-3.5, 0.25)];
+        assert!(cell_taken(&existing, 1.0, 2.0));
+        assert!(cell_taken(&existing, 1.05, 2.0), "snapped rows are exact");
+        assert!(!cell_taken(&existing, 1.5, 2.0));
+        assert!(!cell_taken(&existing, 0.0, 0.0));
+        assert!(!cell_taken(&[], 0.0, 0.0));
     }
 
     #[test]

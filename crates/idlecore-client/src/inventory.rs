@@ -31,6 +31,12 @@ pub fn load_item_icons(
     by_item.insert("Wood".to_string(), props.icon_wood.clone());
     by_item.insert("Stone".to_string(), props.icon_stone.clone());
     by_item.insert("Grass".to_string(), props.icon_grass.clone());
+    // Spec 022: logs + crafted tools (inventory icons only).
+    by_item.insert("Log".to_string(), props.icon_log.clone());
+    by_item.insert("Pickaxe".to_string(), props.icon_pickaxe.clone());
+    by_item.insert("Axe".to_string(), props.icon_axe.clone());
+    by_item.insert("Shovel".to_string(), props.icon_shovel.clone());
+    by_item.insert("Hoe".to_string(), props.icon_hoe.clone());
     commands.insert_resource(ItemIcons { by_item });
     *done = true;
 }
@@ -86,6 +92,11 @@ fn item_badge(item: &str) -> (Color, &'static str) {
         "Wood" => (Color::srgb(0.72, 0.50, 0.28), "Wo"),
         "Stone" => (Color::srgb(0.68, 0.68, 0.74), "St"),
         "Grass" => (Color::srgb(0.45, 0.72, 0.32), "Gr"),
+        "Log" => (Color::srgb(0.55, 0.38, 0.22), "Lo"),
+        "Pickaxe" => (Color::srgb(0.55, 0.62, 0.72), "Pi"),
+        "Axe" => (Color::srgb(0.62, 0.55, 0.45), "Ax"),
+        "Shovel" => (Color::srgb(0.50, 0.58, 0.62), "Sh"),
+        "Hoe" => (Color::srgb(0.58, 0.50, 0.58), "Ho"),
         _ => (Color::srgb(0.6, 0.6, 0.65), "?"),
     }
 }

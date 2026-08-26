@@ -178,11 +178,22 @@ pub struct PropTextures {
     pub sapling_aspect: f32,
     pub rock: Handle<Image>,
     pub rock_aspect: f32,
+    /// Fallen log (Spec 022): Tiny Farm dead-wood tile.
+    pub log: Handle<Image>,
+    pub log_aspect: f32,
+    /// Craft bench (Spec 022): Tiny Dungeon crate, taller than plants.
+    pub bench: Handle<Image>,
+    pub bench_aspect: f32,
     /// Square UI icons for inventory slots.
     pub icon_seed: Handle<Image>,
     pub icon_wood: Handle<Image>,
     pub icon_stone: Handle<Image>,
     pub icon_grass: Handle<Image>,
+    pub icon_log: Handle<Image>,
+    pub icon_pickaxe: Handle<Image>,
+    pub icon_axe: Handle<Image>,
+    pub icon_shovel: Handle<Image>,
+    pub icon_hoe: Handle<Image>,
 }
 
 /// Build all prop sprites once. Runs at Startup. All props are 16x16 tiles
@@ -197,7 +208,9 @@ pub fn init_prop_textures(mut commands: Commands, asset_server: Res<AssetServer>
     commands.insert_resource(PropTextures {
         // Grass tufts: Tiny Farm round grass plant (tile_0056); tree: Tiny
         // Town round tree; sapling: Tiny Farm sapling; rock: Tiny Ski
-        // boulder; wood: crate; seed: bag. All chroma-keyed via TinyKeyQueue.
+        // boulder; wood: crate; seed: bag; log: Farm dead wood (Spec 022);
+        // bench: Dungeon crate (Spec 022); tools: Town/Farm hand tools.
+        // All chroma-keyed via TinyKeyQueue.
         grass: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0056.png"),
         grass_aspect: 1.0,
         tree: prop(&asset_server, &mut queue, "models/Tiny Town/Tiles/tile_0004.png"),
@@ -206,10 +219,19 @@ pub fn init_prop_textures(mut commands: Commands, asset_server: Res<AssetServer>
         sapling_aspect: 1.0,
         rock: prop(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0081.png"),
         rock_aspect: 1.0,
+        log: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0002.png"),
+        log_aspect: 1.0,
+        bench: prop(&asset_server, &mut queue, "models/Tiny Dungeon/Tiles/tile_0075.png"),
+        bench_aspect: 1.0,
         icon_seed: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0009.png"),
         icon_wood: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0076.png"),
         icon_stone: prop(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0081.png"),
         icon_grass: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0056.png"),
+        icon_log: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0002.png"),
+        icon_pickaxe: prop(&asset_server, &mut queue, "models/Tiny Town/Tiles/tile_0115.png"),
+        icon_axe: prop(&asset_server, &mut queue, "models/Tiny Town/Tiles/tile_0127.png"),
+        icon_shovel: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0086.png"),
+        icon_hoe: prop(&asset_server, &mut queue, "models/Tiny Town/Tiles/tile_0129.png"),
     });
 }
 
@@ -477,10 +499,15 @@ pub struct WorldObjectState {
 /// Target on-screen height (world units) per object kind.
 fn kind_height(kind: &str, mature: bool) -> f32 {
     match kind {
-        "Grass" => 1.8,
+        "Grass" if mature => 1.8,
+        // Immature grass renders as a small sprout (Spec 022 §1).
+        "Grass" => 0.9,
         "Rock" => 2.2,
         "Tree" if mature => 4.2,
         "Tree" => 2.4,
+        // A fallen log sits low; the bench crate stands taller than plants.
+        "Log" => 1.3,
+        "CraftBench" => 2.6,
         _ => 2.0,
     }
 }
@@ -564,8 +591,22 @@ pub fn update_world_object_visuals(
         // Descriptor: sprite + target height + flip; trees grow sapling->full.
         let flip = row.object_id % 2 == 0;
         let (handle, height, aspect, tint) = match row.kind.as_str() {
-            "Grass" => (&props.grass, kind_height("Grass", true), props.grass_aspect, Color::WHITE),
+            "Grass" => {
+                if mature {
+                    (&props.grass, kind_height("Grass", true), props.grass_aspect, Color::WHITE)
+                } else {
+                    // Planted grass sprouts via the existing sapling path.
+                    (
+                        &props.sapling,
+                        kind_height("Grass", false),
+                        props.sapling_aspect,
+                        Color::srgb(0.65, 0.85, 0.5),
+                    )
+                }
+            }
             "Rock" => (&props.rock, kind_height("Rock", true), props.rock_aspect, Color::WHITE),
+            "Log" => (&props.log, kind_height("Log", true), props.log_aspect, Color::WHITE),
+            "CraftBench" => (&props.bench, kind_height("CraftBench", true), props.bench_aspect, Color::WHITE),
             "Tree" => {
                 if mature {
                     (&props.tree, kind_height("Tree", true), props.tree_aspect, Color::WHITE)
