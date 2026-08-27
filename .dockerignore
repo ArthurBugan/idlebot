@@ -1,0 +1,20 @@
+# Build cache bloat
+target/
+**/target/
+dist/
+**/dist/
+
+# VCS / misc
+.git/
+.gitignore
+*.md
+.env
+.env.*
+.DS_Store
+
+# Unrelated toolchains (not workspace members)
+contracts/
+node_modules/
+
+# Local cargo config overrides
+.cargo/

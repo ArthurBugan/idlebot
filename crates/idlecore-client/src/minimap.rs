@@ -24,6 +24,7 @@ use std::collections::{HashMap, HashSet};
 use crate::plugins::world::StreamingWorldResource;
 use crate::player::Player;
 use crate::fps_counter::FpsText;
+use crate::time_ext::Instant;
 
 // ============================================================================
 // Constants
@@ -204,20 +205,28 @@ pub struct ExploredHexes {
 // Discovery persistence (logout → next launch restores the fog-of-war map)
 // ============================================================================
 
-/// Disk path for one wallet's discovered-hex cache.
+/// Disk path for one wallet's discovered-hex cache (native only; on wasm the
+/// discovery set is kept in memory since there is no filesystem).
+#[cfg(not(target_arch = "wasm32"))]
 fn explored_path(address: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
         .join(format!(".idlebot_discovered_{address}.json"))
 }
 
 /// Persist discovered hexes for `address` (best effort, like the token cache).
+/// No-op on wasm (no filesystem); discoveries live in memory for the session.
+#[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
 pub fn save_explored(address: &str, explored: &ExploredHexes) {
-    if let Ok(json) = serde_json::to_string(&explored.explored) {
-        let _ = std::fs::write(explored_path(address), json);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Ok(json) = serde_json::to_string(&explored.explored) {
+            let _ = std::fs::write(explored_path(address), json);
+        }
     }
 }
 
 /// Load previously discovered hexes for `address`, if any.
+#[cfg(not(target_arch = "wasm32"))]
 fn load_explored(address: &str) -> Option<HashMap<u64, ExploredCell>> {
     let text = std::fs::read_to_string(explored_path(address)).ok()?;
     serde_json::from_str(&text).ok()
@@ -225,24 +234,29 @@ fn load_explored(address: &str) -> Option<HashMap<u64, ExploredCell>> {
 
 /// Restore the persisted discovery set once the wallet binds (once per
 /// session). Merge-only: fresh discoveries this session always win.
+/// Native only — on wasm there is no filesystem to restore from.
+#[cfg_attr(target_arch = "wasm32", allow(unused_variables, unused_mut))]
 pub fn restore_explored_on_login(
     net: Res<crate::net::plugin::Net>,
     mut explored_hexes: ResMut<ExploredHexes>,
     mut loaded_for: Local<Option<String>>,
 ) {
-    let Some(address) = net.address.clone() else { return };
-    if *loaded_for == Some(address.clone()) {
-        return;
-    }
-    *loaded_for = Some(address.clone());
-    let Some(saved) = load_explored(&address) else { return };
-    let before = explored_hexes.explored.len();
-    for (hex_id, cell) in saved {
-        explored_hexes.explored.entry(hex_id).or_insert(cell);
-    }
-    let restored = explored_hexes.explored.len() - before;
-    if restored > 0 {
-        info!("restored {restored} discovered tiles for {address}");
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Some(address) = net.address.clone() else { return };
+        if *loaded_for == Some(address.clone()) {
+            return;
+        }
+        *loaded_for = Some(address.clone());
+        let Some(saved) = load_explored(&address) else { return };
+        let before = explored_hexes.explored.len();
+        for (hex_id, cell) in saved {
+            explored_hexes.explored.entry(hex_id).or_insert(cell);
+        }
+        let restored = explored_hexes.explored.len() - before;
+        if restored > 0 {
+            info!("restored {restored} discovered tiles for {address}");
+        }
     }
 }
 
@@ -735,7 +749,7 @@ pub fn handle_input(
     widgets: Query<&Interaction>,
     mut net: ResMut<crate::net::plugin::Net>,
     mut latency: ResMut<crate::net::plugin::ServerLatency>,
-    mut last_click: Local<Option<(std::time::Instant, Vec2)>>,
+    mut last_click: Local<Option<(Instant, Vec2)>>,
 ) {
     if keyboard.just_pressed(KeyCode::KeyN) {
         minimap_state.rotation = minimap_state.rotation.toggle();
@@ -852,7 +866,7 @@ pub fn handle_input(
         // A fresh selection on either surface: a second click within 450 ms
         // and ~14 px of the first fires the teleport immediately.
         if selected {
-            let now = std::time::Instant::now();
+            let now = Instant::now();
             let at = cursor.unwrap_or_default();
             let double = matches!(*last_click, Some((t0, p0))
                 if now.duration_since(t0).as_millis() < 450 && at.distance(p0) < 14.0);

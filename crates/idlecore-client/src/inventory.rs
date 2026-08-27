@@ -490,7 +490,8 @@ fn sync_inventory(
         return;
     }
     *next_run = time.elapsed_secs_f64() + 0.25;
-    let Some(conn) = net.conn.as_ref() else { return };
+    let conn_guard = net.conn.lock().unwrap();
+    let Some(conn) = conn_guard.as_ref() else { return };
     let Some(mine) = net.address.clone() else { return };
 
     inv.counts.clear();

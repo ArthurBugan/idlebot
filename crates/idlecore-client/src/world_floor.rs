@@ -10,6 +10,7 @@
 use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use crate::time_ext::now_unix_secs;
 use spacetimedb_sdk::Table;
 use std::collections::HashMap;
 use idlecore_core::hex::world_pos_to_hex;
@@ -538,15 +539,13 @@ pub fn update_world_object_visuals(
         return;
     }
     *next_scan = time.elapsed_secs_f64() + 0.15;
-    let Some(conn) = net.conn.as_ref() else { return };
+    let conn_guard = net.conn.lock().unwrap();
+    let Some(conn) = conn_guard.as_ref() else { return };
     let px = player_transform.translation.x;
     let py = player_transform.translation.y;
     let max_dist = RENDER_RADIUS_HEXES + 2.0 * WorldGenConfig::HEX_SIZE;
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now = now_unix_secs();
 
     let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
     // Rows needing a (re)spawn this pass, sorted near-first and capped so a
@@ -1195,7 +1194,8 @@ pub fn update_plant_visuals(
         return;
     }
     *next_scan = time.elapsed_secs_f64() + 0.15;
-    let Some(conn) = net.conn.as_ref() else { return };
+    let conn_guard = net.conn.lock().unwrap();
+    let Some(conn) = conn_guard.as_ref() else { return };
 
     let px = player_transform.translation.x;
     let py = player_transform.translation.y;
@@ -1207,10 +1207,7 @@ pub fn update_plant_visuals(
     let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
     // Hexes whose plant/pollution visual needs (re)building this pass.
     let mut plant_pending: Vec<(f32, u64)> = Vec::new();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now = now_unix_secs();
     for row in crate::net::gen::HexTileTableAccess::hex_tile(&conn.db).iter() {
         let dq = (row.hex_q - hq).abs() as f32;
         let dr = (row.hex_r - hr).abs() as f32;

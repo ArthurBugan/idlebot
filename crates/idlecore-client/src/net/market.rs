@@ -10,6 +10,7 @@ use bevy::input::keyboard::KeyCode;
 use bevy::prelude::*;
 
 use crate::net::hud::{reducer_report, send_reducer};
+use crate::time_ext::now_unix_secs;
 use crate::net::plugin::Net;
 use crate::net::plugin::NetEvent;
 use super::gen::*;
@@ -131,10 +132,7 @@ fn spawn_market_panel(mut commands: Commands, asset_server: Res<AssetServer>) {
 }
 
 fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    now_unix_secs()
 }
 
 /// Rebuild listing rows from the subscription cache every frame.
@@ -150,7 +148,8 @@ fn update_market_panel(
         commands.entity(entity).despawn();
     }
 
-    let Some(conn) = net.conn.as_ref() else { return };
+    let conn_guard = net.conn.lock().unwrap();
+    let Some(conn) = conn_guard.as_ref() else { return };
     let rows = super::gen::MarketListingTableAccess::market_listing(&conn.db).iter().collect::<Vec<_>>();
     let mine = net.address.clone().unwrap_or_default();
     let now = now_unix();
@@ -237,7 +236,7 @@ fn market_buttons(
             continue;
         }
         let tx = net.sender();
-        if net.conn.is_none() { continue; }
+        if net.conn.lock().unwrap().is_none() { continue; }
 
         if let Some(b) = buy {
             // Spec 011: bank takes 5% of the price, seller payout is escrowed 48 h.

@@ -18,6 +18,7 @@ mod player;
 mod idle;
 mod inventory;
 mod minimap;
+mod time_ext;
 mod plugins;
 mod skins;
 mod net;
@@ -29,12 +30,25 @@ mod assets;
 
 // --- Main Entry ---
 fn main() {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .init();
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .init();
+    }
 
     App::new()
-        .add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()))
+        .add_plugins(
+            DefaultPlugins
+                .set(ImagePlugin::default_nearest())
+                // On web, assets are served from the site root (Trunk copies
+                // the `assets/` folder next to the wasm), so resolve paths
+                // like `models/...` from ".".
+                .set(bevy::asset::AssetPlugin {
+                    file_path: ".".to_string(),
+                    ..default()
+                }),
+        )
         // Perf tracking: logs avg/max frame time + entity count every 5 s so
         // fps oscillation is visible in the log alongside world growth.
         .add_plugins((

@@ -18,6 +18,15 @@ use idlecore_core::hex::{world_pos_to_hex, HexCoord};
 use idlecore_core::world_gen::WorldGenConfig;
 
 use super::gen::*;
+use crate::time_ext::{Instant, now_unix_secs};
+
+/// Shared handle to the live `DbConnection`. Wrapped so the wasm connection
+/// (established inside an async `spawn_local` that outlives `connect`) can
+/// publish the connection back into the [`Net`] resource.
+type ConnSlot = std::sync::Arc<std::sync::Mutex<Option<DbConnection>>>;
+
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::spawn_local;
 
 /// Node address of the local SpacetimeDB instance.
 pub const SERVER_URI: &str = "https://db.nestfeed.app";
@@ -72,7 +81,7 @@ pub struct ServerPlayerSnapshot {
 #[derive(Resource)]
 pub struct Net {
     pub status: NetStatus,
-    pub conn: Option<DbConnection>,
+    pub conn: ConnSlot,
     /// Our bound wallet address (set after a successful `login`).
     pub address: Option<String>,
     /// Name picked on the login page, awaiting the login reducer result.
@@ -99,7 +108,7 @@ impl Default for Net {
         let (tx, rx) = mpsc::channel();
         Self {
             status: NetStatus::Disconnected,
-            conn: None,
+            conn: std::sync::Arc::new(std::sync::Mutex::new(None)),
             address: None,
             pending_name: None,
             identity: String::new(),
@@ -160,7 +169,7 @@ impl Net {
                     }
                     self.auth_retried = true;
                     self.status = NetStatus::Disconnected;
-                    self.conn = None;
+                    *self.conn.lock().unwrap() = None;
                     self.log_line("token rejected (server re-key?) — reconnecting anonymously");
                     self.connect();
                 }
@@ -235,7 +244,8 @@ impl Net {
 
     /// Send the `login` reducer for `name` (requires an open connection).
     fn send_login(&mut self, name: &str) {
-        let Some(conn) = self.conn.as_ref() else { return };
+        let guard = self.conn.lock().unwrap();
+        let Some(conn) = guard.as_ref() else { return };
         let tx = self.tx.clone();
         let name = name.to_string();
         let _ = conn.reducers.login_then(name.clone(), move |_ctx, res| {
@@ -260,12 +270,14 @@ impl Net {
         self.status = NetStatus::Connecting;
         let saved = load_saved_token();
         let had_saved = saved.is_some();
-        let conn = match DbConnection::builder()
+        let tx = self.tx.clone();
+
+        let builder = DbConnection::builder()
             .with_uri(SERVER_URI)
             .with_database_name(MODULE_NAME)
             .with_token(saved)
             .on_connect({
-                let tx = self.tx.clone();
+                let tx = tx.clone();
                 move |_ctx, identity, token| {
                     save_token(&identity.to_string(), token);
                     tx.send(NetEvent::Connected {
@@ -275,7 +287,7 @@ impl Net {
                 }
             })
             .on_connect_error({
-                let tx = self.tx.clone();
+                let tx = tx.clone();
                 move |_ctx, err| {
                     let msg = err.to_string();
                     tx.send(NetEvent::ConnectError(msg.clone())).ok();
@@ -294,66 +306,46 @@ impl Net {
                 }
             })
             .on_disconnect({
-                let tx = self.tx.clone();
+                let tx = tx.clone();
                 move |_ctx, reason| {
                     tx.send(NetEvent::Disconnected(format!("{reason:?}"))).ok();
                 }
-            })
-            .build()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                self.status = NetStatus::Error(e.to_string());
-                return;
-            }
-        };
+            });
 
-        // Table callbacks → events + a dirty counter so per-frame sync work
-        // only runs when the replicated set actually changed.
+        // The connection must be driven differently per platform: native pumps
+        // it from `net_frame_tick` (frame_tick); wasm has no threads, so the
+        // browser SDK spawns its own background task via `run_background_task`.
         let dirty = self.players_dirty.clone();
-        conn.db.player().on_insert({
-            let tx = self.tx.clone();
-            let dirty = dirty.clone();
-            move |_ctx, row| {
-                let _ = tx.send(NetEvent::ServerMessage(format!(
-                    "player joined {}",
-                    row.address
-                )));
-                dirty.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-        });
-        conn.db.player().on_delete({
-            let tx = self.tx.clone();
-            let dirty = dirty.clone();
-            move |_ctx, row| {
-                let _ = tx.send(NetEvent::ServerMessage(format!(
-                    "player left {}",
-                    row.address
-                )));
-                dirty.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-        });
-        // Row updates (own wallet mirror + remote players) must also refresh
-        // the sync pass; reducer-side bumps alone can race the row update
-        // arriving before the reducer completion callback.
-        conn.db.player().on_update({
-            let dirty = dirty.clone();
-            move |_ctx, _old, _new| {
-                dirty.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-        });
+        let conn_slot = self.conn.clone();
+        #[cfg(target_arch = "wasm32")]
+        {
+            spawn_local(async move {
+                let conn = match builder.build().await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = tx.send(NetEvent::ConnectError(e.to_string()));
+                        return;
+                    }
+                };
+                register_net_callbacks(&conn, tx.clone(), dirty.clone());
+                conn.run_background_task();
+                *conn_slot.lock().unwrap() = Some(conn);
+            });
+            return;
+        }
 
-        // Subscribe to everything the module exposes.
-        conn.subscription_builder()
-            .on_error({
-                let tx = self.tx.clone();
-                move |_ctx, err| {
-                    let _ = tx.send(NetEvent::ConnectError(format!("subscription: {err}")));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let conn = match builder.build() {
+                Ok(c) => c,
+                Err(e) => {
+                    self.status = NetStatus::Error(e.to_string());
+                    return;
                 }
-            })
-            .subscribe_to_all_tables();
-
-        self.conn = Some(conn);
+            };
+            register_net_callbacks(&conn, tx.clone(), dirty.clone());
+            *conn_slot.lock().unwrap() = Some(conn);
+        }
     }
 
     /// Mark the replicated `player` set as changed (called after any reducer
@@ -380,6 +372,54 @@ impl Net {
     }
 }
 
+/// Register the table/subscription callbacks that mirror the authoritative
+/// `player` table into [`Net`] and bump the dirty counter. Shared by the
+/// native and wasm connect paths (the latter registers inside the async
+/// `spawn_local` once the future resolves).
+fn register_net_callbacks(
+    conn: &DbConnection,
+    tx: Sender<NetEvent>,
+    dirty: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) {
+    conn.db.player().on_insert({
+        let tx = tx.clone();
+        let dirty = dirty.clone();
+        move |_ctx, row| {
+            let _ = tx.send(NetEvent::ServerMessage(format!(
+                "player joined {}",
+                row.address
+            )));
+            dirty.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    conn.db.player().on_delete({
+        let tx = tx.clone();
+        let dirty = dirty.clone();
+        move |_ctx, row| {
+            let _ = tx.send(NetEvent::ServerMessage(format!(
+                "player left {}",
+                row.address
+            )));
+            dirty.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    conn.db.player().on_update({
+        let dirty = dirty.clone();
+        move |_ctx, _old, _new| {
+            dirty.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+
+    conn.subscription_builder()
+        .on_error({
+            let tx = tx.clone();
+            move |_ctx, err| {
+                let _ = tx.send(NetEvent::ConnectError(format!("subscription: {err}")));
+            }
+        })
+        .subscribe_to_all_tables();
+}
+
 /// Marker component for spawned remote-player markers.
 #[derive(Component)]
 pub struct RemotePlayerMarker(pub String);
@@ -390,7 +430,7 @@ pub struct RemotePlayerMarker(pub String);
 struct MarkerMove {
     target: Vec3,
     speed: f32,
-    last_seen: std::time::Instant,
+    last_seen: Instant,
 }
 
 /// Each frame, glide every remote marker toward its replicated target at the
@@ -412,12 +452,14 @@ fn animate_remote_markers(
 }
 
 /// Path of the persisted identity token (same identity across restarts).
+#[cfg(not(target_arch = "wasm32"))]
 fn identity_token_path() -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
         .join(".idlebot_client_identity")
 }
 
 /// Load the saved access token, if any.
+#[cfg(not(target_arch = "wasm32"))]
 fn load_saved_token() -> Option<String> {
     let p = identity_token_path();
     let content = std::fs::read_to_string(&p).ok()?;
@@ -432,13 +474,47 @@ fn load_saved_token() -> Option<String> {
 
 /// Persist `identity` + `token` so reconnects keep the same identity
 /// (the server rejects re-binding a wallet to a new identity).
+#[cfg(not(target_arch = "wasm32"))]
 fn save_token(identity: &str, token: &str) {
     let _ = std::fs::write(identity_token_path(), format!("{identity}\n{token}\n"));
 }
 
 /// Delete the saved identity pair (stale after a server re-key).
+#[cfg(not(target_arch = "wasm32"))]
 fn clear_saved_token() {
     let _ = std::fs::remove_file(identity_token_path());
+}
+
+// --- wasm: persist the token in the browser's localStorage ---
+#[cfg(target_arch = "wasm32")]
+fn load_saved_token() -> Option<String> {
+    let storage = web_sys::window()?.local_storage().ok()??;
+    let v = storage.get_item("idlebot_token").ok()??;
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn save_token(identity: &str, token: &str) {
+    if let Some(window) = web_sys::window() {
+        if let Ok(Some(storage)) = window.local_storage() {
+            let _ = storage.set_item("idlebot_identity", &identity.to_string());
+            let _ = storage.set_item("idlebot_token", &token.to_string());
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn clear_saved_token() {
+    if let Some(window) = web_sys::window() {
+        if let Ok(Some(storage)) = window.local_storage() {
+            let _ = storage.remove_item("idlebot_token");
+            let _ = storage.remove_item("idlebot_identity");
+        }
+    }
 }
 
 pub struct NetPlugin;
@@ -473,7 +549,7 @@ fn send_heartbeat(time: Res<Time>, net: Res<Net>, mut last: Local<f64>) {
         return;
     }
     *last = now;
-    if let Some(conn) = net.conn.as_ref() {
+    if let Some(conn) = net.conn.lock().unwrap().as_ref() {
         let _ = conn.reducers().heartbeat_then(|_ctx, _res| {});
     }
 }
@@ -510,15 +586,8 @@ fn interact_key_press(
     // Ground actions aim at the Stardew-style targeting box, not the feet.
     let hex_id = idlecore_core::hex::HexCoord::new(target.q, target.r).to_id();
     if let Some(_p) = player.as_ref().and_then(|q| q.single().ok()) {
-        let Some(conn) = net.conn.as_ref() else {
-            net.push(NetEvent::ServerMessage("E: not connected".to_string()));
-            return;
-        };
         let tx = net.sender();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now = now_unix_secs();
 
         // Every replicated node on the hex, ranked by distance to the
         // targeted slot (Stardew-style aiming).
@@ -529,18 +598,28 @@ fn interact_key_press(
         );
         let slot_dx = idlecore_core::slots::slot_center(target.slot_x, target.slot_y).0 - hex_cx;
         let slot_dy = idlecore_core::slots::slot_center(target.slot_x, target.slot_y).1 - hex_cy;
-        let mut nodes: Vec<(f32, u64, String, bool)> = Vec::new();
-        for obj in conn.db.world_object().iter().filter(|o| o.hex_id == hex_id) {
-            let dx = obj.offset_x - slot_dx;
-            let dy = obj.offset_y - slot_dy;
-            let dist2 = dx * dx + dy * dy;
-            let mature = obj.mature_at == 0 || now >= obj.mature_at;
-            let kind = match &obj.kind[..] {
-                k @ ("Grass" | "Rock" | "Tree" | "Log" | "CraftBench") => k,
-                _ => continue,
+        // Scope the connection lock to just the read so later `&mut net`
+        // reducer sends don't conflict with a held guard.
+        let nodes: Vec<(f32, u64, String, bool)> = {
+            let guard = net.conn.lock().unwrap();
+            let Some(conn) = guard.as_ref() else {
+                net.push(NetEvent::ServerMessage("E: not connected".to_string()));
+                return;
             };
-            nodes.push((dist2, obj.object_id, kind.to_string(), mature));
-        }
+            let mut nodes = Vec::new();
+            for obj in conn.db.world_object().iter().filter(|o| o.hex_id == hex_id) {
+                let dx = obj.offset_x - slot_dx;
+                let dy = obj.offset_y - slot_dy;
+                let dist2 = dx * dx + dy * dy;
+                let mature = obj.mature_at == 0 || now >= obj.mature_at;
+                let kind = match &obj.kind[..] {
+                    k @ ("Grass" | "Rock" | "Tree" | "Log" | "CraftBench") => k,
+                    _ => continue,
+                };
+                nodes.push((dist2, obj.object_id, kind.to_string(), mature));
+            }
+            nodes
+        };
         // A node is "on the selected slot" only if it sits inside the targeted
         // cell — this keeps gather/harvest honoured to the plot you aim at
         // (Spec 022 §5 selected-plot invariant), so planting an empty slot
@@ -668,7 +747,15 @@ fn interact_key_press(
             });
             return;
         }
-        let Some(hex) = conn.db.hex_tile().hex_id().find(&hex_id) else {
+        let hex_opt = {
+            let guard = net.conn.lock().unwrap();
+            let Some(conn) = guard.as_ref() else {
+                net.push(NetEvent::ServerMessage("E: not connected".to_string()));
+                return;
+            };
+            conn.db.hex_tile().hex_id().find(&hex_id)
+        };
+        let Some(hex) = hex_opt else {
             net.push(NetEvent::ServerMessage(format!(
                 "E: hex {hex_id} not found"
             )));
@@ -757,8 +844,12 @@ fn auto_connect(mut net: ResMut<Net>) {
 /// row/reducer callbacks on the main thread. Native builds run no network
 /// thread unless `run_threaded` is used, so without this tick the connection
 /// is built but never progresses (on_connect/subscription never fire).
+#[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
 fn net_frame_tick(net: Res<Net>) {
-    if let Some(conn) = net.conn.as_ref() {
+    // Native pumps the connection from the main thread; on wasm the
+    // `run_background_task` spawned during `connect` drives it instead.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(conn) = net.conn.lock().unwrap().as_ref() {
         let _ = conn.frame_tick();
     }
 }
@@ -800,14 +891,14 @@ fn net_drain(
 /// so this is safe to call at any cadence.
 #[derive(Resource)]
 struct PositionSync {
-    last_send: std::time::Instant,
+    last_send: Instant,
     last_pos: Option<Vec2>,
 }
 
 impl Default for PositionSync {
     fn default() -> Self {
         Self {
-            last_send: std::time::Instant::now(),
+            last_send: Instant::now(),
             last_pos: None,
         }
     }
@@ -834,7 +925,7 @@ fn sync_player_position(
     let Ok((body, player)) = bodies.single() else {
         return;
     };
-    if net.conn.is_none() || net.address.is_none() {
+    if net.conn.lock().unwrap().is_none() || net.address.is_none() {
         return;
     }
     // Don't push local positions before the authoritative row snapped us
@@ -847,7 +938,7 @@ fn sync_player_position(
         return;
     }
     let dt = state.last_send.elapsed().as_secs_f32().max(0.001);
-    state.last_send = std::time::Instant::now();
+    state.last_send = Instant::now();
 
     let pos = Vec2::new(body.translation.x, body.translation.y);
     let Some(prev) = state.last_pos else {
@@ -903,10 +994,6 @@ fn sync_remote_players(
     if !net.poll_players_dirty() && !net.players.is_empty() {
         return;
     }
-    let Some(conn) = net.conn.as_ref() else {
-        return;
-    };
-
     // Spec 018 T2.4: only players within 3 hexes are visible.
     let own_hex: Option<(i32, i32)> = player
         .single()
@@ -927,7 +1014,13 @@ fn sync_remote_players(
         axial_hex_distance((q, r), (rc.q, rc.r)) <= 3
     };
 
-    let rows: Vec<Player> = conn.db.player().iter().collect();
+    let rows: Vec<Player> = {
+        let conn_guard = net.conn.lock().unwrap();
+        let Some(conn) = conn_guard.as_ref() else {
+            return;
+        };
+        conn.db.player().iter().collect()
+    };
     let tx = net.sender();
     let mut known: std::collections::HashSet<String> = std::collections::HashSet::new();
     for row in &rows {
@@ -964,7 +1057,7 @@ fn sync_remote_players(
                     p.position_restored = true;
                     // Baseline the position sync at the restored spot so the
                     // next delta reflects real movement only.
-                    pos_sync.last_send = std::time::Instant::now();
+                    pos_sync.last_send = Instant::now();
                     pos_sync.last_pos = Some(Vec2::new(row.position_x, row.position_y));
                     let _ = tx.send(NetEvent::ServerMessage(format!(
                         "session restored: position ({:.0},{:.0}) hex ({},{})",
@@ -1010,7 +1103,7 @@ fn sync_remote_players(
             if marker.0 == row.address {
                 // Remote rows update every ~2 s; glide toward the new spot
                 // instead of snapping, so movement stays smooth.
-                let now = std::time::Instant::now();
+                let now = Instant::now();
                 let mut interp = match &interp_slot {
                     Some(i) => (**i).clone(),
                     None => MarkerMove {
@@ -1049,7 +1142,7 @@ fn sync_remote_players(
             MarkerMove {
                 target: pos,
                 speed: 0.0,
-                last_seen: std::time::Instant::now(),
+                last_seen: Instant::now(),
             },
             Sprite {
                 color,
@@ -1140,13 +1233,13 @@ impl LatencyWindow {
 #[derive(Resource, Default)]
 pub struct ServerLatency {
     pub window: LatencyWindow,
-    request_sent_at: Option<std::time::Instant>,
+    request_sent_at: Option<Instant>,
 }
 
 impl ServerLatency {
     /// Call when the teleport reducer is invoked (request timestamp).
     pub fn note_request(&mut self) {
-        self.request_sent_at = Some(std::time::Instant::now());
+        self.request_sent_at = Some(Instant::now());
     }
 
     /// Call when the server-confirmed teleport arrives; returns the sample.

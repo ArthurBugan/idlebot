@@ -10,6 +10,7 @@ use crate::player::ClientPlayer;
 use spacetimedb_sdk::Table;
 use super::gen::*;
 use super::plugin::{Net, NetEvent, NetStatus};
+use crate::time_ext::Instant;
 
 #[derive(Debug, Clone, Copy, Component)]
 enum HudAction {
@@ -43,12 +44,12 @@ pub struct NetHudPlugin;
 /// Throttle the per-frame HUD text rebuild to keep idle frames cheap.
 #[derive(Resource)]
 pub(crate) struct HudThrottle {
-    last: std::time::Instant,
+    last: Instant,
 }
 
 impl Default for HudThrottle {
     fn default() -> Self {
-        Self { last: std::time::Instant::now() }
+        Self { last: Instant::now() }
     }
 }
 
@@ -173,7 +174,7 @@ fn update_hud_text(
     if throttle.last.elapsed() < HUD_REFRESH_INTERVAL {
         return;
     }
-    throttle.last = std::time::Instant::now();
+    throttle.last = Instant::now();
     let status = match &net.status {
         NetStatus::Connected => "Connected".to_string(),
         NetStatus::Connecting => "Connecting...".to_string(),
@@ -190,6 +191,8 @@ fn update_hud_text(
     if let Some(addr) = &net.address {
         let display_name = net
             .conn
+            .lock()
+            .unwrap()
             .as_ref()
             .and_then(|c| c.db.player().address().find(addr))
             .and_then(|p| p.display_name.clone())
@@ -210,6 +213,8 @@ fn update_hud_text(
     if let Some(addr) = &net.address {
         let self_online = net
             .conn
+            .lock()
+            .unwrap()
             .as_ref()
             .and_then(|c| c.db.player().address().find(addr))
             .map(|p| p.status == "online")
@@ -248,7 +253,7 @@ fn update_hud_text(
             ));
         }
         // Spec 001: show unclaimed idle gains banked server-side.
-        if let (Some(conn), Some(mine)) = (&net.conn, &net.address) {
+        if let (Some(conn), Some(mine)) = (&*net.conn.lock().unwrap(), &net.address) {
             if let Some(g) = conn.db.idle_gain().player().find(mine) {
                 if g.pending_gold > 0 || g.pending_xp > 0 {
                     stats.push_str(&format!(
@@ -265,7 +270,7 @@ fn update_hud_text(
             stats.push_str(&format!(" next at {unlock_at}"));
         }
         // Spec 020 T2.4: eco rating of the hex under the player.
-        if let Some(conn) = &net.conn {
+        if let Some(conn) = &*net.conn.lock().unwrap() {
             let hex_id = crate::net::plugin::Net::hex_id_at(p.position.x, p.position.y);
             if let Some(h) = conn.db.hex_tile().hex_id().find(&hex_id) {
                 // Spec 020 T5.4: "Eco-Friendly" marker for 100+ hexes.
@@ -295,7 +300,7 @@ fn update_hud_text(
             }
         }
         // Resource-node inventory (seeds fuel tree planting).
-        if let Some(conn) = &net.conn {
+        if let Some(conn) = &*net.conn.lock().unwrap() {
             use spacetimedb_sdk::Table;
             if let Some(item) = conn
                 .db
@@ -307,7 +312,7 @@ fn update_hud_text(
             }
         }
         // Spec 006 T3.4: vehicle inventory from the subscription cache.
-        if let (Some(conn), Some(mine)) = (&net.conn, &net.address) {
+        if let (Some(conn), Some(mine)) = (&*net.conn.lock().unwrap(), &net.address) {
             let owned: Vec<String> = conn
                 .db
                 .player_vehicle()
@@ -386,12 +391,18 @@ pub(crate) fn send_reducer(
     net: &mut Net,
     f: impl FnOnce(&RemoteReducers) -> Result<(), spacetimedb_sdk::Error>,
 ) {
-    let Some(conn) = net.conn.as_ref() else {
-        let _ = net.sender().send(NetEvent::ServerMessage("not connected — click Connect first".to_string()));
-        return;
+    let result = {
+        let conn_guard = net.conn.lock().unwrap();
+        let Some(conn) = conn_guard.as_ref() else {
+            let _ = net.sender().send(NetEvent::ServerMessage(
+                "not connected — click Connect first".to_string(),
+            ));
+            return;
+        };
+        f(&conn.reducers)
     };
     let tx = net.sender();
-    match f(&conn.reducers) {
+    match result {
         Ok(()) => net.mark_players_dirty(),
         Err(e) => {
             let _ = tx.send(NetEvent::ServerMessage(format!("send failed: {e}")));
@@ -448,12 +459,12 @@ fn hud_buttons(
                 net.connect();
             }
             _ => {
-                let Some(_conn) = net.conn.as_ref() else {
+                if net.conn.lock().unwrap().is_none() {
                     let _ = net.sender().send(NetEvent::ServerMessage(
                         "not connected — click Connect first".to_string(),
                     ));
                     continue;
-                };
+                }
                 match action {
                     HudAction::Harvest => {
                         let hex = idlecore_core::hex::HexCoord::new(action_target.q, action_target.r).to_id();
@@ -558,7 +569,7 @@ fn name_input(
                     if name.is_empty() {
                         continue;
                     }
-                    if let (Some(conn), Some(tx)) = (&net.conn, Some(net.sender())) {
+                    if let (Some(conn), Some(tx)) = (&*net.conn.lock().unwrap(), Some(net.sender())) {
                         let _ = tx.send(NetEvent::ServerMessage("submitting name".to_string()));
                         let _ = conn.reducers.update_profile_then(
                             Some(name),
