@@ -57,6 +57,7 @@ fn main() {
         .insert_resource(world_floor::FloorTiles::default())
         .insert_resource(world_floor::WaterTextures::default())
         .insert_resource(world_floor::SolidFloorTextures::default())
+        .insert_resource(world_floor::CityTextures::default())
         .insert_resource(tiny::TinyKeyQueue::default())
         .add_plugins(plugins::player::PlayerPlugin)
         .add_plugins(plugins::camera::CameraPlugin)
@@ -82,6 +83,7 @@ fn main() {
             world_floor::spawn_action_box,
             world_floor::init_prop_textures,
             world_floor::init_deco_textures,
+            world_floor::init_city_textures,
         ))
         .add_systems(Update, (
             minimap::handle_input,

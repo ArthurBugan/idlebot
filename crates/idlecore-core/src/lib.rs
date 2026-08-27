@@ -29,6 +29,7 @@ pub mod minimap;
 pub mod world_gen;
 pub mod earth;
 pub mod world_biome;
+pub mod world_detail;
 pub mod world_water;
 pub mod world_mesh;
 pub mod world_persist;
@@ -151,7 +152,7 @@ impl Vehicle {
     pub fn display_name(&self) -> &'static str {
         match self {
             Vehicle::None => "None",
-            Vehicle::Bicycle => "Bicycle",
+            Vehicle::Bicycle => "Car",
             Vehicle::Scooter => "Scooter",
             Vehicle::Motorcycle => "Motorcycle",
             Vehicle::Boat => "Boat",
@@ -290,7 +291,7 @@ impl BuyableItem {
         match self {
             BuyableItem::Vehicle(v) => match v {
                 Vehicle::None => "None",
-                Vehicle::Bicycle => "Electric Bicycle",
+                Vehicle::Bicycle => "Car",
                 Vehicle::Scooter => "Electric Scooter",
                 Vehicle::Motorcycle => "Electric Motorcycle",
                 Vehicle::Boat => "Electric Boat",
@@ -439,7 +440,7 @@ mod tests {
     fn buyable_vehicle_name() {
         assert_eq!(
             BuyableItem::Vehicle(Vehicle::Bicycle).name(),
-            "Electric Bicycle"
+            "Car"
         );
         assert_eq!(
             BuyableItem::Vehicle(Vehicle::Airplane).name(),

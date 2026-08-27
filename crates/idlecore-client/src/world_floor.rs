@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use idlecore_core::hex::world_pos_to_hex;
 use idlecore_core::slots::{slot_center, slot_hex, world_pos_to_slot, SLOT_SIZE};
 use idlecore_core::terrain::TerrainType;
+use idlecore_core::world_detail::{city_cell, floor_detail, CityCellKind};
 use idlecore_core::world_gen::{WaterClass, WorldGenConfig, hex_to_chunk_coord};
 use crate::player::PlayerTransform;
 use crate::plugins::world::StreamingWorldResource;
@@ -194,12 +195,18 @@ pub struct PropTextures {
     pub icon_axe: Handle<Image>,
     pub icon_shovel: Handle<Image>,
     pub icon_hoe: Handle<Image>,
+    /// Car (and other vehicles) inventory icon — Tiny Battle car tile.
+    pub icon_car: Handle<Image>,
 }
 
 /// Build all prop sprites once. Runs at Startup. All props are 16x16 tiles
 /// from the Tiny* packs; their baked backdrops are keyed by
 /// `tiny::process_key_queue`.
-pub fn init_prop_textures(mut commands: Commands, asset_server: Res<AssetServer>, mut queue: ResMut<crate::tiny::TinyKeyQueue>) {
+pub fn init_prop_textures(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut queue: ResMut<crate::tiny::TinyKeyQueue>,
+) {
     fn prop(asset_server: &AssetServer, queue: &mut crate::tiny::TinyKeyQueue, path: &'static str) -> Handle<Image> {
         let h = asset_server.load::<Image>(path);
         queue.0.push(h.clone());
@@ -232,6 +239,7 @@ pub fn init_prop_textures(mut commands: Commands, asset_server: Res<AssetServer>
         icon_axe: prop(&asset_server, &mut queue, "models/Tiny Town/Tiles/tile_0127.png"),
         icon_shovel: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0086.png"),
         icon_hoe: prop(&asset_server, &mut queue, "models/Tiny Town/Tiles/tile_0129.png"),
+        icon_car: prop(&asset_server, &mut queue, "models/Tiny Battle/Tiles/tile_0114.png"),
     });
 }
 
@@ -727,11 +735,120 @@ pub fn init_water_textures(
     water.white = Some(handle);
 }
 
+// ============================================================================
+// Procedural city textures (Hybrid world-gen: real cities, generated streets)
+// ============================================================================
+
+/// Building facade tint palettes (one per generated style variant).
+pub const BUILDING_TINTS: [[f32; 3]; 5] = [
+    [0.80, 0.82, 0.86], // concrete
+    [0.86, 0.80, 0.70], // tan
+    [0.70, 0.75, 0.82], // blue-grey
+    [0.90, 0.85, 0.80], // warm stone
+    [0.74, 0.80, 0.76], // green-grey
+];
+
+/// Procedurally generated city art: pavement, sidewalk, and a few building
+/// facade styles (no dependency on guessing Tiny* tile indices for cities).
+#[derive(Resource, Default)]
+pub struct CityTextures {
+    pub pavement: Handle<Image>,
+    pub sidewalk: Handle<Image>,
+    pub buildings: Vec<Handle<Image>>,
+}
+
+/// Flat square image filled with a single color (pavement / sidewalk).
+fn make_solid_image(
+    images: &mut Assets<Image>,
+    size: u32,
+    color: [u8; 3],
+) -> Handle<Image> {
+    let mut pixels = vec![0u8; (size * size * 4) as usize];
+    for i in 0..(size * size) as usize {
+        pixels[i * 4..i * 4 + 3].copy_from_slice(&color);
+        pixels[i * 4 + 3] = 255;
+    }
+    images.add(Image::new(
+        Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    ))
+}
+
+/// Building facade: a base color with a grid of lighter windows.
+fn make_facade_image(
+    images: &mut Assets<Image>,
+    w: u32,
+    h: u32,
+    base: [u8; 3],
+    window: [u8; 3],
+) -> Handle<Image> {
+    let mut pixels = vec![0u8; (w * h * 4) as usize];
+    let (wr, wg, wb) = (window[0] as i32, window[1] as i32, window[2] as i32);
+    for y in 0..h {
+        for x in 0..w {
+            // Window grid: every ~4px with a 2px lit pane, margins at edges.
+            let in_window = x % 4 >= 1 && x % 4 <= 2 && y % 5 >= 1 && y % 5 <= 3
+                && x > 0 && x < w as u32 - 1 && y > 0 && y < h as u32 - 1;
+            let (r, g, b) = if in_window {
+                (wr, wg, wb)
+            } else {
+                (base[0] as i32, base[1] as i32, base[2] as i32)
+            };
+            let i = ((y * w + x) * 4) as usize;
+            pixels[i] = r.clamp(0, 255) as u8;
+            pixels[i + 1] = g.clamp(0, 255) as u8;
+            pixels[i + 2] = b.clamp(0, 255) as u8;
+            pixels[i + 3] = 255;
+        }
+    }
+    images.add(Image::new(
+        Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    ))
+}
+
+/// Build the procedural city art once at startup.
+pub fn init_city_textures(mut images: ResMut<Assets<Image>>, mut city: ResMut<CityTextures>) {
+    if !city.buildings.is_empty() {
+        return;
+    }
+    city.pavement = make_solid_image(&mut images, 16, [120, 120, 128]);
+    city.sidewalk = make_solid_image(&mut images, 16, [150, 150, 156]);
+    let bases: [[u8; 3]; 5] = [
+        [110, 112, 120],
+        [120, 110, 95],
+        [95, 105, 120],
+        [125, 118, 110],
+        [105, 115, 108],
+    ];
+    let wins: [[u8; 3]; 5] = [
+        [200, 210, 230],
+        [225, 205, 150],
+        [180, 205, 230],
+        [230, 215, 190],
+        [190, 215, 195],
+    ];
+    city.buildings = bases
+        .iter()
+        .zip(wins.iter())
+        .map(|(b, wn)| make_facade_image(&mut images, 16, 24, *b, *wn))
+        .collect();
+}
+
 /// Tracks live floor-tile entities by slot so only tiles near the player
 /// exist at all (slot-granular streaming, no chunk parents).
 #[derive(Resource, Default)]
 pub struct FloorTiles {
     pub live: HashMap<(i32, i32), Entity>,
+    /// Separate buildings spawned on city `Building` slots (tall props that
+    /// live in the prop band, not as children of the floor tile).
+    pub buildings: HashMap<(i32, i32), Entity>,
     /// Player slot of the last completed rebuild; unchanged → skip the pass.
     pub last_player_slot: Option<(i32, i32)>,
 }
@@ -767,6 +884,7 @@ pub fn update_world_floor(
     water: Res<WaterTextures>,
     solid: Res<SolidFloorTextures>,
     deco: Option<Res<DecoTextures>>,
+    city: Option<Res<CityTextures>>,
 ) {
     // The solid textures stream in async; building tiles before they exist
     // would register empty slots that then never spawn.
@@ -848,12 +966,44 @@ pub fn update_world_floor(
                 .copied()
                 .unwrap_or([0.15, 0.36, 0.58]);
             (white, tint)
+        } else if *terrain == TerrainType::City {
+            // Procedural urban floor: roads / plazas / building bases.
+            let cell = city_cell(cx, cy);
+            let road_variants = solid
+                .by_terrain
+                .get(&TerrainType::City)
+                .cloned()
+                .unwrap_or_default();
+            match cell.kind {
+                CityCellKind::Road => {
+                    if road_variants.is_empty() {
+                        continue;
+                    }
+                    let (h, t) = road_variants[cell.variant % road_variants.len()].clone();
+                    (h, t)
+                }
+                CityCellKind::Block => {
+                    let Some(c) = city.as_ref() else { continue };
+                    (c.pavement.clone(), [1.0, 1.0, 1.0])
+                }
+                CityCellKind::Building => {
+                    let Some(c) = city.as_ref() else { continue };
+                    (c.sidewalk.clone(), [1.0, 1.0, 1.0])
+                }
+            }
         } else {
             let Some(variants) = solid.by_terrain.get(&terrain) else { continue };
             if variants.is_empty() {
                 continue;
             }
-            let (handle, tint) = variants[cell_variant(*sx, *sy, variants.len())].clone();
+            // Noise-driven variant clumping + micro-tint (Hybrid biome detail).
+            let d = floor_detail(cx, cy, *terrain, variants.len());
+            let (handle, base_tint) = variants[d.variant].clone();
+            let tint = [
+                base_tint[0] * d.tint[0],
+                base_tint[1] * d.tint[1],
+                base_tint[2] * d.tint[2],
+            ];
             (handle, tint)
         };
         let entity = commands
@@ -902,22 +1052,62 @@ pub fn update_world_floor(
         }
         tiles.live.insert((*sx, *sy), entity);
         spawned += 1;
+
+        // Procedural buildings on city `Building` slots — tall props in the
+        // prop band so the skyline reads above the streets.
+        if *terrain == TerrainType::City {
+            let cell = city_cell(cx, cy);
+            if matches!(cell.kind, CityCellKind::Building)
+                && !tiles.buildings.contains_key(&(*sx, *sy))
+            {
+                if let Some(city_res) = city.as_ref() {
+                    if !city_res.buildings.is_empty() {
+                        let v = cell.variant % city_res.buildings.len();
+                        let img = city_res.buildings[v].clone();
+                        let btint = BUILDING_TINTS[v % BUILDING_TINTS.len()];
+                        let bheight = cell.height.max(1.5);
+                        let b = commands
+                            .spawn((
+                                Name::new(format!("building({sx},{sy})")),
+                                Sprite {
+                                    image: img,
+                                    custom_size: Some(Vec2::new(SLOT_SIZE * 0.92, bheight)),
+                                    color: Color::srgb(btint[0], btint[1], btint[2]),
+                                    ..default()
+                                },
+                                bevy::sprite::Anchor::BOTTOM_CENTER,
+                                Transform::from_xyz(cx, cy, prop_depth(cy) + 0.6),
+                                Visibility::Visible,
+                            ))
+                            .id();
+                        tiles.buildings.insert((*sx, *sy), b);
+                    }
+                }
+            }
+        }
     }
 
     // Despawn tiles beyond the hysteresis radius.
     let despawn_r2 = (FLOOR_DESPAWN_RADIUS_SLOTS as f32 * SLOT_SIZE).powi(2);
     let px2 = px;
     let py2 = py;
+    let mut removed_slots: Vec<(i32, i32)> = Vec::new();
     tiles.live.retain(|(sx, sy), entity| {
         let (cx, cy) = slot_center(*sx, *sy);
         let dx = cx - px2;
         let dy = cy - py2;
         if dx * dx + dy * dy > despawn_r2 {
             commands.entity(*entity).despawn();
+            removed_slots.push((*sx, *sy));
             return false;
         }
         true
     });
+    for (sx, sy) in removed_slots {
+        if let Some(be) = tiles.buildings.remove(&(sx, sy)) {
+            commands.entity(be).despawn();
+        }
+    }
 
     // Only latch the rebuild trigger once the wanted set is fully live.
     if complete {

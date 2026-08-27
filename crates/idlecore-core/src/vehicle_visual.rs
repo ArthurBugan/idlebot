@@ -23,7 +23,7 @@ impl VehicleVisual {
     pub fn display_name(&self) -> &'static str {
         match self.vehicle_type {
             Vehicle::None => "None",
-            Vehicle::Bicycle => "Electric Bicycle",
+            Vehicle::Bicycle => "Car",
             Vehicle::Scooter => "Electric Scooter",
             Vehicle::Motorcycle => "Electric Motorcycle",
             Vehicle::Boat => "Electric Boat",
@@ -61,7 +61,7 @@ mod tests {
     #[test]
     fn test_vehicle_visual_display_names() {
         assert_eq!(VehicleVisual::new(Vehicle::None).display_name(), "None");
-        assert_eq!(VehicleVisual::new(Vehicle::Bicycle).display_name(), "Electric Bicycle");
+        assert_eq!(VehicleVisual::new(Vehicle::Bicycle).display_name(), "Car");
         assert_eq!(VehicleVisual::new(Vehicle::Airplane).display_name(), "Electric Airplane");
     }
 

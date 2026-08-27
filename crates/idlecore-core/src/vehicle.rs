@@ -88,7 +88,7 @@ mod tests {
     #[test]
     fn test_vehicle_type_names() {
         assert_eq!(VehicleType::None.display_name(), "None");
-        assert_eq!(VehicleType::Bicycle.display_name(), "Bicycle");
+        assert_eq!(VehicleType::Bicycle.display_name(), "Car");
         assert_eq!(VehicleType::Scooter.display_name(), "Scooter");
         assert_eq!(VehicleType::Motorcycle.display_name(), "Motorcycle");
         assert_eq!(VehicleType::Boat.display_name(), "Boat");

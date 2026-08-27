@@ -3,12 +3,13 @@
 
 use spacetimedb::{ReducerContext, Table};
 use crate::economy::spend_gold;
+use crate::objects::add_item;
 use crate::types::{now_secs, player, player_vehicle, VEHICLE_MAINTENANCE_PER_HOUR};
 
 /// Vehicle catalog (Spec 006): speed multiplier and gold cost.
 pub fn catalog() -> [(&'static str, f32, u64); 5] {
     [
-        ("Bicycle", 2.0, 500),
+        ("Car", 2.0, 500),
         ("Scooter", 3.0, 1_000),
         ("Motorcycle", 5.0, 2_500),
         ("Boat", 4.0, 2_000),
@@ -80,6 +81,9 @@ pub fn buy_vehicle(ctx: &ReducerContext, address: &str, vehicle_type: &str) -> R
         durability: 100,
         last_maintenance_day: 0,
     });
+    // Surface the vehicle in the player's inventory (Spec 022-style item so it
+    // appears in the hotbar/inventory and can be equipped/unequipped there).
+    add_item(ctx, &p.address, vehicle_type, 1);
 
     tracing::info!("VEHICLE: {} bought {vehicle_type} ({}x speed)", address, mult);
     Ok(format!("Purchased {vehicle_type} ({}x speed)", mult))
@@ -190,9 +194,9 @@ mod tests {
     fn faster_vehicles_cost_more() {
         let c = catalog();
         let airplane = c.iter().find(|(n, _, _)| *n == "Airplane").unwrap();
-        let bicycle = c.iter().find(|(n, _, _)| *n == "Bicycle").unwrap();
-        assert!(airplane.1 > bicycle.1, "airplane faster");
-        assert!(airplane.2 > bicycle.2, "airplane costs more");
+        let car = c.iter().find(|(n, _, _)| *n == "Car").unwrap();
+        assert!(airplane.1 > car.1, "airplane faster");
+        assert!(airplane.2 > car.2, "airplane costs more");
     }
 
     #[test]
@@ -228,17 +232,17 @@ mod tests_pure {
 
     #[test]
     fn purchase_duplicate_rejected() {
-        let owned: Vec<String> = vec!["Bicycle".into()];
-        let err = resolve_purchase(1_000_000, &owned, "Bicycle").unwrap_err();
+        let owned: Vec<String> = vec!["Car".into()];
+        let err = resolve_purchase(1_000_000, &owned, "Car").unwrap_err();
         assert!(err.contains("already owned"), "{err}");
     }
 
     #[test]
     fn equip_unequip_cycle() {
-        let owned: Vec<(String, bool)> = vec![("Bicycle".into(), true), ("Boat".into(), false)];
-        // Equip Boat clears Bicycle.
+        let owned: Vec<(String, bool)> = vec![("Car".into(), true), ("Boat".into(), false)];
+        // Equip Boat clears Car.
         let prev = equip_resolution(&owned, "Boat").unwrap();
-        assert_eq!(prev.as_deref(), Some("Bicycle"));
+        assert_eq!(prev.as_deref(), Some("Car"));
         // Unequip all.
         assert_eq!(equip_resolution(&owned, "None").unwrap(), None);
         // Not owned.
@@ -247,7 +251,7 @@ mod tests_pure {
 
     #[test]
     fn speed_multipliers_match_catalog() {
-        assert_eq!(multiplier("Bicycle"), 2.0);
+        assert_eq!(multiplier("Car"), 2.0);
         assert_eq!(multiplier("Airplane"), 10.0);
         assert_eq!(multiplier("None"), 1.0);
         assert_eq!(multiplier("Rocket"), 1.0);

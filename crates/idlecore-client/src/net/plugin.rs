@@ -644,6 +644,12 @@ fn interact_key_press(
             })
             .map(|(_, id, kind, mature)| (*id, kind.clone(), *mature));
         if let Some((object_id, kind, mature)) = node {
+            if kind == "Tree" && inventory.counts.get("Axe").copied().unwrap_or(0) == 0 {
+                net.push(NetEvent::ServerMessage(
+                    "E: need an Axe to chop — gather logs, build a bench, then craft one".to_string(),
+                ));
+                return;
+            }
             if !mature {
                 net.push(NetEvent::ServerMessage(format!("E: {kind} still growing")));
                 return;
@@ -1067,7 +1073,7 @@ fn sync_remote_players(
 /// Map a server-side vehicle string back to the core Vehicle enum.
 fn vehicle_from_str(s: &str) -> Option<idlecore_core::Vehicle> {
     match s {
-        "Bicycle" => Some(idlecore_core::Vehicle::Bicycle),
+        "Car" | "Bicycle" => Some(idlecore_core::Vehicle::Bicycle),
         "Scooter" => Some(idlecore_core::Vehicle::Scooter),
         "Motorcycle" => Some(idlecore_core::Vehicle::Motorcycle),
         "Boat" => Some(idlecore_core::Vehicle::Boat),

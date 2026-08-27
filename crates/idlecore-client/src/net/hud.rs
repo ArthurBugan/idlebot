@@ -129,8 +129,8 @@ fn spawn_hud(mut commands: Commands) {
             ("Clean (20G)", HudAction::Clean),
             ("Plant Tree (seed)", HudAction::PlantTree),
             ("Claim Idle Gains", HudAction::ClaimIdle),
-            ("Buy Bicycle (500G)", HudAction::BuyBicycle),
-            ("Equip Bicycle", HudAction::EquipBicycle),
+            ("Buy Car (500G)", HudAction::BuyBicycle),
+            ("Equip Car", HudAction::EquipBicycle),
             ("Teleport (hex)", HudAction::Teleport),
             ("Edit Name", HudAction::EditName),
             ("Avatar -> Next", HudAction::AvatarNext),
@@ -315,9 +315,13 @@ fn update_hud_text(
                 .filter(|v| v.player == *mine)
                 .map(|v| v.vehicle_type.clone())
                 .collect();
-            if !owned.is_empty() {
-                stats.push_str(&format!("\nOwned: {}", owned.join(", ")));
-            }
+             if !owned.is_empty() {
+                 let display: Vec<&str> = owned
+                     .iter()
+                     .map(|t| crate::inventory::normalize_item_name(t))
+                     .collect();
+                 stats.push_str(&format!("\nOwned: {}", display.join(", ")));
+             }
         }
         // Spec 009 T3.2: show the selected teleport destination and cost.
         match minimap_state.selected_hex {
@@ -482,10 +486,20 @@ fn hud_buttons(
                         send_reducer(&mut net, |r| r.claim_idle_gains_then(reducer_report("claim_idle_gains", tx.clone(), 0)));
                     }
                     HudAction::BuyBicycle => {
-                        send_reducer(&mut net, |r| r.buy_vehicle_then("Bicycle".to_string(), reducer_report("buy_vehicle", tx.clone(), 0)));
+                        send_reducer(&mut net, |r| r.buy_vehicle_then("Car".to_string(), reducer_report("buy_vehicle", tx.clone(), 0)));
                     }
                     HudAction::EquipBicycle => {
-                        send_reducer(&mut net, |r| r.equip_vehicle_then("Bicycle".to_string(), reducer_report("equip_vehicle", tx.clone(), 0)));
+                        // Toggle: unequip if already riding the car, else equip.
+                        // Use the local ClientPlayer (reliable) rather than a
+                        // db lookup that can race with the connection state.
+                        let equipped = _player
+                            .as_ref()
+                            .and_then(|q| q.single().ok())
+                            .and_then(|p| p.owned_vehicle.as_ref())
+                            .map(|v| v.display_name() == "Car")
+                            .unwrap_or(false);
+                        let target = if equipped { "None" } else { "Car" };
+                        send_reducer(&mut net, |r| r.equip_vehicle_then(target.to_string(), reducer_report("equip_vehicle", tx.clone(), 0)));
                     }
                     HudAction::Teleport => {
                         crate::net::hud::try_send_teleport(&mut net, &mut minimap_state, &mut latency);
@@ -600,13 +614,13 @@ fn eco_rank(ep: u64) -> (&'static str, Option<u64>) {
     }
 }
 
-/// F1 hides/shows the whole debug panel (status, buttons, log).
+/// F1 (or Z) hides/shows the whole debug panel (status, buttons, log).
 pub(super) fn toggle_debug_hud(
     keys: Res<ButtonInput<KeyCode>>,
     mut state: ResMut<DebugHudVisible>,
     mut panel: Query<&mut Node, With<DebugHudRoot>>,
 ) {
-    if !keys.just_pressed(KeyCode::F1) {
+    if !keys.just_pressed(KeyCode::F1) && !keys.just_pressed(KeyCode::KeyZ) {
         return;
     }
     state.0 = !state.0;

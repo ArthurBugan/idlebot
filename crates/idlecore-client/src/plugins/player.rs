@@ -191,12 +191,13 @@ pub struct VehicleIndicator {
 }
 
 /// Vehicle art from the Tiny* packs: real sprites where the packs have them
-/// (Tiny Battle boats/planes), tinted diamonds for the rest.
+/// (Tiny Battle boats/planes/cars), tinted diamonds as a fallback.
 #[derive(Resource, Default)]
 pub struct VehicleSprites {
     pub white: Option<Handle<Image>>,
     pub boat: Option<Handle<Image>>,
     pub airplane: Option<Handle<Image>>,
+    pub car: Option<Handle<Image>>,
 }
 
 fn vehicle_color(vehicle: &idlecore_core::Vehicle) -> Color {
@@ -233,6 +234,7 @@ fn spawn_vehicle_indicator(
         white: Some(white),
         boat: Some(art("models/Tiny Battle/Tiles/tile_0139.png")),
         airplane: Some(art("models/Tiny Battle/Tiles/tile_0136.png")),
+        car: Some(art("models/Tiny Battle/Tiles/tile_0114.png")),
     });
     let plate = commands
         .spawn((
@@ -283,8 +285,10 @@ fn update_vehicle_indicator(
                 Some(v) => {
                     t.translation = Vec3::new(body_t.translation.x, body_t.translation.y, TILE_DEPTH_BASE - body_t.translation.y + PLAYER_DEPTH_OFFSET - 1.0);
                     *vis = Visibility::Visible;
-                    // Real art where the packs have it; tinted diamond otherwise.
+                    // Real art where the packs have it (boats, planes, cars);
+                    // tinted diamond otherwise.
                     let art = match v {
+                        idlecore_core::Vehicle::Bicycle => sprites.car.clone(),
                         idlecore_core::Vehicle::Boat => sprites.boat.clone(),
                         idlecore_core::Vehicle::Airplane => sprites.airplane.clone(),
                         _ => None,
@@ -295,10 +299,12 @@ fn update_vehicle_indicator(
                             sprite.image = art;
                             let is_art = matches!(
                                 v,
-                                idlecore_core::Vehicle::Boat | idlecore_core::Vehicle::Airplane
+                                idlecore_core::Vehicle::Bicycle
+                                    | idlecore_core::Vehicle::Boat
+                                    | idlecore_core::Vehicle::Airplane
                             );
                             sprite.color = if is_art { Color::WHITE } else { vehicle_color(v) };
-                            sprite.custom_size = Some(Vec2::splat(if is_art { 3.4 } else { 3.6 }));
+                            sprite.custom_size = Some(Vec2::splat(if is_art { 3.6 } else { 3.6 }));
                             t.rotation = if is_art {
                                 Quat::IDENTITY
                             } else {
@@ -315,23 +321,12 @@ fn update_vehicle_indicator(
             }
         }
     }
+    // The vehicle name now lives in the inventory/hotbar UI; the big world-
+    // space label is intentionally not shown (Spec feedback).
     if let Some(entity) = indicator.label {
-        if let Ok((mut t, mut vis, mut text)) = entities.p1().get_mut(entity) {
-            match vehicle {
-                Some(v) => {
-                    t.translation = Vec3::new(
-                        body_t.translation.x,
-                        body_t.translation.y + 6.0,
-                        TILE_DEPTH_BASE - body_t.translation.y + PLAYER_DEPTH_OFFSET - 0.5,
-                    );
-                    *vis = Visibility::Visible;
-                    text.0 = v.display_name().to_string();
-                }
-                None => {
-                    t.translation.y = -1000.0;
-                    *vis = Visibility::Hidden;
-                }
-            }
+        if let Ok((mut t, mut vis, _text)) = entities.p1().get_mut(entity) {
+            t.translation.y = -1000.0;
+            *vis = Visibility::Hidden;
         }
     }
 }

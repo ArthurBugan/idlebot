@@ -43,7 +43,7 @@ pub struct Player {
     pub hex_q: i32,
     pub hex_r: i32,
     pub hex_id: u64,
-    /// Equipped vehicle type ("None" | "Bicycle" | ...).
+    /// Equipped vehicle type ("None" | "Car" | ...).
     pub vehicle: String,
     /// JSON array of equipped cosmetic names.
     pub cosmetics: String,
@@ -181,7 +181,7 @@ pub struct VehicleOwned {
     #[auto_inc]
     pub vehicle_id: u32,
     pub player: String,
-    pub vehicle_type: String, // Bicycle | Scooter | Motorcycle | Boat | Airplane
+    pub vehicle_type: String, // Car | Scooter | Motorcycle | Boat | Airplane
     pub purchased_at: u64,
     pub equipped: bool,
     pub durability: u32,

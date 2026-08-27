@@ -10,8 +10,9 @@ use spacetimedb::{ReducerContext, Table};
 use crate::economy::{add_xp, find_player};
 use crate::types::{
     match_recipe, object_removed, player, player_item, world_object, BENCH_LOG_COST,
-    CRAFT_XP, GATHER_XP, GRASS_GROWTH_SECS, GRASS_PER_TUFT, HARVEST_TREE_XP, ITEM_GRASS, ITEM_LOG,
-    ITEM_SEED, ITEM_STONE, ITEM_WOOD, MAX_OBJECTS_PER_HEX, OBJ_CRAFT_BENCH, OBJ_GRASS, OBJ_LOG,
+    CRAFT_XP, GATHER_XP, GRASS_GROWTH_SECS, GRASS_PER_TUFT, HARVEST_TREE_XP, ITEM_AXE, ITEM_GRASS,
+    ITEM_LOG, ITEM_SEED, ITEM_STONE, ITEM_WOOD, MAX_OBJECTS_PER_HEX, OBJ_CRAFT_BENCH, OBJ_GRASS,
+    OBJ_LOG,
     OBJ_ROCK, OBJ_TREE, STONE_PER_ROCK, TREE_GROWTH_SECS, WOOD_PER_TREE,
 };
 use crate::world::ensure_hex;
@@ -401,6 +402,14 @@ pub fn gather_object(
         OBJ_TREE => {
             if let Some(e) = growth_block("Tree", obj.mature_at, now) {
                 return Err(e);
+            }
+            // Trees require an axe (Spec 022 progression: logs -> bench -> axe,
+            // only then can the tree be felled). Bare hands cannot chop wood.
+            if count_item(ctx, &p.address, ITEM_AXE) == 0 {
+                return Err(
+                    "You need an Axe to chop a tree — gather logs, build a bench, then craft an Axe"
+                        .to_string(),
+                );
             }
             ctx.db.world_object().object_id().delete(object_id);
             consume_slot(ctx, obj.hex_id, obj.slot);

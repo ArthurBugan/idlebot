@@ -10,6 +10,11 @@
 use bevy::prelude::*;
 use spacetimedb_sdk::Table;
 use crate::net::gen::player_item_table::PlayerItemTableAccess;
+use crate::net::gen::player_vehicle_table::PlayerVehicleTableAccess;
+use crate::net::hud::{reducer_report, send_reducer};
+use crate::net::gen::equip_vehicle_reducer::equip_vehicle;
+use crate::player::ClientPlayer;
+use crate::plugins::player::PhysicsBody;
 
 /// Icon texture per item name, loaded once at startup.
 #[derive(Resource, Default)]
@@ -37,6 +42,10 @@ pub fn load_item_icons(
     by_item.insert("Axe".to_string(), props.icon_axe.clone());
     by_item.insert("Shovel".to_string(), props.icon_shovel.clone());
     by_item.insert("Hoe".to_string(), props.icon_hoe.clone());
+    // Vehicles appear as inventory items (equip/unequip from the panel).
+    for v in ["Bicycle", "Car", "Scooter", "Motorcycle", "Boat", "Airplane"] {
+        by_item.insert(v.to_string(), props.icon_car.clone());
+    }
     commands.insert_resource(ItemIcons { by_item });
     *done = true;
 }
@@ -97,6 +106,12 @@ fn item_badge(item: &str) -> (Color, &'static str) {
         "Axe" => (Color::srgb(0.62, 0.55, 0.45), "Ax"),
         "Shovel" => (Color::srgb(0.50, 0.58, 0.62), "Sh"),
         "Hoe" => (Color::srgb(0.58, 0.50, 0.58), "Ho"),
+        "Bicycle" => (Color::srgb(0.40, 0.44, 0.54), "Ca"),
+        "Car" => (Color::srgb(0.40, 0.44, 0.54), "Ca"),
+        "Scooter" => (Color::srgb(0.40, 0.44, 0.54), "Sc"),
+        "Motorcycle" => (Color::srgb(0.40, 0.44, 0.54), "Mo"),
+        "Boat" => (Color::srgb(0.40, 0.44, 0.54), "Bo"),
+        "Airplane" => (Color::srgb(0.40, 0.44, 0.54), "Ai"),
         _ => (Color::srgb(0.6, 0.6, 0.65), "?"),
     }
 }
@@ -146,6 +161,7 @@ impl Plugin for InventoryPlugin {
                     update_slot_uis,
                     handle_inventory_input,
                     handle_slot_clicks,
+                    auto_unequip_on_deselect,
                     update_toast,
                 ),
             );
@@ -349,6 +365,119 @@ fn handle_inventory_input(keys: Res<ButtonInput<KeyCode>>, mut inv: ResMut<Inven
     }
 }
 
+/// True for item names that correspond to a `Vehicle` type (so they can be
+/// equipped/unequipped from the inventory panel).
+fn is_vehicle_item(name: &str) -> bool {
+    matches!(
+        name,
+        "Bicycle" | "Car" | "Scooter" | "Motorcycle" | "Boat" | "Airplane"
+    )
+}
+
+/// Display name for an inventory item. The legacy pre-rename vehicle is still
+/// stored as "Bicycle" in the DB; surface it as "Car" everywhere it is shown
+/// (the server keeps the old rows, per the no-migration decision).
+pub fn normalize_item_name<'a>(name: &'a str) -> &'a str {
+    match name {
+        "Bicycle" => "Car",
+        other => other,
+    }
+}
+
+/// Equip a vehicle item, or unequip it if it is already equipped. Reads the
+/// current state from the local `ClientPlayer`.
+fn toggle_vehicle_equip(
+    name: &str,
+    player_q: &Query<&ClientPlayer, With<PhysicsBody>>,
+    net: &mut ResMut<crate::net::plugin::Net>,
+) {
+    if let Ok(player) = player_q.single() {
+        let equipped = player
+            .owned_vehicle
+            .as_ref()
+            .map(|v| v.display_name() == name)
+            .unwrap_or(false);
+        let tx = net.sender();
+        let target = if equipped {
+            "None".to_string()
+        } else {
+            name.to_string()
+        };
+        send_reducer(
+            net,
+            |r| r.equip_vehicle_then(target, reducer_report("equip_vehicle", tx.clone(), 0)),
+        );
+    }
+}
+
+/// The quick slot is authoritative for the mount state:
+///   • moving *onto* a vehicle slot (1–9 or click) mounts it,
+///   • moving *off* a vehicle slot dismounts (back to walking).
+/// Only acts on the transition, and never toggles an already-mounted vehicle
+/// off, so a vehicle equipped via another path (e.g. the HUD button) is left
+/// alone until the selection is actually taken off the vehicle slot.
+fn auto_unequip_on_deselect(
+    inv: Res<Inventory>,
+    player_q: Query<&ClientPlayer, With<PhysicsBody>>,
+    mut net: ResMut<crate::net::plugin::Net>,
+    mut prev_active: Local<usize>,
+) {
+    let active = inv.active;
+    if *prev_active == active {
+        return;
+    }
+    let prev_was_vehicle = inv.slots[HOTBAR_BASE + *prev_active]
+        .as_deref()
+        .map(is_vehicle_item)
+        .unwrap_or(false);
+    let curr_item = inv.slots[HOTBAR_BASE + active].clone();
+    let curr_is_vehicle = curr_item.as_deref().map(is_vehicle_item).unwrap_or(false);
+
+    if prev_was_vehicle && !curr_is_vehicle {
+        // Moved off a vehicle -> dismount.
+        let equipped = player_q
+            .single()
+            .ok()
+            .and_then(|p| p.owned_vehicle.as_ref())
+            .is_some();
+        if equipped {
+            let tx = net.sender();
+            send_reducer(
+                &mut net,
+                |r| {
+                    r.equip_vehicle_then(
+                        "None".to_string(),
+                        reducer_report("equip_vehicle", tx.clone(), 0),
+                    )
+                },
+            );
+        }
+    } else if curr_is_vehicle && !prev_was_vehicle {
+        // Moved onto a vehicle -> mount it (unless already mounted).
+        let already = player_q
+            .single()
+            .ok()
+            .and_then(|p| p.owned_vehicle.as_ref())
+            .map(|v| v.display_name() == curr_item.as_deref().unwrap_or(""))
+            .unwrap_or(false);
+        if !already {
+            if let Some(name) = curr_item {
+                let tx = net.sender();
+                send_reducer(
+                    &mut net,
+                    |r| {
+                        r.equip_vehicle_then(
+                            name,
+                            reducer_report("equip_vehicle", tx.clone(), 0),
+                        )
+                    },
+                );
+            }
+        }
+    }
+    *prev_active = active;
+}
+
 /// Mirror replicated `player_item` rows into arrangement + live counts.
 /// Throttled: the table scan + map rebuilds are not free per-frame work.
 fn sync_inventory(
@@ -368,6 +497,14 @@ fn sync_inventory(
     for row in conn.db.player_item().iter() {
         if row.player == mine && row.count > 0 {
             inv.counts.insert(row.item.clone(), row.count);
+        }
+    }
+    // Owned vehicles surface as inventory items too (so a vehicle bought
+    // before the add_item change — or without a player_item row — still
+    // shows up, can be equipped/unequipped from the panel, etc.).
+    for row in conn.db.player_vehicle().iter() {
+        if row.player == mine {
+            inv.counts.entry(row.vehicle_type.clone()).or_insert(1);
         }
     }
 
@@ -400,11 +537,16 @@ fn sync_inventory(
 /// Click a cell: pick up a stack, place/move it, or select a hotbar slot.
 fn handle_slot_clicks(
     mut inv: ResMut<Inventory>,
+    mut net: ResMut<crate::net::plugin::Net>,
+    player_q: Query<&ClientPlayer, With<PhysicsBody>>,
     hotbar_q: Query<(&Interaction, &HotbarSlot), Changed<Interaction>>,
     inv_q: Query<(&Interaction, &InvSlot), Changed<Interaction>>,
 ) {
     for (interaction, slot) in &hotbar_q {
         if *interaction == Interaction::Pressed {
+            // Selecting a slot just changes the active quick slot; mount /
+            // dismount is handled by `auto_unequip_on_deselect` based on
+            // whether the selected slot holds a vehicle.
             inv.active = slot.0;
         }
     }
@@ -416,6 +558,14 @@ fn handle_slot_clicks(
             continue;
         }
         let idx = slot.0;
+        // Vehicle items equip/unequip instead of being moved in the grid.
+        if let Some(name) = inv.slots[idx].clone() {
+            if is_vehicle_item(&name) {
+                toggle_vehicle_equip(&name, &player_q, &mut net);
+                inv.picked = None;
+                continue;
+            }
+        }
         match inv.picked {
             None => {
                 if inv.slots[idx].is_some() {
@@ -464,7 +614,8 @@ fn update_slot_uis(
 
     // Active item name above the hotbar.
     if let Ok(mut label) = active_label.single_mut() {
-        let want = inv.active_item().cloned().unwrap_or_default();
+        let raw = inv.active_item().cloned().unwrap_or_default();
+        let want = normalize_item_name(&raw).to_string();
         if label.0 != want {
             label.0 = want;
         }
