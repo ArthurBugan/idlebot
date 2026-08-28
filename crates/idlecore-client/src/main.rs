@@ -11,6 +11,7 @@ use bevy::prelude::*;
 use bevy::diagnostic::{
     EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin,
 };
+use bevy::window::{Window, WindowPlugin};
 use crate::player::{Player, PlayerTransform, PLAYER_SIZE};
 use plugins::camera::CameraZoom;
 
@@ -46,6 +47,15 @@ fn main() {
                 // like `models/...` from ".".
                 .set(bevy::asset::AssetPlugin {
                     file_path: ".".to_string(),
+                    ..default()
+                })
+                // On web, stretch the canvas to fill the browser viewport
+                // (the served index.html sets html/body/canvas to 100%).
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        fit_canvas_to_parent: true,
+                        ..default()
+                    }),
                     ..default()
                 }),
         )

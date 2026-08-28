@@ -26,11 +26,13 @@ RUN cargo build -p idlecore-client --bin idlecore-client \
     && cp docker/index.html dist/index.html
 
 # ---------------------------------------------------------------------------
-# Stage 2 — serve the static bundle
+# Stage 2 — serve the static bundle with Bun
 # ---------------------------------------------------------------------------
-FROM nginx:alpine
+FROM oven/bun:latest
 
-COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=builder /app/dist /usr/share/nginx/html
+WORKDIR /app
+COPY --from=builder /app/dist ./public
+COPY docker/server.ts ./server.ts
 
-EXPOSE 80
+EXPOSE 3012
+CMD ["bun", "run", "server.ts"]

@@ -118,6 +118,11 @@ fn handle_zoom(
 ) {
     // Zoom step per wheel notch / +/- key press (1.3 = +30% per step).
     let factor: f32 = 1.3;
+    // Browsers report wheel deltas in *pixels* (one notch ≈ 100px), not
+    // integer Line notches. Feeding that raw `event.y` into `factor.powf`
+    // makes a single scroll notch jump straight to MAX_ZOOM, so normalize
+    // pixel deltas to notch units first.
+    const PIXELS_PER_NOTCH: f32 = 100.0;
 
     for event in scroll.read() {
         if event.y == 0.0 || cursor_over_minimap(&windows, &minimap_state) {
@@ -128,8 +133,10 @@ fn handle_zoom(
         // up as positive. Normalize both so up/forward zooms in.
         let dir = match event.unit {
             MouseScrollUnit::Line => event.y,
-            MouseScrollUnit::Pixel => -event.y,
+            MouseScrollUnit::Pixel => -event.y / PIXELS_PER_NOTCH,
         };
+        // Clamp per-event step so a large/coalesced delta can't lurch.
+        let dir = dir.clamp(-2.0, 2.0);
         zoom.scale = (zoom.scale * factor.powf(dir)).clamp(MIN_ZOOM, MAX_ZOOM);
     }
 
