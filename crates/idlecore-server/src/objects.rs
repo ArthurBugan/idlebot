@@ -11,7 +11,8 @@ use crate::economy::{add_xp, find_player};
 use crate::types::{
     match_recipe, object_removed, player, player_item, world_object, BENCH_LOG_COST,
     CRAFT_XP, GATHER_XP, GRASS_GROWTH_SECS, GRASS_PER_TUFT, HARVEST_TREE_XP, ITEM_AXE, ITEM_GRASS,
-    ITEM_LOG, ITEM_SEED, ITEM_STONE, ITEM_WOOD, MAX_OBJECTS_PER_HEX, OBJ_CRAFT_BENCH, OBJ_GRASS,
+    ITEM_LOG, ITEM_SEED, ITEM_STONE, ITEM_WOOD, ITEM_WORKBENCH, MAX_OBJECTS_PER_HEX, OBJ_CRAFT_BENCH,
+    OBJ_GRASS,
     OBJ_LOG,
     OBJ_ROCK, OBJ_TREE, STONE_PER_ROCK, TREE_GROWTH_SECS, WOOD_PER_TREE,
 };
@@ -419,6 +420,15 @@ pub fn gather_object(
             add_xp(ctx, &mut p, HARVEST_TREE_XP, "harvest_tree");
             tracing::info!("HARVEST-TREE {address} @hex {} (+{seeds} seeds)", obj.hex_id);
         }
+        // Picking up a placed craft bench returns it to the inventory as a
+        // Workbench item (Spec 022 §3): click-to-pickup on the world object.
+        OBJ_CRAFT_BENCH => {
+            ctx.db.world_object().object_id().delete(object_id);
+            consume_slot(ctx, obj.hex_id, obj.slot);
+            add_item(ctx, &p.address, ITEM_WORKBENCH, 1);
+            add_xp(ctx, &mut p, GATHER_XP, "pickup_bench");
+            tracing::info!("PICKUP-BENCH {address} @hex {}", obj.hex_id);
+        }
         other => return Err(format!("{other} cannot be gathered")),
     }
     touch(ctx, &p.address, now);
@@ -637,9 +647,13 @@ pub fn place_craft_bench(
         return Err("Hex is full".to_string());
     };
 
-    if !remove_item(ctx, &p.address, ITEM_LOG, BENCH_LOG_COST) {
+    // Place a bench either from a picked-up Workbench item (preferred — lets
+    // you relocate a bench) or by spending 4 logs (Spec 022 §3).
+    if count_item(ctx, &p.address, ITEM_WORKBENCH) >= 1 {
+        remove_item(ctx, &p.address, ITEM_WORKBENCH, 1);
+    } else if !remove_item(ctx, &p.address, ITEM_LOG, BENCH_LOG_COST) {
         return Err(format!(
-            "Need {BENCH_LOG_COST} logs to build a craft bench — gather fallen logs in forests"
+            "Need {BENCH_LOG_COST} logs (or a Workbench item) to build a craft bench — gather fallen logs in forests"
         ));
     }
 

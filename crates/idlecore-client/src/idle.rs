@@ -14,6 +14,8 @@ pub struct IdleGainsState {
     pub xp_rate: u64,
     /// Gold earned per second while playing
     pub gold_rate: u64,
+    /// Accumulator so the panel text only re-lays-out a few times per second.
+    pub text_acc: f32,
 }
 
 /// Marker for the XP TextSpan child
@@ -112,6 +114,15 @@ pub fn update_idle_gains_panel(
     let dt = time.delta_secs();
     idle_state.pending_xp += (idle_state.xp_rate as f32 * dt) as u64;
     idle_state.pending_gold += (idle_state.gold_rate as f32 * dt) as u64;
+
+    // Perf: the TextSpans only re-layout when their string changes, so only
+    // rewrite them a few times per second instead of every frame (constant
+    // UI re-layout every frame kills the frame rate).
+    idle_state.text_acc += dt;
+    if idle_state.text_acc < 0.2 {
+        return;
+    }
+    idle_state.text_acc = 0.0;
 
     // Update XP span value
     if let Some(mut span) = ps.p0().iter_mut().next() {

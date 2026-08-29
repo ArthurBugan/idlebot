@@ -172,7 +172,7 @@ fn spawn_craft_panel(mut commands: Commands, asset_server: Res<AssetServer>) {
         ))
         .with_children(|panel| {
             panel.spawn((
-                Text::new("Craft Bench"),
+                Text::new("Workbench — Crafting Station"),
                 TextFont { font: FontSource::Handle(font.clone()), font_size: 14.0.into(), ..default() },
                 TextColor(Color::srgb(0.85, 0.9, 1.0)),
             ));
@@ -266,7 +266,7 @@ fn spawn_craft_panel(mut commands: Commands, asset_server: Res<AssetServer>) {
                 TextColor(Color::srgb(0.8, 0.85, 0.95)),
             ));
             panel.spawn((
-                Text::new("[E]/[Esc] close · click a cell to change ingredient"),
+                Text::new("[Esc] close · click a cell to change ingredient"),
                 TextFont { font: FontSource::Handle(font.clone()), font_size: 10.0.into(), ..default() },
                 TextColor(Color::srgb(0.6, 0.65, 0.75)),
             ));
@@ -361,7 +361,8 @@ fn update_craft_panel(
     }
 }
 
-/// `E`/`Esc` close the menu — but never on the very press that opened it.
+/// `Esc` closes the menu (and `E` toggles it closed via the interaction
+/// system). Never closes on the very press that opened it.
 fn handle_craft_input(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
@@ -373,7 +374,7 @@ fn handle_craft_input(
     if time.elapsed_secs_f64() - menu.opened_at < 0.25 {
         return;
     }
-    if keys.just_pressed(KeyCode::KeyE) || keys.just_pressed(KeyCode::Escape) {
+    if keys.just_pressed(KeyCode::Escape) {
         menu.close();
     }
 }

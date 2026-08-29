@@ -579,8 +579,22 @@ fn interact_key_press(
     player: Option<Query<&ClientPlayer>>,
     target: Res<crate::world_floor::ActionTarget>,
     inventory: Res<crate::inventory::Inventory>,
+    mut touch: ResMut<crate::touch::TouchControls>,
 ) {
-    if !keyboard.just_pressed(KeyCode::KeyE) {
+    let e_pressed = keyboard.just_pressed(KeyCode::KeyE) || touch.interact;
+    let touch_used = touch.interact;
+    if !e_pressed {
+        return;
+    }
+    if touch_used {
+        touch.interact = false;
+    }
+    // With the craft menu open, E toggles it closed instead of acting on the
+    // ground (the station's own input system handles Esc too). This prevents
+    // the closing E press from immediately re-opening the menu or firing a
+    // ground action on the same frame.
+    if craft_menu.open {
+        craft_menu.close();
         return;
     }
     // Ground actions aim at the Stardew-style targeting box, not the feet.
@@ -904,10 +918,15 @@ impl Default for PositionSync {
     }
 }
 
-const POSITION_SYNC_INTERVAL: f32 = 2.0;
+// Position is forwarded to the server frequently so the authoritative player
+// hex stays in lockstep with where you actually stand — otherwise the
+// server-side 1-hex interaction range check rejects pickups/gathers while the
+// client already shows the tile as in range (Spec 018 FR7). 0.15s (~7 Hz) is
+// well under one hex of travel at walk speed (10 u/s × 0.15 = 1.5 u < HEX_SIZE).
+const POSITION_SYNC_INTERVAL: f32 = 0.15;
 
 /// Pure: reduce a movement delta since the last sync into a direction and
-/// speed for `move_player`, or `None` when the player barely moved.
+/// speed for `move_player`, or `None` when the player hasn't moved meaningfully.
 fn movement_report(prev: Vec2, cur: Vec2, dt: f32) -> Option<(Vec2, f32)> {
     let delta = cur - prev;
     if delta.length() < 0.5 {

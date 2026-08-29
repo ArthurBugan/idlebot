@@ -16,7 +16,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 rand = { workspace = true }
 image = "0.25"
-web-sys = { version = "0.3", features = ["Window", "Storage", "Document", "Performance"] }
+web-sys = { version = "0.3", features = ["Window", "Storage", "Document", "Performance", "HtmlInputElement", "Event", "KeyboardEvent", "HtmlElement"] }
 
 # On web, the SpacetimeDB SDK must use its browser (wasm) transport.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -24,4 +24,5 @@ spacetimedb-sdk = { version = "2.8", default-features = false, features = ["brow
 bevy = { workspace = true, features = ["webgl2"] }
 getrandom = { version = "0.2", features = ["js"] }
 wasm-bindgen-futures = "0.4"
+wasm-bindgen = "0.2.127"
 js-sys = "0.3"

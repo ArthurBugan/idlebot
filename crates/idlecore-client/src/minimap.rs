@@ -1064,7 +1064,10 @@ pub fn update_player_marker(
     let Ok(mut transform) = arrow_query.single_mut() else { return };
 
     let angle = minimap_state.rotation.marker_rotation(minimap_state.facing_angle);
-    transform.rotation = Rot2::radians(angle);
+    let want = Rot2::radians(angle);
+    if transform.rotation != want {
+        transform.rotation = want;
+    }
 }
 
 // ============================================================================

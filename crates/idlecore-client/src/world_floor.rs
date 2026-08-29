@@ -150,8 +150,13 @@ pub fn update_action_box(
     target.r = r;
 
     let (cx, cy) = slot_center(sx, sy);
-    transform.translation = Vec3::new(cx, cy, crate::world_floor::prop_depth(cy) + 0.4);
-    *visibility = Visibility::Visible;
+    let new_translation = Vec3::new(cx, cy, crate::world_floor::prop_depth(cy) + 0.4);
+    if transform.translation != new_translation {
+        transform.translation = new_translation;
+    }
+    if *visibility != Visibility::Visible {
+        *visibility = Visibility::Visible;
+    }
 
     // Green while the slot's hex is within the server's 1-hex interaction
     // range, dim otherwise.
@@ -162,7 +167,9 @@ pub fn update_action_box(
     );
     let in_range = idlecore_core::hex_grid::HexGrid::distance(q, r, player_hex.0, player_hex.1) <= 1;
     let tint = if in_range { Color::srgba(0.6, 1.0, 0.5, 0.95) } else { Color::srgba(0.9, 0.9, 0.9, 0.35) };
-    sprite.color = tint;
+    if sprite.color != tint {
+        sprite.color = tint;
+    }
 }
 
 // ============================================================================
@@ -531,18 +538,27 @@ pub fn update_world_object_visuals(
     props: Res<PropTextures>,
     time: Res<Time>,
     mut next_scan: Local<f64>,
+    mut last_px: Local<f32>,
+    mut last_py: Local<f32>,
     mut state: ResMut<WorldObjectState>,
 ) {
-    // Perf: this scans every replicated world_object row; at planet scale
-    // that set grows unboundedly, so cap the pass to ~7 Hz.
+    // Perf: this scans every replicated world_object row; at planet scale that
+    // set can be huge, so throttle it. While the player is moving we rescan at
+    // ~7 Hz (objects pop in as you walk), but while standing still we only
+    // rescan at ~1 Hz — maturity changes are time-based and infrequent, so the
+    // per-frame cost drops to near zero when idle.
+    let px = player_transform.translation.x;
+    let py = player_transform.translation.y;
+    let moved = ((px - *last_px).powi(2) + (py - *last_py).powi(2)).sqrt();
+    let interval = if moved > 2.0 { 0.15 } else { 1.0 };
     if time.elapsed_secs_f64() < *next_scan {
         return;
     }
-    *next_scan = time.elapsed_secs_f64() + 0.15;
+    *next_scan = time.elapsed_secs_f64() + interval;
+    *last_px = px;
+    *last_py = py;
     let conn_guard = net.conn.lock().unwrap();
     let Some(conn) = conn_guard.as_ref() else { return };
-    let px = player_transform.translation.x;
-    let py = player_transform.translation.y;
     let max_dist = RENDER_RADIUS_HEXES + 2.0 * WorldGenConfig::HEX_SIZE;
 
     let now = now_unix_secs();
@@ -552,7 +568,6 @@ pub fn update_world_object_visuals(
     // burst of replication can't create hundreds of sprites in one frame.
     let mut pending: Vec<(f32, u64)> = Vec::new();
     for row in crate::net::gen::WorldObjectTableAccess::world_object(&conn.db).iter() {
-        seen.insert(row.object_id);
         let coord = idlecore_core::hex::HexCoord::from_id(row.hex_id);
         let (hx, hy) = row_world_center(coord.q, coord.r);
         let wx = hx + row.offset_x;
@@ -560,6 +575,7 @@ pub fn update_world_object_visuals(
         if (wx - px).powi(2) + (wy - py).powi(2) > max_dist * max_dist {
             continue;
         }
+        seen.insert(row.object_id);
 
         let mature = row.mature_at == 0 || now >= row.mature_at;
         let key = (
@@ -1187,18 +1203,25 @@ pub fn update_plant_visuals(
     _streaming_world: Res<StreamingWorldResource>,
     time: Res<Time>,
     mut next_scan: Local<f64>,
+    mut last_px: Local<f32>,
+    mut last_py: Local<f32>,
     mut state: ResMut<FloorPlantState>,
 ) {
-    // Perf: full hex_tile scan — throttle to ~7 Hz like world objects.
+    // Perf: full hex_tile scan — while moving rescan at ~7 Hz, while standing
+    // still at ~1 Hz (only maturity/eco changes matter when idle).
+    let px = player_transform.translation.x;
+    let py = player_transform.translation.y;
+    let moved = ((px - *last_px).powi(2) + (py - *last_py).powi(2)).sqrt();
+    let interval = if moved > 2.0 { 0.15 } else { 1.0 };
     if time.elapsed_secs_f64() < *next_scan {
         return;
     }
-    *next_scan = time.elapsed_secs_f64() + 0.15;
+    *next_scan = time.elapsed_secs_f64() + interval;
+    *last_px = px;
+    *last_py = py;
     let conn_guard = net.conn.lock().unwrap();
     let Some(conn) = conn_guard.as_ref() else { return };
 
-    let px = player_transform.translation.x;
-    let py = player_transform.translation.y;
     let (hq, hr) = world_pos_to_hex(px, py, WorldGenConfig::HEX_SIZE);
     // Plant/pollution discs are small; only build them for hexes close to
     // the player (8 hexes ≈ 140 units) so far replicated rows stay data-only.

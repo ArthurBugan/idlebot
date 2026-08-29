@@ -8,13 +8,19 @@
 //!   • click a cell, then another, to move a stack between cells
 
 use bevy::prelude::*;
+use bevy::input::mouse::MouseButton;
 use spacetimedb_sdk::Table;
 use crate::net::gen::player_item_table::PlayerItemTableAccess;
 use crate::net::gen::player_vehicle_table::PlayerVehicleTableAccess;
 use crate::net::hud::{reducer_report, send_reducer};
 use crate::net::gen::equip_vehicle_reducer::equip_vehicle;
+use crate::net::gen::place_craft_bench_reducer::place_craft_bench;
+use crate::net::gen::gather_object_reducer::gather_object;
+use crate::net::gen::world_object_table::WorldObjectTableAccess;
+use crate::net::plugin::NetEvent;
 use crate::player::ClientPlayer;
 use crate::plugins::player::PhysicsBody;
+use crate::world_floor::ActionTarget;
 
 /// Icon texture per item name, loaded once at startup.
 #[derive(Resource, Default)]
@@ -42,6 +48,8 @@ pub fn load_item_icons(
     by_item.insert("Axe".to_string(), props.icon_axe.clone());
     by_item.insert("Shovel".to_string(), props.icon_shovel.clone());
     by_item.insert("Hoe".to_string(), props.icon_hoe.clone());
+    // Picked-up / placeable craft bench (Spec 022 §3).
+    by_item.insert("Workbench".to_string(), props.bench.clone());
     // Vehicles appear as inventory items (equip/unequip from the panel).
     for v in ["Bicycle", "Car", "Scooter", "Motorcycle", "Boat", "Airplane"] {
         by_item.insert(v.to_string(), props.icon_car.clone());
@@ -57,6 +65,7 @@ const TOTAL_SLOTS: usize = 36;
 
 const SLOT_BG: Color = Color::srgba(0.10, 0.10, 0.14, 0.88);
 const SLOT_BORDER: Color = Color::srgb(0.35, 0.35, 0.40);
+const CRAFT_BORDER: Color = Color::srgb(1.0, 0.8, 0.4);
 const ACTIVE_BORDER: Color = Color::srgb(1.0, 0.95, 0.6);
 const PICKED_BORDER: Color = Color::srgb(1.0, 0.7, 0.1);
 const PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.10, 0.96);
@@ -72,6 +81,9 @@ pub struct Inventory {
     pub open: bool,
     /// First-clicked cell awaiting the destination (stack moving).
     pub picked: Option<usize>,
+    /// Item selected for click-to-place into the crafting grid (set by
+    /// clicking an inventory slot; cleared when placing or selecting empty).
+    pub held: Option<String>,
     /// Live totals per item from replication.
     pub counts: std::collections::HashMap<String, u64>,
 }
@@ -83,6 +95,7 @@ impl Default for Inventory {
             active: 0,
             open: false,
             picked: None,
+            held: None,
             counts: std::collections::HashMap::new(),
         }
     }
@@ -102,6 +115,7 @@ fn item_badge(item: &str) -> (Color, &'static str) {
         "Stone" => (Color::srgb(0.68, 0.68, 0.74), "St"),
         "Grass" => (Color::srgb(0.45, 0.72, 0.32), "Gr"),
         "Log" => (Color::srgb(0.55, 0.38, 0.22), "Lo"),
+        "Workbench" => (Color::srgb(0.80, 0.62, 0.34), "Wb"),
         "Pickaxe" => (Color::srgb(0.55, 0.62, 0.72), "Pi"),
         "Axe" => (Color::srgb(0.62, 0.55, 0.45), "Ax"),
         "Shovel" => (Color::srgb(0.50, 0.58, 0.62), "Sh"),
@@ -146,12 +160,53 @@ struct ActiveItemLabel;
 #[derive(Component)]
 struct ToastText;
 
+// --- Inventory crafting grid (Minecraft-style workbench recipe) ---
+
+#[derive(Component)]
+struct InvCraftCell(usize);
+
+#[derive(Component)]
+struct InvCraftResult;
+
+#[derive(Component)]
+struct InvCraftResultLabel;
+
+#[derive(Component)]
+struct InvCraftStatus;
+
+/// Transient 2x2 crafting grid shown in the inventory: each cell holds the
+/// material the player has placed (click to cycle), and a matching layout
+/// (4 Logs) yields a Workbench in the result slot.
+#[derive(Resource, Default)]
+pub struct InventoryCraftGrid {
+    pub cells: [Option<String>; 4],
+}
+
+/// Drag-and-drop state for moving an inventory item onto the crafting grid.
+#[derive(Resource, Default)]
+pub struct DragState {
+    /// Item currently being dragged (from an inventory slot), if any.
+    pub item: Option<String>,
+    /// Floating ghost entity following the cursor while dragging.
+    pub ghost: Option<Entity>,
+}
+
+/// Marker for the floating drag ghost (an item icon that follows the cursor).
+#[derive(Component)]
+struct DragGhost;
+
+/// Icon shown in the crafting result slot when a Workbench is ready.
+#[derive(Component)]
+struct InvCraftResultIcon;
+
 pub struct InventoryPlugin;
 
 impl Plugin for InventoryPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Inventory>()
             .init_resource::<PanelRoot>()
+            .init_resource::<InventoryCraftGrid>()
+            .init_resource::<DragState>()
             .add_systems(Startup, (spawn_hotbar, spawn_inventory_panel))
             .add_systems(
                 Update,
@@ -161,8 +216,12 @@ impl Plugin for InventoryPlugin {
                     update_slot_uis,
                     handle_inventory_input,
                     handle_slot_clicks,
+                    update_drag_ghost,
                     auto_unequip_on_deselect,
                     update_toast,
+                    update_inv_craft_ui,
+                    handle_inv_craft_clicks,
+                    handle_world_click,
                 ),
             );
     }
@@ -327,6 +386,105 @@ fn spawn_inventory_panel(mut commands: Commands, asset_server: Res<AssetServer>)
                 TextColor(Color::srgb(0.6, 0.65, 0.75)),
                 Node { margin: UiRect::top(Val::Px(6.0)), ..default() },
             ));
+
+            // --- Crafting: Minecraft-style 2x2 grid to build a Workbench
+            // (Spec 022 §3: 4 Logs -> bench). Click a box to cycle the
+            // material you carry; a matching layout shows the Workbench in
+            // the result slot — click it to build (consumes 4 Logs at the
+            // aimed empty plot).
+            panel.spawn((
+                Text::new("Crafting"),
+                TextFont { font: FontSource::Handle(font.clone()), font_size: 13.0.into(), ..default() },
+                TextColor(Color::srgb(0.85, 0.9, 1.0)),
+                Node { margin: UiRect::top(Val::Px(10.0)), ..default() },
+            ));
+            panel
+                .spawn((
+                    Node {
+                        display: Display::Flex,
+                        align_items: AlignItems::Center,
+                        column_gap: Val::Px(10.0),
+                        ..default()
+                    },
+                ))
+                .with_children(|row| {
+                    // 2x2 input grid (two rows of two cells).
+                    row.spawn((
+                        Node {
+                            display: Display::Flex,
+                            flex_direction: FlexDirection::Column,
+                            row_gap: Val::Px(2.0),
+                            ..default()
+                        },
+                    ))
+                    .with_children(|grid| {
+                        for r in 0..2 {
+                            grid.spawn((
+                                Node {
+                                    display: Display::Flex,
+                                    column_gap: Val::Px(2.0),
+                                    ..default()
+                                },
+                            ))
+                            .with_children(|grid_row| {
+                                for c in 0..2 {
+                                    let idx = r * 2 + c;
+                                    grid_row
+                                        .spawn(slot_bundle(InvCraftCell(idx), CELL_SIZE))
+                                        .with_children(|cell| spawn_texts(cell, &font));
+                                }
+                            });
+                        }
+                    });
+                    // Arrow.
+                    row.spawn((
+                        Text::new("→"),
+                        TextFont { font: FontSource::Handle(font.clone()), font_size: 18.0.into(), ..default() },
+                        TextColor(Color::srgb(0.8, 0.85, 0.95)),
+                    ));
+                    // Result slot.
+                    row.spawn((
+                        InvCraftResult,
+                        Button,
+                        Node {
+                            width: Val::Px(CELL_SIZE),
+                            height: Val::Px(CELL_SIZE),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            border: UiRect::all(Val::Px(2.0)),
+                            ..default()
+                        },
+                        BackgroundColor(SLOT_BG),
+                        BorderColor::all(CRAFT_BORDER),
+                        Interaction::default(),
+                    ))
+                    .with_children(|res| {
+                        res.spawn((
+                            InvCraftResultLabel,
+                            Text::new(""),
+                            TextFont { font: FontSource::Handle(font.clone()), font_size: 18.0.into(), ..default() },
+                            TextColor(Color::srgb(1.0, 0.8, 0.4)),
+                        ));
+                        // Workbench icon (hidden until the recipe is ready).
+                        res.spawn((
+                            InvCraftResultIcon,
+                            Node {
+                                width: Val::Percent(82.0),
+                                height: Val::Percent(82.0),
+                                ..default()
+                            },
+                            ImageNode::default(),
+                            Visibility::Hidden,
+                        ));
+                    });
+                });
+            panel.spawn((
+                InvCraftStatus,
+                Text::new(""),
+                TextFont { font: FontSource::Handle(font.clone()), font_size: 10.0.into(), ..default() },
+                TextColor(Color::srgb(0.6, 0.65, 0.75)),
+                Node { margin: UiRect::top(Val::Px(2.0)), ..default() },
+            ));
         })
         .id();
 
@@ -338,7 +496,11 @@ fn spawn_inventory_panel(mut commands: Commands, asset_server: Res<AssetServer>)
 // Input
 // ============================================================================
 
-fn handle_inventory_input(keys: Res<ButtonInput<KeyCode>>, mut inv: ResMut<Inventory>) {
+fn handle_inventory_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut inv: ResMut<Inventory>,
+    mut touch: ResMut<crate::touch::TouchControls>,
+) {
     const DIGITS: [KeyCode; 9] = [
         KeyCode::Digit1,
         KeyCode::Digit2,
@@ -361,6 +523,11 @@ fn handle_inventory_input(keys: Res<ButtonInput<KeyCode>>, mut inv: ResMut<Inven
     }
     if keys.just_pressed(KeyCode::Escape) && inv.open {
         inv.open = false;
+        inv.picked = None;
+    }
+    if touch.inventory {
+        touch.inventory = false;
+        inv.open = !inv.open;
         inv.picked = None;
     }
 }
@@ -478,6 +645,158 @@ fn auto_unequip_on_deselect(
     *prev_active = active;
 }
 
+/// True when the bench can be placed: the 2x2 grid holds 4 Logs *and* the
+/// player carries >= 4 Logs, or the player already holds a picked-up
+/// Workbench item (either path satisfies `place_craft_bench`).
+fn inv_craft_ready(grid: &InventoryCraftGrid, counts: &std::collections::HashMap<String, u64>) -> bool {
+    let has_bench = counts.get("Workbench").copied().unwrap_or(0) >= 1;
+    let logs_ready = grid.cells.iter().all(|c| c.as_deref() == Some("Log"))
+        && counts.get("Log").copied().unwrap_or(0) >= 4;
+    has_bench || logs_ready
+}
+
+/// Refresh the inventory crafting grid: cell icons + result slot + status.
+#[allow(clippy::type_complexity)]
+fn update_inv_craft_ui(
+    inv: Res<Inventory>,
+    grid: Res<InventoryCraftGrid>,
+    icons: Option<Res<ItemIcons>>,
+    cells_q: Query<(Entity, &InvCraftCell, &Children)>,
+    mut icon_q: Query<(&mut ImageNode, &mut Visibility), (With<SlotIcon>, Without<InvCraftResultIcon>)>,
+    mut count_q: Query<&mut Text, (With<SlotCount>, Without<InvCraftStatus>, Without<InvCraftResultLabel>)>,
+    mut result_label: Query<&mut Text, (With<InvCraftResultLabel>, Without<SlotCount>, Without<InvCraftStatus>)>,
+    mut result_bg: Query<&mut BackgroundColor, With<InvCraftResult>>,
+    mut result_icon: Query<(&mut ImageNode, &mut Visibility), (With<InvCraftResultIcon>, Without<SlotIcon>)>,
+    mut status_q: Query<&mut Text, (With<InvCraftStatus>, Without<SlotCount>, Without<InvCraftResultLabel>)>,
+) {
+    let ready = inv_craft_ready(&grid, &inv.counts);
+    for (_, cell, children) in &cells_q {
+        let item = grid.cells[cell.0].clone();
+        let count = item
+            .as_ref()
+            .and_then(|n| inv.counts.get(n))
+            .copied()
+            .unwrap_or(0);
+        for child in children.iter() {
+            if let Ok((mut image, mut vis)) = icon_q.get_mut(child) {
+                let want_visible = item.is_some();
+                let want = if want_visible {
+                    Visibility::Visible
+                } else {
+                    Visibility::Hidden
+                };
+                if *vis != want {
+                    *vis = want;
+                }
+                if let (Some(name), Some(ic)) = (&item, icons.as_ref()) {
+                    if let Some(handle) = ic.by_item.get(name) {
+                        if image.image.id() != handle.id() {
+                            image.image = handle.clone();
+                        }
+                    }
+                }
+            } else if let Ok(mut text) = count_q.get_mut(child) {
+                let label = if count > 0 { count.to_string() } else { String::new() };
+                if text.0 != label {
+                    text.0 = label;
+                }
+            }
+        }
+    }
+    if let Ok(mut label) = result_label.single_mut() {
+        // The result slot now shows a Workbench icon when ready; keep the text
+        // empty so it doesn't overlap the icon.
+        if label.0 != String::new() {
+            label.0 = String::new();
+        }
+    }
+    if let Ok((mut image, mut vis)) = result_icon.single_mut() {
+        let want = if ready { Visibility::Visible } else { Visibility::Hidden };
+        if *vis != want {
+            *vis = want;
+        }
+        if let Some(icons) = icons.as_ref() {
+            if let Some(handle) = icons.by_item.get("Workbench") {
+                if image.image.id() != handle.id() {
+                    image.image = handle.clone();
+                }
+            }
+        }
+    }
+    if let Ok(mut bg) = result_bg.single_mut() {
+        let want = if ready {
+            Color::srgba(0.18, 0.16, 0.10, 0.95)
+        } else {
+            SLOT_BG
+        };
+        if bg.0 != want {
+            bg.0 = want;
+        }
+    }
+    if let Ok(mut status) = status_q.single_mut() {
+        let want = if ready {
+            "Ready — click the result (or a Workbench in your bag), then aim at an empty tile".to_string()
+        } else {
+            "Place 4 Logs in the grid, or carry a Workbench, to build one".to_string()
+        };
+        if status.0 != want {
+            status.0 = want;
+        }
+    }
+}
+
+/// Click a crafting cell to place the held item there (or clear it when
+/// nothing is held); click the result to build the workbench at the aimed
+/// empty plot (consumes 4 Logs, or a carried Workbench item).
+fn handle_inv_craft_clicks(
+    mut net: ResMut<crate::net::plugin::Net>,
+    mut grid: ResMut<InventoryCraftGrid>,
+    mut inv: ResMut<Inventory>,
+    target: Res<ActionTarget>,
+    cell_q: Query<(&Interaction, &InvCraftCell), Changed<Interaction>>,
+    result_q: Query<&Interaction, (With<InvCraftResult>, Changed<Interaction>)>,
+) {
+    for (interaction, cell) in &cell_q {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        // Place the held item (if the player actually carries at least one),
+        // otherwise clear the cell.
+        match inv.held.clone() {
+            Some(name) if inv.counts.get(&name).copied().unwrap_or(0) >= 1 => {
+                grid.cells[cell.0] = Some(name);
+            }
+            _ => {
+                grid.cells[cell.0] = None;
+            }
+        }
+    }
+    for interaction in &result_q {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        if !inv_craft_ready(&grid, &inv.counts) {
+            net.push(NetEvent::ServerMessage(
+                "Crafting: place 4 Logs in the grid (or carry a Workbench)".to_string(),
+            ));
+            continue;
+        }
+        let hex_id = idlecore_core::hex::HexCoord::new(target.q, target.r).to_id();
+        let (slot_x, slot_y) = (target.slot_x, target.slot_y);
+        let tx = net.sender();
+        send_reducer(&mut net, |r| {
+            r.place_craft_bench_then(
+                hex_id,
+                slot_x,
+                slot_y,
+                reducer_report("place_craft_bench", tx.clone(), hex_id),
+            )
+        });
+        grid.cells = [None, None, None, None];
+        inv.held = None;
+    }
+}
+
 /// Mirror replicated `player_item` rows into arrangement + live counts.
 /// Throttled: the table scan + map rebuilds are not free per-frame work.
 fn sync_inventory(
@@ -536,10 +855,16 @@ fn sync_inventory(
 }
 
 /// Click a cell: pick up a stack, place/move it, or select a hotbar slot.
+/// Clicking an item also selects it as the crafting "brush" (for click-to-
+/// place into the 2x2 grid) and begins a drag (for drag-and-drop). Clicking a
+/// Workbench in the bag places it at the aimed empty plot.
 fn handle_slot_clicks(
     mut inv: ResMut<Inventory>,
     mut net: ResMut<crate::net::plugin::Net>,
     player_q: Query<&ClientPlayer, With<PhysicsBody>>,
+    target: Res<ActionTarget>,
+    mut drag: ResMut<DragState>,
+    mut commands: Commands,
     hotbar_q: Query<(&Interaction, &HotbarSlot), Changed<Interaction>>,
     inv_q: Query<(&Interaction, &InvSlot), Changed<Interaction>>,
 ) {
@@ -552,6 +877,11 @@ fn handle_slot_clicks(
         }
     }
     if !inv.open {
+        // Drop any in-flight drag if the panel was closed.
+        if let Some(g) = drag.ghost.take() {
+            commands.entity(g).despawn();
+        }
+        drag.item = None;
         return;
     }
     for (interaction, slot) in &inv_q {
@@ -559,14 +889,49 @@ fn handle_slot_clicks(
             continue;
         }
         let idx = slot.0;
-        // Vehicle items equip/unequip instead of being moved in the grid.
+        // Clicking a Workbench in the bag builds it at the aimed plot.
         if let Some(name) = inv.slots[idx].clone() {
+            if name == "Workbench" {
+                try_place_bench(&mut net, &target);
+                inv.picked = None;
+                inv.held = None;
+                continue;
+            }
             if is_vehicle_item(&name) {
                 toggle_vehicle_equip(&name, &player_q, &mut net);
                 inv.picked = None;
                 continue;
             }
         }
+        // Select this item as the "brush" for click-to-place into the grid,
+        // and begin a drag so the same press can be dropped on a grid cell.
+        inv.held = inv.slots[idx].clone();
+        if let Some(name) = inv.slots[idx].clone() {
+            if drag.item.is_none() {
+                drag.item = Some(name.clone());
+                let ghost = commands
+                    .spawn((
+                        DragGhost,
+                        Node {
+                            position_type: PositionType::Absolute,
+                            width: Val::Px(CELL_SIZE),
+                            height: Val::Px(CELL_SIZE),
+                            ..default()
+                        },
+                        ImageNode::default(),
+                        Visibility::Hidden,
+                        ZIndex(100),
+                    ))
+                    .id();
+                drag.ghost = Some(ghost);
+            }
+        } else {
+            drag.item = None;
+            if let Some(g) = drag.ghost.take() {
+                commands.entity(g).despawn();
+            }
+        }
+        // Existing stack-move (click two cells to swap).
         match inv.picked {
             None => {
                 if inv.slots[idx].is_some() {
@@ -582,6 +947,135 @@ fn handle_slot_clicks(
                 }
             }
         }
+    }
+}
+
+/// Place a craft bench at the aimed empty plot (consumes a carried Workbench
+/// item if present, else 4 Logs on the server). Shared by the inventory
+/// Workbench click and the crafting result slot.
+fn try_place_bench(net: &mut ResMut<crate::net::plugin::Net>, target: &ActionTarget) {
+    let hex_id = idlecore_core::hex::HexCoord::new(target.q, target.r).to_id();
+    let (slot_x, slot_y) = (target.slot_x, target.slot_y);
+    let tx = net.sender();
+    send_reducer(net, |r| {
+        r.place_craft_bench_then(
+            hex_id,
+            slot_x,
+            slot_y,
+            reducer_report("place_craft_bench", tx.clone(), hex_id),
+        )
+    });
+}
+
+/// Drag-and-drop: float a ghost icon at the cursor while dragging an item
+/// from the inventory, and drop it into a hovered crafting cell on release.
+fn update_drag_ghost(
+    windows: Query<&Window>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut drag: ResMut<DragState>,
+    mut commands: Commands,
+    mut ghost_q: Query<(&mut Node, &mut ImageNode, &mut Visibility), With<DragGhost>>,
+    icons: Option<Res<ItemIcons>>,
+    craft_cells: Query<(Entity, &InvCraftCell, &Interaction)>,
+    mut grid: ResMut<InventoryCraftGrid>,
+    inv: Res<Inventory>,
+) {
+    let Some(item) = drag.item.clone() else {
+        return;
+    };
+    // Follow the cursor with the ghost icon.
+    if let Ok(window) = windows.single() {
+        if let Some(cursor) = window.cursor_position() {
+            if let Some(g) = drag.ghost {
+                if let Ok((mut node, mut image, mut vis)) = ghost_q.get_mut(g) {
+                    node.left = Val::Px(cursor.x - CELL_SIZE / 2.0);
+                    node.top = Val::Px(cursor.y - CELL_SIZE / 2.0);
+                    if let Some(icons) = icons.as_ref() {
+                        if let Some(h) = icons.by_item.get(&item) {
+                            if image.image.id() != h.id() {
+                                image.image = h.clone();
+                            }
+                        }
+                    }
+                    *vis = Visibility::Visible;
+                }
+            }
+        }
+    }
+    // Drop on mouse release.
+    if mouse.just_released(MouseButton::Left) {
+        if let Some((_, cell, _interaction)) =
+            craft_cells.iter().find(|(_, _, i)| matches!(i, Interaction::Hovered))
+        {
+            if inv.counts.get(&item).copied().unwrap_or(0) >= 1 {
+                grid.cells[cell.0] = Some(item.clone());
+            }
+        }
+        if let Some(g) = drag.ghost.take() {
+            commands.entity(g).despawn();
+        }
+        drag.item = None;
+    }
+}
+
+/// Left-click a placed craft bench in the world to pick it up into the
+/// inventory (grants a Workbench item via `gather_object`). Mirrors the
+/// targeting logic of `interact_key_press` but acts only on benches.
+fn handle_world_click(
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut net: Option<ResMut<crate::net::plugin::Net>>,
+    inv: Res<Inventory>,
+    target: Res<ActionTarget>,
+    widgets: Query<&Interaction>,
+) {
+    if !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Some(net) = net.as_deref_mut() else { return };
+    if net.address.is_none() || inv.open {
+        return;
+    }
+    // Ignore clicks that land on a UI widget (panels, buttons, touch controls).
+    if widgets
+        .iter()
+        .any(|i| matches!(i, Interaction::Hovered | Interaction::Pressed))
+    {
+        return;
+    }
+
+    let hex_id = idlecore_core::hex::HexCoord::new(target.q, target.r).to_id();
+    let (hex_cx, hex_cy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
+        target.q,
+        target.r,
+        idlecore_core::world_gen::WorldGenConfig::HEX_SIZE,
+    );
+    let slot_dx = idlecore_core::slots::slot_center(target.slot_x, target.slot_y).0 - hex_cx;
+    let slot_dy = idlecore_core::slots::slot_center(target.slot_x, target.slot_y).1 - hex_cy;
+    let half_slot = idlecore_core::slots::SLOT_SIZE * 0.5;
+
+    let object_id = {
+        let guard = net.conn.lock().unwrap();
+        let Some(conn) = guard.as_ref() else {
+            return;
+        };
+        let mut found: Option<u64> = None;
+        for obj in spacetimedb_sdk::__codegen::TableLike::iter(&conn.db.world_object())
+            .filter(|o| o.hex_id == hex_id)
+        {
+            let dx = obj.offset_x - slot_dx;
+            let dy = obj.offset_y - slot_dy;
+            if dx * dx + dy * dy < half_slot * half_slot && obj.kind == "CraftBench" {
+                found = Some(obj.object_id);
+                break;
+            }
+        }
+        found
+    };
+    if let Some(id) = object_id {
+        let tx = net.sender();
+        send_reducer(net, |r| {
+            r.gather_object_then(id, reducer_report("pickup_bench", tx.clone(), hex_id))
+        });
     }
 }
 

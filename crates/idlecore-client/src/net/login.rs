@@ -27,6 +27,10 @@ pub struct LoginStatusText;
 #[derive(Component)]
 pub struct LoginButton;
 
+/// The name field; tappable on touch to focus the HTML input.
+#[derive(Component)]
+pub struct LoginNameField;
+
 /// Login screen state: the in-progress name buffer.
 #[derive(Resource, Default)]
 pub struct LoginPage {
@@ -46,6 +50,12 @@ impl Plugin for LoginPlugin {
                 login_page_button,
                 login_page_sync,
             ));
+        #[cfg(target_arch = "wasm32")]
+        {
+            app.init_resource::<wasm_login::LoginInputBridge>()
+                .add_systems(Startup, wasm_login::spawn_html_input)
+                .add_systems(Update, wasm_login::sync_html_input);
+        }
     }
 }
 
@@ -91,9 +101,13 @@ fn spawn_login_page(mut commands: Commands) {
                         TextFont { font_size: 14.0.into(), ..default() },
                         TextColor(Color::srgba(0.7, 0.78, 0.7, 0.9)),
                     ));
-                    // Name field.
+                    // Name field. Tappable on touch (Button + LoginNameField)
+                    // to raise the on-screen keyboard via the hidden HTML input.
                     panel
                         .spawn((
+                            Button,
+                            Interaction::default(),
+                            LoginNameField,
                             Node {
                                 padding: UiRect::axes(Val::Px(16.0), Val::Px(10.0)),
                                 min_width: Val::Px(280.0),
@@ -234,5 +248,152 @@ mod tests {
     fn login_page_defaults() {
         let page = LoginPage::default();
         assert!(page.buffer.is_empty());
+    }
+}
+
+/// Wasm-only: an HTML `<input>` overlay so the mobile soft keyboard can type
+/// the username. Bevy's canvas swallows on-screen keyboard events, so we layer
+/// a real input element (hidden until the name field is tapped) and sync its
+/// value into `LoginPage.buffer`. Keydown is stopped from propagating so Bevy's
+/// `login_page_input` doesn't also echo the keys.
+#[cfg(target_arch = "wasm32")]
+mod wasm_login {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen::JsCast;
+    use web_sys::{Event, HtmlInputElement, KeyboardEvent};
+
+    /// Shared bridge between the DOM input and Bevy's `LoginPage`.
+    #[derive(Resource)]
+    pub struct LoginInputBridge {
+        pub inner: Arc<Mutex<Bridge>>,
+    }
+
+    impl Default for LoginInputBridge {
+        fn default() -> Self {
+            Self {
+                inner: Arc::new(Mutex::new(Bridge::default())),
+            }
+        }
+    }
+
+    pub struct Bridge {
+        pub value: String,
+        pub submit: bool,
+    }
+
+    impl Default for Bridge {
+        fn default() -> Self {
+            Self {
+                value: String::new(),
+                submit: false,
+            }
+        }
+    }
+
+    const INPUT_ID: &str = "idlebot-login-input";
+
+    pub fn spawn_html_input(bridge: Res<LoginInputBridge>) {
+        let Some(window) = web_sys::window() else { return };
+        let Some(document) = window.document() else { return };
+        let Ok(el) = document.create_element("input") else { return };
+        let Ok(input) = el.dyn_into::<HtmlInputElement>() else { return };
+        input.set_id(INPUT_ID);
+        input.set_attribute("type", "text").unwrap();
+        input.set_attribute("inputmode", "text").unwrap();
+        input.set_attribute("autocapitalize", "none").unwrap();
+        input.set_attribute("autocomplete", "off").unwrap();
+        input.set_attribute("enterkeyhint", "go").unwrap();
+        let style = input.style();
+        let _ = style.set_property("position", "absolute");
+        let _ = style.set_property("left", "50%");
+        let _ = style.set_property("top", "50%");
+        let _ = style.set_property("transform", "translate(-50%, -120px)");
+        let _ = style.set_property("width", "280px");
+        let _ = style.set_property("font-size", "18px");
+        let _ = style.set_property("padding", "10px 16px");
+        let _ = style.set_property("border-radius", "4px");
+        // Hidden and non-interactive until the name field is tapped.
+        let _ = style.set_property("opacity", "0");
+        let _ = style.set_property("pointer-events", "none");
+        let _ = style.set_property("z-index", "10");
+        if let Some(body) = document.body() {
+            let _ = body.append_child(&input);
+        }
+
+        let b = bridge.inner.clone();
+        let b_submit = bridge.inner.clone();
+        let input_val = input.clone();
+        let on_input = Closure::wrap(Box::new(move |_e: Event| {
+            b.lock().unwrap().value = input_val.value();
+        }) as Box<dyn FnMut(Event)>);
+        let _ = input.add_event_listener_with_callback("input", on_input.as_ref().unchecked_ref());
+        on_input.forget();
+
+        let input_for_key = input.clone();
+        let on_key = Closure::wrap(Box::new(move |e: KeyboardEvent| {
+            if e.key() == "Enter" {
+                b_submit.lock().unwrap().submit = true;
+                let _ = input_for_key.blur();
+            }
+            e.stop_propagation();
+        }) as Box<dyn FnMut(KeyboardEvent)>);
+        let _ = input.add_event_listener_with_callback("keydown", on_key.as_ref().unchecked_ref());
+        on_key.forget();
+    }
+
+    pub fn sync_html_input(
+        bridge: Res<LoginInputBridge>,
+        mut page: ResMut<LoginPage>,
+        mut net: ResMut<Net>,
+        name_field_q: Query<&Interaction, With<LoginNameField>>,
+    ) {
+        // Once logged in, the overlay input is no longer needed — hide it so
+        // it doesn't linger in the middle of the screen during gameplay.
+        if net.address.is_some() {
+            let _ = hide_html_input();
+            return;
+        }
+        // Tapping the name field focuses the hidden input (raises keyboard).
+        for i in &name_field_q {
+            if *i == Interaction::Pressed {
+                let Some(window) = web_sys::window() else { break };
+                let Some(document) = window.document() else { break };
+                let Some(el) = document.get_element_by_id(INPUT_ID) else { break };
+                let Ok(input) = el.dyn_into::<HtmlInputElement>() else { break };
+                let style = input.style();
+                let _ = style.set_property("pointer-events", "auto");
+                let _ = style.set_property("opacity", "1");
+                input.set_value(&page.buffer);
+                let _ = input.focus();
+            }
+        }
+
+        let mut b = bridge.inner.lock().unwrap();
+        if b.value != page.buffer {
+            page.buffer = b.value.clone();
+        }
+        if b.submit {
+            b.submit = false;
+            let name = std::mem::take(&mut page.buffer);
+            b.value = String::new();
+            let _ = hide_html_input();
+            net.request_login(name);
+        }
+    }
+
+    /// Hide the DOM input overlay (opacity 0, non-interactive) so it can't sit
+    /// visibly in the middle of the screen during gameplay.
+    fn hide_html_input() -> Result<(), ()> {
+        let window = web_sys::window().ok_or(())?;
+        let document = window.document().ok_or(())?;
+        let el = document.get_element_by_id(INPUT_ID).ok_or(())?;
+        let input = el.dyn_into::<HtmlInputElement>().map_err(|_| ())?;
+        let style = input.style();
+        let _ = style.set_property("pointer-events", "none");
+        let _ = style.set_property("opacity", "0");
+        let _ = input.blur();
+        Ok(())
     }
 }

@@ -86,6 +86,7 @@ fn player_movement(
     streaming_world: Option<Res<StreamingWorldResource>>,
     net: Option<Res<crate::net::plugin::Net>>,
     name_edit: Option<Res<crate::net::hud::NameEdit>>,
+    touch: Res<crate::touch::TouchControls>,
 ) {
     // UI owns the keyboard while the login page is up (pre-login) or a text
     // field is being edited — WASD must not move the player then.
@@ -101,6 +102,8 @@ fn player_movement(
     if keyboard.pressed(KeyCode::KeyS) { input.y -= 1.0; } // south
     if keyboard.pressed(KeyCode::KeyA) { input.x -= 1.0; } // west
     if keyboard.pressed(KeyCode::KeyD) { input.x += 1.0; } // east
+    // Virtual joystick adds analog movement (magnitude <= 1).
+    input += touch.move_vec;
 
     let dir = input.normalize_or_zero();
     let mut speed = BASE_SPEED;
@@ -110,6 +113,8 @@ fn player_movement(
     if keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight) {
         speed *= SPRINT_MULTIPLIER;
     }
+    // Partial joystick tilt scales speed for precise analog movement.
+    speed *= input.length().min(1.0);
 
     // Exp-lerp the actual velocity toward the commanded one; the player
     // accelerates on key press and decelerates to a stop on release. dt is

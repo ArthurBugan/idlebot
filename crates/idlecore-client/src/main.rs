@@ -24,6 +24,7 @@ mod plugins;
 mod skins;
 mod net;
 mod fps_counter;
+mod touch;
 mod world_floor;
 mod tiny;
 mod assets;
@@ -42,11 +43,17 @@ fn main() {
         .add_plugins(
             DefaultPlugins
                 .set(ImagePlugin::default_nearest())
-                // On web, assets are served from the site root (Trunk copies
-                // the `assets/` folder next to the wasm), so resolve paths
-                // like `models/...` from ".".
+                // On web, assets are served from the site root (the Dockerfile
+                // copies `assets/*` next to the wasm), so resolve paths like
+                // `models/...` from ".". On native, anchor to the crate's
+                // `assets/` dir via CARGO_MANIFEST_DIR so `cargo run` works
+                // from any working directory.
                 .set(bevy::asset::AssetPlugin {
-                    file_path: ".".to_string(),
+                    file_path: if cfg!(target_arch = "wasm32") {
+                        ".".to_string()
+                    } else {
+                        format!("{}/assets", env!("CARGO_MANIFEST_DIR"))
+                    },
                     ..default()
                 })
                 // On web, stretch the canvas to fill the browser viewport
@@ -94,6 +101,7 @@ fn main() {
         .add_plugins(net::market::MarketPlugin)
         .add_plugins(net::craft::CraftPlugin)
         .add_plugins(inventory::InventoryPlugin)
+        .add_plugins(touch::TouchPlugin)
         .insert_resource(PlayerTransform::default())
         .insert_resource(idle::IdleGainsState::default())
         .insert_resource(world_floor::FloorPlantState::default())

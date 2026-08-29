@@ -115,6 +115,7 @@ fn handle_zoom(
     windows: Query<&Window>,
     minimap_state: Res<MinimapState>,
     mut zoom: ResMut<CameraZoom>,
+    mut touch: ResMut<crate::touch::TouchControls>,
 ) {
     // Zoom step per wheel notch / +/- key press (1.3 = +30% per step).
     let factor: f32 = 1.3;
@@ -145,6 +146,14 @@ fn handle_zoom(
         info!("Camera zoom: {:.1} px/unit", zoom.scale);
     }
     if keys.just_pressed(KeyCode::Minus) || keys.just_pressed(KeyCode::NumpadSubtract) {
+        zoom.scale = (zoom.scale / factor).clamp(MIN_ZOOM, MAX_ZOOM);
+        info!("Camera zoom: {:.1} px/unit", zoom.scale);
+    }
+    if std::mem::take(&mut touch.zoom_in) {
+        zoom.scale = (zoom.scale * factor).clamp(MIN_ZOOM, MAX_ZOOM);
+        info!("Camera zoom: {:.1} px/unit", zoom.scale);
+    }
+    if std::mem::take(&mut touch.zoom_out) {
         zoom.scale = (zoom.scale / factor).clamp(MIN_ZOOM, MAX_ZOOM);
         info!("Camera zoom: {:.1} px/unit", zoom.scale);
     }

@@ -537,6 +537,10 @@ pub const ITEM_PICKAXE: &str = "Pickaxe";
 pub const ITEM_AXE: &str = "Axe";
 pub const ITEM_SHOVEL: &str = "Shovel";
 pub const ITEM_HOE: &str = "Hoe";
+/// A picked-up craft bench. Picking one up (via `gather_object` on a
+/// `CraftBench` world object) grants this item; placing it back down consumes
+/// it in `place_craft_bench` (preferred over the 4-log recipe).
+pub const ITEM_WORKBENCH: &str = "Workbench";
 /// Destroying a grass tuft drops this much fiber plus a chance of seeds.
 pub const GRASS_PER_TUFT: u64 = 2;
 pub const STONE_PER_ROCK: u64 = 2;
