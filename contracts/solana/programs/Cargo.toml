@@ -3,15 +3,34 @@ name = "idlebot-anchor-workspace"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
-anchor-lang = "0.29.0"
-solana-program = "~1.15.23"
-spl-token = { version = "4.0", features = ["no-entrypoint"] }
-spl-token-2022 = { version = "0.9", features = ["no-entrypoint"] }
-serde = { version = "1", default-features = false, features = ["derive"] }
-borsh = { version = "0.10", features = ["derive"] }
-log = "0.4"
+[lib]
+name = "idlebot_anchor_workspace"
+crate-type = ["cdylib", "lib"]
 
-[dev-dependencies]
-anchor-lang = { version = "0.29.0", features = ["test-bpf"] }
-anchor-spl = "0.29.0"
+[dependencies]
+anchor-lang = "0.30"
+anchor-spl = "0.30"
+# Direct dep so the `pubkey!` macro (used by token_utils::USDT_MINT) can
+# resolve the `solana_program` crate at the expansion site.
+solana-program = "1.18"
+# spl-memo 4.0.3+ and spl-token 4.0.2 allow solana-program <=2 and pull a
+# second, incompatible solana-program version into the graph; the pinned
+# versions below constrain solana-program to 1.18.x like the rest.
+spl-memo = { version = "=4.0.4", features = ["no-entrypoint"] }
+spl-token = { version = "=4.0.3", features = ["no-entrypoint"] }
+
+[features]
+no-entrypoint = []
+anchor-debug = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(feature, values("cpi"))',
+    'cfg(feature, values("no-entrypoint"))',
+    'cfg(feature, values("no-idl"))',
+    'cfg(feature, values("no-log-ix-name"))',
+    'cfg(feature, values("custom-heap"))',
+    'cfg(feature, values("custom-panic"))',
+    'cfg(target_os, values("solana"))',
+    'cfg(anchor_debug)',
+] }

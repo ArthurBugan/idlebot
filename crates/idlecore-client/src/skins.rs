@@ -1,39 +1,48 @@
-//! Player skin — a genuine Tiny* mini character with 8-direction animation.
+//! Player skins — the EmanuelleDev pre-made farmers (Alex, Josh, Lyria,
+//! Manu, Tori) with 8-direction animation.
 //!
-//! The base sprite is a real Tiny Dungeon character tile
-//! (`models/Tiny Dungeon/Tiles/tile_0085.png`, front-facing 16×16). The
-//! packs only ship that single pose, so the 8-direction × {idle, walk}
-//! frames are derived from it at load time by pixel surgery: eye offsets
-//! turn the face, a hair recolor builds the back view, a 1px body bob plus
-//! leg shuffles animate the cycle. West-side directions are mirrors of the
-//! east-side ones (S, SE, E, NE, N are derived; SW/W/NW flipped).
+//! The pack ships ready-to-use character sheets
+//! (`Character/Character/Pre-made/<name>/{Idle,Walk}.png`) laid out on a
+//! 32×32 frame grid: 3 rows × {4 idle | 6 walk} columns. Rows are the three
+//! canonical views (0 = facing down/front, 1 = up/back, 2 = side). Each
+//! 32×32 frame is sliced out at load time and the side view is mirrored to
+//! give west-facing directions, producing a convincing 8-way cycle.
 
 use bevy::prelude::*;
-use bevy::asset::RenderAssetUsages;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite::Anchor;
+use std::collections::HashMap;
 use std::f32::consts::TAU;
-use crate::player::{ClientPlayer, Player, PlayerOrientation};
+use crate::player::{ClientPlayer, Player, PlayerOrientation, PLAYER_SIZE};
 use crate::plugins::player::BASE_SPEED;
 
-/// Selectable characters (single Tiny Dungeon mini today).
-pub const CHARACTERS: &[&str] = &["Tiny Villager"];
-
-/// Source tile: Tiny Dungeon villager (front-facing, 16×16).
-const SOURCE_TILE: &str = "models/Tiny Dungeon/Tiles/tile_0085.png";
+/// Selectable characters (the pack's ready-made farmers).
+pub const CHARACTERS: &[&str] = &["Alex", "Josh", "Lyria", "Manu", "Tori"];
 
 /// Sheet layout: directions 0=NW clockwise to 7=N (matches
-/// `direction_index`), 2 idle frames and 4 walk frames per direction.
+/// `direction_index`). The premade sheets only carry 3 unique views, so all
+/// 8 directions are covered by mirroring (S/E/SE/N share 3 base frames).
 pub const DIRECTIONS: usize = 8;
-pub const IDLE_FRAMES: usize = 2;
-pub const RUN_FRAMES: usize = 4;
+pub const IDLE_FRAMES: usize = 4;
+pub const WALK_FRAMES: usize = 6;
+pub const RUN_FRAMES: usize = 8;
 
-/// Frame size (art pixels).
-pub const FRAME_W: u32 = 16;
-pub const FRAME_H: u32 = 16;
+/// Frame size (art pixels) of the premade character sheets.
+pub const FRAME_W: u32 = 32;
+pub const FRAME_H: u32 = 32;
 
-/// On-screen figure height in world units (matches the Tiny prop scale).
-pub const TINY_FIGURE_HEIGHT: f32 = 3.4;
+/// Build the source sheet paths for a named character: idle, walk, run.
+fn sheet_paths(name: &str) -> (String, String, String) {
+    (
+        format!("models/Character/Character/Pre-made/{name}/Idle.png"),
+        format!("models/Character/Character/Pre-made/{name}/Walk.png"),
+        format!("models/Character/Character/Pre-made/{name}/Run.png"),
+    )
+}
+
+/// On-screen figure height in world units — the player's normal size
+/// (art is square, 1024×1024). Kept in sync with the spawn size so the
+/// skin bake never shrinks the character below it.
+pub const TINY_FIGURE_HEIGHT: f32 = PLAYER_SIZE;
 
 /// Animation pacing (seconds per frame). The walk cycle ticks faster while
 /// sprinting; idle breathes slowly.
@@ -46,234 +55,118 @@ pub const RUN_SPEED: f32 = BASE_SPEED * 1.6;
 const MOVE_EPS: f32 = 0.5;
 
 // ============================================================================
-// Pixel surgery on the source tile
+// Slicing the premade character sheets
 // ============================================================================
 
-/// Tiny Dungeon palette entries we manipulate.
-const EYES: [u8; 4] = [38, 43, 68, 255];
-const SKIN: [u8; 4] = [247, 194, 130, 255];
-const SKIN_SHADE: [u8; 4] = [225, 154, 101, 255];
-const HAIR: [u8; 4] = [189, 108, 74, 255];
-const HAIR_DARK: [u8; 4] = [118, 59, 54, 255];
+/// The three unique views in the sheets' rows: 0 = down (front), 1 = up
+/// (back), 2 = side (east; west is the horizontal mirror).
+const ROW_DOWN: u32 = 0;
+const ROW_UP: u32 = 1;
+const ROW_SIDE: u32 = 2;
 
-/// One 16×16 frame under construction; `None` = transparent.
-pub type Canvas = [[Option<[u8; 4]>; 16]; 16];
+/// One RGBA frame sliced from a sheet (`None` = transparent pixel).
+pub type Frame = [[Option<[u8; 4]>; FRAME_W as usize]; FRAME_H as usize];
 
-fn put(c: &mut Canvas, x: i32, y: i32, col: [u8; 4]) {
-    if (0..16).contains(&x) && (0..16).contains(&y) {
-        c[y as usize][x as usize] = Some(col);
-    }
-}
-
-fn get(c: &Canvas, x: i32, y: i32) -> Option<[u8; 4]> {
-    if (0..16).contains(&x) && (0..16).contains(&y) {
-        c[y as usize][x as usize]
-    } else {
-        None
-    }
-}
-
-/// Mirror horizontally (east view → west view).
-fn mirrored(c: &Canvas) -> Canvas {
-    let mut out = [[None; 16]; 16];
-    for y in 0..16 {
-        for x in 0..16 {
-            out[y][x] = c[y][15 - x];
+/// Extract one frame from a loaded sheet at (col, row) in FRAME_W×FRAME_H
+/// cells and return it as a 2D pixel grid, optionally mirrored horizontally.
+fn slice_frame(data: &[u8], w: u32, h: u32, col: u32, row: u32, flip: bool) -> Frame {
+    let mut out = [[None; FRAME_W as usize]; FRAME_H as usize];
+    for fy in 0..FRAME_H {
+        for fx in 0..FRAME_W {
+            let sx = (col * FRAME_W + fx) as usize;
+            let sy = (row * FRAME_H + fy) as usize;
+            if sx >= w as usize || sy >= h as usize {
+                continue;
+            }
+            let i = (sy * w as usize + sx) * 4;
+            let alpha = data.get(i + 3).copied().unwrap_or(0);
+            if alpha == 0 {
+                continue;
+            }
+            let px = [
+                data[i],
+                data[i + 1],
+                data[i + 2],
+                alpha,
+            ];
+            let out_x = if flip {
+                (FRAME_W - 1 - fx) as usize
+            } else {
+                fx as usize
+            };
+            out[fy as usize][out_x] = Some(px);
         }
     }
     out
 }
 
-fn same_color(a: Option<[u8; 4]>, b: [u8; 4]) -> bool {
-    a.map(|c| c == b).unwrap_or(false)
-}
-
-/// Convert the loaded source tile into a working canvas.
-fn canvas_from_image(img: &Image) -> Canvas {
-    let mut c = [[None; 16]; 16];
-    let data = img.data.as_deref().unwrap_or(&[]);
-    for y in 0..16usize {
-        for x in 0..16usize {
-            let i = (y * 16 + x) * 4;
-            if i + 3 < data.len() && data[i + 3] > 0 {
-                c[y][x] = Some([
-                    data[i],
-                    data[i + 1],
-                    data[i + 2],
-                    data[i + 3],
-                ]);
-            }
-        }
-    }
-    c
-}
-
-/// Convert a canvas to a Bevy image.
-fn canvas_to_image(c: &Canvas) -> Image {
+/// Convert a frame grid back to a Bevy image.
+fn frame_to_image(f: &Frame) -> Image {
     let mut pixels = vec![0u8; (FRAME_W * FRAME_H * 4) as usize];
-    for y in 0..16 {
-        for x in 0..16 {
-            if let Some(col) = c[y][x] {
-                let i = ((y * 16 + x) * 4) as usize;
+    for y in 0..FRAME_H as usize {
+        for x in 0..FRAME_W as usize {
+            if let Some(col) = f[y][x] {
+                let i = (y * FRAME_W as usize + x) * 4;
                 pixels[i..i + 4].copy_from_slice(&col);
             }
         }
     }
     Image::new(
-        Extent3d { width: FRAME_W, height: FRAME_H, depth_or_array_layers: 1 },
-        TextureDimension::D2,
+        bevy::render::render_resource::Extent3d {
+            width: FRAME_W,
+            height: FRAME_H,
+            depth_or_array_layers: 1,
+        },
+        bevy::render::render_resource::TextureDimension::D2,
         pixels,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::default(),
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        bevy::asset::RenderAssetUsages::default(),
     )
 }
 
-/// Shift every eye pixel by `dx` (turning the face toward a direction).
-fn shift_eyes(c: &mut Canvas, dx: i32) {
-    if dx == 0 {
-        return;
-    }
-    let mut moved = Vec::new();
-    for y in 0..16i32 {
-        for x in 0..16i32 {
-            if same_color(get(c, x, y), EYES) {
-                moved.push((x, y));
-            }
-        }
-    }
-    for (x, y) in moved {
-        c[y as usize][x as usize] = None;
-        put(c, x + dx, y, EYES);
-    }
-}
-
-/// Drop the far-side eye and nudge the near one forward (side profile).
-fn side_profile(c: &mut Canvas) {
-    let mut moved = Vec::new();
-    for y in 0..16i32 {
-        for x in 0..16i32 {
-            if same_color(get(c, x, y), EYES) {
-                moved.push((x, y));
-            }
-        }
-    }
-    let mut first = true;
-    for (x, y) in moved {
-        c[y as usize][x as usize] = None;
-        if first {
-            first = false;
-            continue; // far eye disappears in profile
-        }
-        put(c, x + 1, y, EYES);
-    }
-}
-
-/// Back view: the face becomes hair (head rows only — hands stay skin).
-/// Eyes map to the same hair color as the skin, otherwise the two dark
-/// spots survive as "eyes on the back of the head".
-fn back_view(c: &mut Canvas) {
-    for y in 0..10usize {
-        for x in 0..16usize {
-            match c[y][x] {
-                Some(col) if col == SKIN || col == SKIN_SHADE || col == EYES => {
-                    c[y][x] = Some(HAIR)
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-/// Body bob: head+torso drop 1px, legs stay planted.
-fn bobbed(c: &Canvas) -> Canvas {
-    let mut out = *c;
-    for y in (1..14).rev() {
-        out[y] = c[y - 1];
-    }
-    out
-}
-
-/// Leg shuffle: pants/feet colors in the bottom rows spread (`±1`) or close
-/// for the stride, inside the static outline frame.
-fn leg_shuffle(c: &Canvas, left_dx: i32, right_dx: i32) -> Canvas {
-    let mut out = *c;
-    for y in 14..16usize {
-        for x in 0..16usize {
-            if let Some(col) = c[y][x] {
-                if col == HAIR || col == HAIR_DARK {
-                    out[y][x] = None;
-                }
-            }
-        }
-    }
-    for y in 14..16usize {
-        for x in 0..16usize {
-            if let Some(col) = c[y][x] {
-                if col == HAIR || col == HAIR_DARK {
-                    let dx = if x < 8 { left_dx } else { right_dx };
-                    put(&mut out, x as i32 + dx, y as i32, col);
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Build the full sheet from the source tile: `idle[d * IDLE_FRAMES + f]`,
-/// `run[d * RUN_FRAMES + f]`, directions 0=NW clockwise to 7=N (west side
-/// mirrored from east).
-pub fn derive_sheet(base: &Canvas) -> (Vec<Canvas>, Vec<Canvas>) {
-    // (view, eye_dx) per direction; east views get mirrored into west ones.
-    // Anything up-ish (NE/N/NW) shows the back of the head — the front view
-    // with shifted eyes read as "eyes on the back of the head" while running
-    // diagonally up.
-    const DIR_VIEW: [(u8, i32, bool); DIRECTIONS] = [
-        (4, 0, true),  // 0: NW  <- back (mirrored; symmetric art)
-        (2, 0, true),  // 1: W   <- mirror of E
-        (1, 1, true),  // 2: SW  <- mirror of SE
-        (0, 0, false), // 3: S
-        (1, 1, false), // 4: SE
-        (2, 0, false), // 5: E
-        (4, 0, false), // 6: NE  <- back
-        (4, 0, false), // 7: N
+/// Gather all frames (sliced, per direction) for one action sheet. For each
+/// of the 8 directions we select the appropriate source row (down/up/side),
+/// mirroring the side view for west-facing directions.
+fn build_action_frames(
+    images: &mut Assets<Image>,
+    data: &[u8],
+    w: u32,
+    h: u32,
+    cols: u32,
+) -> Vec<Handle<Image>> {
+    // Base row per facing, plus whether the view is mirrored (west side).
+    // Directions 0=NW clockwise to 7=N (matches `direction_index`).
+    const DIR_SELECT: [(u32, bool); DIRECTIONS] = [
+        (ROW_UP, false),   // 0: NW  -> back
+        (ROW_SIDE, true),  // 1: W   -> mirrored side
+        (ROW_SIDE, true),  // 2: SW  -> mirrored side
+        (ROW_DOWN, false), // 3: S   -> front
+        (ROW_SIDE, false), // 4: SE  -> side
+        (ROW_SIDE, false), // 5: E   -> side
+        (ROW_UP, false),   // 6: NE  -> back
+        (ROW_UP, false),   // 7: N   -> back
     ];
-    let view_canvas = |view: u8| -> Canvas {
-        let mut c = *base;
-        match view {
-            1 => shift_eyes(&mut c, 1),   // SE
-            2 => side_profile(&mut c),    // E
-            3 => shift_eyes(&mut c, 1),   // NE
-            4 => back_view(&mut c),       // N
-            _ => {}
-        }
-        c
-    };
-    let mut idle = Vec::with_capacity(DIRECTIONS * IDLE_FRAMES);
-    let mut run = Vec::with_capacity(DIRECTIONS * RUN_FRAMES);
-    for (view, _, flip) in DIR_VIEW {
-        let front = view_canvas(view);
-        // Idle: stand + breathe.
-        idle.push(if flip { mirrored(&front) } else { front });
-        idle.push(if flip { mirrored(&bobbed(&front)) } else { bobbed(&front) });
-        // Walk: stand, spread, stand, together — stride frames bob.
-        let spread = bobbed(&leg_shuffle(&front, -1, 1));
-        let together = bobbed(&leg_shuffle(&front, 1, -1));
-        for stride in [&front, &spread, &front, &together] {
-            run.push(if flip { mirrored(stride) } else { *stride });
+    let mut out = Vec::with_capacity(DIRECTIONS * cols as usize);
+    for (row, flip) in DIR_SELECT {
+        for col in 0..cols {
+            let frame = slice_frame(data, w, h, col, row, flip);
+            out.push(images.add(frame_to_image(&frame)));
         }
     }
-    (idle, run)
+    out
 }
 
 // ============================================================================
 // Runtime skin state + animation
 // ============================================================================
 
-/// One playable character: 8 directional idles + 8×4 walk frames.
+/// One playable character: 8 directional idles, walks and runs.
 pub struct IsoCharacter {
     pub name: String,
     /// `idle[d * IDLE_FRAMES + f]`, d = 0..8 (0=NW clockwise to 7=N).
     pub idle: Vec<Handle<Image>>,
+    /// `walk[d * WALK_FRAMES + f]`.
+    pub walk: Vec<Handle<Image>>,
     /// `run[d * RUN_FRAMES + f]`.
     pub run: Vec<Handle<Image>>,
 }
@@ -281,23 +174,29 @@ pub struct IsoCharacter {
 /// Runtime skin state.
 #[derive(Resource, Default)]
 pub struct PlayerSkins {
-    /// Some once the generated sheet has been built.
-    pub character: Option<IsoCharacter>,
-    /// Set when the player sprite should switch to the current character.
+    /// Character name → sliced animation set, populated once all sheets load.
+    pub characters: HashMap<String, IsoCharacter>,
+    /// Currently selected character (drives which frames render).
+    pub selected: Option<String>,
+    /// Set when the player sprite should switch to the selected character.
     pub need_bake: bool,
     /// True once the sprite currently shows the selected character.
     pub applied: bool,
-    /// Source tile handle while it streams in.
-    pub source: Option<Handle<Image>>,
     /// Animation accumulators (seconds) and current frame indices.
     pub anim_time: f32,
     pub idle_frame: usize,
     pub run_frame: usize,
+    pub walk_frame: usize,
+}
+
+/// Advance (and wrap) the run frame index.
+fn step_run_frame(current: usize) -> usize {
+    (current + 1) % RUN_FRAMES
 }
 
 /// Advance (and wrap) the walk frame index.
-fn step_run_frame(current: usize) -> usize {
-    (current + 1) % RUN_FRAMES
+fn step_walk_frame(current: usize) -> usize {
+    (current + 1) % WALK_FRAMES
 }
 
 /// Advance (and wrap) the idle frame index.
@@ -333,32 +232,81 @@ impl Plugin for SkinsPlugin {
     }
 }
 
-/// Load the Tiny Dungeon mini, then derive the animation sheet from it once
-/// the texture has streamed in.
+/// Load every pre-made character's Idle and Walk sheets, then slice each
+/// 32×32 frame into the per-direction animation array once all sheets are
+/// ready. Strong handles are kept alive in `sources` (a `Local`) so no raw
+/// sheet is ever unloaded mid-build.
 fn setup_skins(
     mut images: ResMut<Assets<Image>>,
     asset_server: Res<AssetServer>,
     mut skins: ResMut<PlayerSkins>,
+    mut sources: Local<Option<Vec<Handle<Image>>>>,
 ) {
-    if skins.character.is_some() {
+    if !skins.characters.is_empty() {
         return;
     }
-    let handle = skins
-        .source
-        .get_or_insert_with(|| asset_server.load::<Image>(SOURCE_TILE));
-    let Some(src) = images.get(handle) else {
-        return; // tile still streaming — retry next frame
+    // Load (and keep) all source sheets: Idle + Walk + Run per character.
+    let handles: Vec<Handle<Image>> = if let Some(h) = sources.as_ref() {
+        h.clone()
+    } else {
+        let h: Vec<Handle<Image>> = CHARACTERS
+            .iter()
+            .flat_map(|name| {
+                let (idle_path, walk_path, run_path) = sheet_paths(name);
+                vec![
+                    asset_server.load::<Image>(&idle_path),
+                    asset_server.load::<Image>(&walk_path),
+                    asset_server.load::<Image>(&run_path),
+                ]
+            })
+            .collect();
+        *sources = Some(h.clone());
+        h
     };
-    let base = canvas_from_image(src);
-    let (idle_canvases, run_canvases) = derive_sheet(&base);
-    let character = IsoCharacter {
-        name: CHARACTERS[0].to_string(),
-        idle: idle_canvases.iter().map(|c| images.add(canvas_to_image(c))).collect(),
-        run: run_canvases.iter().map(|c| images.add(canvas_to_image(c))).collect(),
-    };
-    skins.character = Some(character);
+    if handles.iter().any(|h| images.get(h).is_none()) {
+        return; // sheets still streaming — retry next frame
+    }
+    let mut map = HashMap::new();
+    for (i, name) in CHARACTERS.iter().enumerate() {
+        let idle_h = handles[i * 3].clone();
+        let walk_h = handles[i * 3 + 1].clone();
+        let run_h = handles[i * 3 + 2].clone();
+        let (iw, ih, idle_data) = {
+            let idle = images.get(&idle_h).expect("idle sheet loaded");
+            (
+                idle.width(),
+                idle.height(),
+                idle.data.as_deref().unwrap_or(&[]).to_vec(),
+            )
+        };
+        let (ww, wh, walk_data) = {
+            let walk = images.get(&walk_h).expect("walk sheet loaded");
+            (
+                walk.width(),
+                walk.height(),
+                walk.data.as_deref().unwrap_or(&[]).to_vec(),
+            )
+        };
+        let (rw, rh, run_data) = {
+            let run = images.get(&run_h).expect("run sheet loaded");
+            (
+                run.width(),
+                run.height(),
+                run.data.as_deref().unwrap_or(&[]).to_vec(),
+            )
+        };
+        let character = IsoCharacter {
+            name: name.to_string(),
+            idle: build_action_frames(&mut images, &idle_data, iw, ih, iw / FRAME_W),
+            walk: build_action_frames(&mut images, &walk_data, ww, wh, ww / FRAME_W),
+            run: build_action_frames(&mut images, &run_data, rw, rh, rw / FRAME_W),
+        };
+        map.insert(name.to_string(), character);
+    }
+    skins.characters = map;
+    skins.selected = Some(CHARACTERS[0].to_string());
     skins.need_bake = true;
-    info!("Tiny mini skin derived from {SOURCE_TILE}");
+    info!("Pre-made skins sliced for {CHARACTERS:?}");
 }
 
 /// Switch the player sprite to the selected character.
@@ -369,10 +317,12 @@ fn apply_skin_to_sprite(
     if !skins.need_bake {
         return;
     }
-    let Some(character) = skins.character.as_ref() else {
+    let Some(name) = skins.selected.clone() else {
         return;
     };
-    let name = character.name.clone();
+    let Some(character) = skins.characters.get(&name) else {
+        return;
+    };
     let start = character.idle[3 * IDLE_FRAMES].clone(); // face the camera to start
     let Ok((mut sprite, mut anchor)) = player_query.single_mut() else {
         // The player sprite may not exist yet — retry next frame.
@@ -386,6 +336,7 @@ fn apply_skin_to_sprite(
     skins.anim_time = 0.0;
     skins.idle_frame = 0;
     skins.run_frame = 0;
+    skins.walk_frame = 0;
     skins.need_bake = false;
     skins.applied = true;
     info!("Skin applied to sprite: {name}");
@@ -407,30 +358,46 @@ fn animate_player_sprite(
 
     // Snapshot this direction's frames so the animation clock can be
     // mutated below without aliasing the borrow of the character.
-    let Some(character) = skins.character.as_ref() else {
+    let Some(name) = skins.selected.clone() else {
+        return;
+    };
+    let Some(character) = skins.characters.get(&name) else {
         return;
     };
     let idle_frames: Vec<Handle<Image>> =
         character.idle[d * IDLE_FRAMES..(d + 1) * IDLE_FRAMES].to_vec();
+    let walk_frames: Vec<Handle<Image>> =
+        character.walk[d * WALK_FRAMES..(d + 1) * WALK_FRAMES].to_vec();
     let run_frames: Vec<Handle<Image>> =
         character.run[d * RUN_FRAMES..(d + 1) * RUN_FRAMES].to_vec();
 
     if speed > MOVE_EPS {
-        let frame_time = if speed > RUN_SPEED {
-            SPRINT_FRAME_TIME
+        if speed > RUN_SPEED {
+            // Sprinting: use the dedicated running sheet, ticking faster.
+            skins.anim_time += time.delta_secs();
+            while skins.anim_time >= SPRINT_FRAME_TIME {
+                skins.anim_time -= SPRINT_FRAME_TIME;
+                skins.run_frame = step_run_frame(skins.run_frame);
+            }
+            skins.idle_frame = 0;
+            skins.walk_frame = 0;
+            let target = run_frames[skins.run_frame].clone();
+            if sprite.image != target {
+                sprite.image = target;
+            }
         } else {
-            WALK_FRAME_TIME
-        };
-        // Carry the sub-frame remainder so cadence stays exact at any fps.
-        skins.anim_time += time.delta_secs();
-        while skins.anim_time >= frame_time {
-            skins.anim_time -= frame_time;
-            skins.run_frame = step_run_frame(skins.run_frame);
-        }
-        skins.idle_frame = 0;
-        let target = run_frames[skins.run_frame].clone();
-        if sprite.image != target {
-            sprite.image = target;
+            // Walking: use the walk sheet at a calmer cadence.
+            skins.anim_time += time.delta_secs();
+            while skins.anim_time >= WALK_FRAME_TIME {
+                skins.anim_time -= WALK_FRAME_TIME;
+                skins.walk_frame = step_walk_frame(skins.walk_frame);
+            }
+            skins.idle_frame = 0;
+            skins.run_frame = 0;
+            let target = walk_frames[skins.walk_frame].clone();
+            if sprite.image != target {
+                sprite.image = target;
+            }
         }
     } else {
         skins.anim_time += time.delta_secs();
@@ -439,6 +406,7 @@ fn animate_player_sprite(
             skins.idle_frame = step_idle_frame(skins.idle_frame);
         }
         skins.run_frame = 0;
+        skins.walk_frame = 0;
         let target = idle_frames[skins.idle_frame].clone();
         if sprite.image != target {
             sprite.image = target;
@@ -449,25 +417,43 @@ fn animate_player_sprite(
     transform.rotation = Quat::IDENTITY;
 }
 
-/// [ and ] cycle the equipped skin (single character today — kept so the
-/// keys and the Avatar button stay wired).
-pub(crate) fn cycle_skin_dir(skins: &mut PlayerSkins, _dir: i32) {
-    if skins.character.is_some() {
+/// Cycle the equipped skin by `dir` (±1) through `CHARACTERS`. Returns the
+/// newly selected character name (callers persist it to the server).
+pub(crate) fn cycle_skin_dir(skins: &mut PlayerSkins, dir: i32) -> Option<String> {
+    let cur = skins
+        .selected
+        .as_deref()
+        .and_then(|n| CHARACTERS.iter().position(|c| c == &n));
+    let idx = match cur {
+        Some(i) => (i as i32 + dir).rem_euclid(CHARACTERS.len() as i32) as usize,
+        None => 0,
+    };
+    let name = CHARACTERS[idx].to_string();
+    if skins.selected.as_deref() != Some(name.as_str()) {
+        skins.selected = Some(name.clone());
         skins.need_bake = true;
         skins.applied = false;
     }
+    Some(name)
 }
 
-/// Persisted look: whatever the server stores renders as the pixel hero
-/// until more characters are added.
-pub(crate) fn set_skin_by_name(skins: &mut PlayerSkins, _name: &str) -> bool {
-    if skins.character.is_none() {
+/// Persisted look: the server's `avatar` column stores a character name.
+/// Selects that character (if known) and rebakes the sprite. Returns whether
+/// a switch is pending.
+pub(crate) fn set_skin_by_name(skins: &mut PlayerSkins, name: &str) -> bool {
+    if !CHARACTERS.contains(&name) {
         return false;
+    }
+    if skins.selected.as_deref() != Some(name) {
+        skins.selected = Some(name.to_string());
+        skins.need_bake = true;
+        skins.applied = false;
+        return true;
     }
     if !skins.applied {
         skins.need_bake = true;
     }
-    true
+    false
 }
 
 /// Eight-way facing derived from the movement angle (0 = east, +PI/2 = north).
@@ -498,32 +484,43 @@ mod tests {
     use super::*;
     use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_8, PI};
 
-    /// A tiny synthetic "source tile": skin face with two eyes on a hair
-    /// block and legs at the bottom — enough structure for the surgery.
-    fn fake_base() -> Canvas {
-        let mut c = [[None; 16]; 16];
-        for x in 4..=11 {
-            put(&mut c, x, 2, HAIR);
-            put(&mut c, x, 3, HAIR);
+    /// Build a synthetic sheet: `cols` identical 32×32 frames per row, each
+    /// filled with a distinct opaque tint, so slicing can be verified by
+    /// colour. Frame `(col,row)` is tagged with a unique byte so frames can
+    /// be told apart.
+    fn synthetic_sheet(cols: u32) -> (Vec<u8>, u32, u32) {
+        let w = cols * FRAME_W;
+        let h = 3 * FRAME_H;
+        let mut data = vec![0u8; (w * h * 4) as usize];
+        for row in 0..3u32 {
+            for col in 0..cols {
+                let tag = (row * 100 + col) as u8;
+                for fy in 0..FRAME_H {
+                    for fx in 0..FRAME_W {
+                        let sx = col * FRAME_W + fx;
+                        let sy = row * FRAME_H + fy;
+                        let i = ((sy * w + sx) * 4) as usize;
+                        data[i] = tag;
+                        data[i + 1] = tag;
+                        data[i + 2] = tag;
+                        data[i + 3] = 255;
+                    }
+                }
+            }
         }
-        for x in 5..=10 {
-            put(&mut c, x, 4, SKIN);
-            put(&mut c, x, 5, SKIN);
+        (data, w, h)
+    }
+
+    /// Colour of the top-left opaque pixel of a frame.
+    fn tag_of(f: &Frame) -> u8 {
+        for y in 0..FRAME_H as usize {
+            for x in 0..FRAME_W as usize {
+                if let Some(c) = f[y][x] {
+                    return c[0];
+                }
+            }
         }
-        put(&mut c, 6, 5, EYES);
-        put(&mut c, 9, 5, EYES);
-        for x in 5..=10 {
-            put(&mut c, x, 6, SKIN_SHADE);
-        }
-        for x in 5..=6 {
-            put(&mut c, x, 14, HAIR_DARK);
-            put(&mut c, x, 15, HAIR);
-        }
-        for x in 9..=10 {
-            put(&mut c, x, 14, HAIR_DARK);
-            put(&mut c, x, 15, HAIR);
-        }
-        c
+        0
     }
 
     #[test]
@@ -560,141 +557,65 @@ mod tests {
     }
 
     #[test]
-    fn run_frame_wraps_at_four() {
+    fn run_frame_wraps_at_six() {
         assert_eq!(step_run_frame(0), 1);
-        assert_eq!(step_run_frame(3), 0);
+        assert_eq!(step_run_frame(5), 0);
     }
 
     #[test]
-    fn idle_frame_wraps_at_two() {
+    fn idle_frame_wraps_at_four() {
         assert_eq!(step_idle_frame(0), 1);
-        assert_eq!(step_idle_frame(1), 0);
+        assert_eq!(step_idle_frame(3), 0);
     }
 
     #[test]
-    fn sheet_has_every_direction_and_frame() {
-        let (idle, run) = derive_sheet(&fake_base());
-        assert_eq!(idle.len(), DIRECTIONS * IDLE_FRAMES);
-        assert_eq!(run.len(), DIRECTIONS * RUN_FRAMES);
-        for c in idle.iter().chain(run.iter()) {
-            let solid = c.iter().flatten().filter(|p| p.is_some()).count();
-            assert!(solid > 8, "frame is (almost) empty");
-        }
+    fn slice_reads_the_right_row_and_column() {
+        let (data, w, h) = synthetic_sheet(4);
+        // col 3, row 2 (side view) has tag = 2*100 + 3 = 203.
+        let f = slice_frame(&data, w, h, 3, ROW_SIDE, false);
+        assert_eq!(tag_of(&f), 203);
+        // col 0, row 0 (front) tag = 0.
+        let f = slice_frame(&data, w, h, 0, ROW_DOWN, false);
+        assert_eq!(tag_of(&f), 0);
     }
 
     #[test]
-    fn west_frames_mirror_east_frames() {
-        let flip = |c: &Canvas| -> Canvas { mirrored(c) };
-        let (idle, run) = derive_sheet(&fake_base());
-        // E is direction 5, W is 1; NE=6/NW=0 and SE=4/SW=2 likewise.
-        for (east, west) in [(5usize, 1usize), (6, 0), (4, 2)] {
-            for f in 0..RUN_FRAMES {
-                assert_eq!(
-                    flip(&run[east * RUN_FRAMES + f]),
-                    run[west * RUN_FRAMES + f],
-                    "run d{west} f{f}"
-                );
-            }
-            for f in 0..IDLE_FRAMES {
-                assert_eq!(
-                    flip(&idle[east * IDLE_FRAMES + f]),
-                    idle[west * IDLE_FRAMES + f],
-                    "idle d{west} f{f}"
-                );
+    fn slice_mirrors_horizontally() {
+        let (data, w, h) = synthetic_sheet(4);
+        // Build an asymmetric frame: only the left half opaque; mirroring
+        // must move it to the right half.
+        let mut tag_left = vec![0u8; (FRAME_W * FRAME_H * 4) as usize];
+        for y in 0..FRAME_H as usize {
+            for x in 0..(FRAME_W as usize / 2) {
+                let i = (y * FRAME_W as usize + x) * 4;
+                tag_left[i] = 90;
+                tag_left[i + 1] = 90;
+                tag_left[i + 2] = 90;
+                tag_left[i + 3] = 255;
             }
         }
+        let plain = slice_frame(&tag_left, FRAME_W, FRAME_H, 0, 0, false);
+        let mir = slice_frame(&tag_left, FRAME_W, FRAME_H, 0, 0, true);
+        // Mirrored: right half must now be opaque (top-right pixel filled).
+        assert!(plain[0][0].is_some());
+        assert!(plain[0][FRAME_W as usize - 1].is_none());
+        assert!(mir[0][0].is_none());
+        assert!(mir[0][FRAME_W as usize - 1].is_some());
     }
 
     #[test]
-    fn walk_frames_differ_from_stand() {
-        let (_, run) = derive_sheet(&fake_base());
-        let south = 3 * RUN_FRAMES;
-        assert_ne!(run[south], run[south + 1], "stride != stand");
-        assert_ne!(run[south + 1], run[south + 3], "left stride != right stride");
-    }
-
-    #[test]
-    fn eyes_track_the_direction() {
-        let base = fake_base();
-        let (idle, _) = derive_sheet(&base);
-        let eye_cols = |c: &Canvas| -> Vec<i32> {
-            let mut v: Vec<i32> = (0..16i32)
-                .filter(|&x| same_color(c[5][x as usize], EYES))
-                .collect();
-            v.sort();
-            v
-        };
-        // S: eyes at 6/9. SE: shifted +1. E: far eye gone, near eye +1.
-        assert_eq!(eye_cols(&idle[3 * IDLE_FRAMES]), vec![6, 9]);
-        assert_eq!(eye_cols(&idle[4 * IDLE_FRAMES]), vec![7, 10]);
-        assert_eq!(eye_cols(&idle[5 * IDLE_FRAMES]), vec![10]);
-        // N/NE/NW (back views): no eyes at all — hair recolor.
-        assert!(eye_cols(&idle[7 * IDLE_FRAMES]).is_empty(), "N");
-        assert!(eye_cols(&idle[6 * IDLE_FRAMES]).is_empty(), "NE");
-        assert!(eye_cols(&idle[0 * IDLE_FRAMES]).is_empty(), "NW");
-    }
-
-    #[test]
-    fn back_view_keeps_hands_skin() {
-        let mut c = fake_base();
-        put(&mut c, 3, 12, SKIN); // a hand below the head rows
-        back_view(&mut c);
-        assert_eq!(c[12][3], Some(SKIN), "hands must not turn to hair");
-        assert_eq!(c[5][5], Some(HAIR), "face skin must become hair");
-        assert_eq!(c[5][9], Some(HAIR), "eyes must vanish into the hair");
-    }
-
-    #[test]
-    fn bob_moves_the_head_not_the_feet() {
-        let base = fake_base();
-        let bob = bobbed(&base);
-        assert_eq!(bob[3], base[2], "torso shifts down");
-        assert_eq!(bob[14], base[14], "legs stay planted");
-    }
-
-    #[test]
-    #[ignore = "visual review helper: cargo test dump_sheet -- --ignored"]
-    fn dump_sheet() {
-        // Prefer the real Tiny Dungeon tile; fall back to the synthetic one.
-        let base = image::open("assets/models/Tiny Dungeon/Tiles/tile_0085.png")
-            .ok()
-            .map(|img| img.to_rgba8())
-            .map(|rgba| {
-                let img = Image::new(
-                    Extent3d { width: 16, height: 16, depth_or_array_layers: 1 },
-                    TextureDimension::D2,
-                    rgba.into_raw(),
-                    TextureFormat::Rgba8UnormSrgb,
-                    RenderAssetUsages::default(),
-                );
-                canvas_from_image(&img)
-            })
-            .unwrap_or_else(fake_base);
-        let (idle, run) = derive_sheet(&base);
-        let cols = IDLE_FRAMES + RUN_FRAMES;
-        let mut sheet = image::RgbaImage::new(DIRECTIONS as u32 * 17, 2 * cols as u32 * 17);
-        for (row, frames) in [(0usize, &idle), (1usize, &run)] {
-            for d in 0..DIRECTIONS {
-                for f in 0..frames.len() / DIRECTIONS {
-                    let c = &frames[d * (frames.len() / DIRECTIONS) + f];
-                    for y in 0..16usize {
-                        for x in 0..16usize {
-                            let p = c[y][x].unwrap_or([0, 0, 0, 0]);
-                            sheet.put_pixel(
-                                (d as u32 * 17) + x as u32,
-                                (row as u32 * cols as u32 * 17) + (f as u32 * 17) + y as u32,
-                                image::Rgba(p),
-                            );
-                        }
-                    }
-                }
+    fn direction_picks_the_correct_view_row() {
+        // Each direction must map to a valid row (0..3) and the side views
+        // mirror exactly the east-facing set.
+        let (data, w, h) = synthetic_sheet(6);
+        // E (d 5): col depends on action but row must be ROW_SIDE.
+        let e = slice_frame(&data, w, h, 0, ROW_SIDE, false);
+        let w_ = slice_frame(&data, w, h, 0, ROW_SIDE, true);
+        // Mirrored E frame should equal the W frame (same source, flipped).
+        for y in 0..FRAME_H as usize {
+            for x in 0..FRAME_W as usize {
+                assert_eq!(e[y][x], w_[y][FRAME_W as usize - 1 - x]);
             }
         }
-        let big = image::imageops::resize(
-            &sheet, sheet.width() * 5, sheet.height() * 5, image::imageops::FilterType::Nearest,
-        );
-        image::DynamicImage::ImageRgba8(big)
-            .save("/var/folders/nc/rcc9k90n2m17088ggj431hnm0000gn/T/opencode/mini_sheet.png")
-            .unwrap();
     }
 }

@@ -16,6 +16,7 @@ pub struct HexTile {
     pub is_polluted: bool,
     pub plant: Option<String>,
     pub planted_by: Option<String>,
+    pub plots: Option<String>,
     pub cleaned_at: Option<u64>,
     pub last_interaction: u64,
 }
@@ -37,6 +38,7 @@ pub struct HexTileCols {
     pub is_polluted: __sdk::__query_builder::Col<HexTile, bool>,
     pub plant: __sdk::__query_builder::Col<HexTile, Option<String>>,
     pub planted_by: __sdk::__query_builder::Col<HexTile, Option<String>>,
+    pub plots: __sdk::__query_builder::Col<HexTile, Option<String>>,
     pub cleaned_at: __sdk::__query_builder::Col<HexTile, Option<u64>>,
     pub last_interaction: __sdk::__query_builder::Col<HexTile, u64>,
 }
@@ -54,6 +56,7 @@ impl __sdk::__query_builder::HasCols for HexTile {
             is_polluted: __sdk::__query_builder::Col::new(table_name, "is_polluted"),
             plant: __sdk::__query_builder::Col::new(table_name, "plant"),
             planted_by: __sdk::__query_builder::Col::new(table_name, "planted_by"),
+            plots: __sdk::__query_builder::Col::new(table_name, "plots"),
             cleaned_at: __sdk::__query_builder::Col::new(table_name, "cleaned_at"),
             last_interaction: __sdk::__query_builder::Col::new(table_name, "last_interaction"),
         }

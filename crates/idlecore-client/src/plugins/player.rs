@@ -218,16 +218,9 @@ fn vehicle_color(vehicle: &idlecore_core::Vehicle) -> Color {
 
 fn spawn_vehicle_indicator(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
     mut images: ResMut<Assets<Image>>,
-    mut queue: ResMut<crate::tiny::TinyKeyQueue>,
     mut indicator: ResMut<VehicleIndicator>,
 ) {
-    let mut art = |path: &'static str| -> Handle<Image> {
-        let h = asset_server.load::<Image>(path);
-        queue.0.push(h.clone());
-        h
-    };
     let white = images.add(bevy::image::Image::new_fill(
         bevy::render::render_resource::Extent3d { width: 4, height: 4, depth_or_array_layers: 1 },
         bevy::render::render_resource::TextureDimension::D2,
@@ -235,11 +228,13 @@ fn spawn_vehicle_indicator(
         bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
         bevy::asset::RenderAssetUsages::default(),
     ));
+    // Vehicle indicators render as tinted diamonds over the player; the old
+    // Tiny Battle art is gone, so no dedicated sprites are loaded.
     commands.insert_resource(VehicleSprites {
         white: Some(white),
-        boat: Some(art("models/Tiny Battle/Tiles/tile_0139.png")),
-        airplane: Some(art("models/Tiny Battle/Tiles/tile_0136.png")),
-        car: Some(art("models/Tiny Battle/Tiles/tile_0114.png")),
+        boat: None,
+        airplane: None,
+        car: None,
     });
     let plate = commands
         .spawn((

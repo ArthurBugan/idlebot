@@ -1,244 +1,224 @@
 //! Subscription program — premium template limits on Solana.
 //!
-//! Maps 1:1 to the Solidity Subscription.sol:
-//! - purchase_subscription: Pay 1 USDT for 30-day premium (500 templates)
-//! - refund_subscription: Refund if still active
-//! - cancel_subscription: Refund if not active
-//! - withdraw_subscription: Refund remaining time
+//! Maps 1:1 to the Solidity Subscription.sol (Spec 012):
+//! - purchase_subscription: pay 1 USDT for 30 days of premium (500 templates)
+//! - refund_subscription: refund the price if still active
+//! - cancel_subscription: deactivate an expired subscription
+//! - withdraw_subscription: refund the remaining time of an active subscription
 
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Token, TokenAccount};
 
-use crate::token_utils::{USDT_MINT, get_balance};
+use crate::token_utils::{transfer_usdt, transfer_usdt_with_signer};
+use crate::{InitSubscription, PurchaseSubscription, RefundSubscription, CancelSubscription, WithdrawSubscription};
 
-// ─── Constants ───────────────────────────────────────────────────────
-pub const PROGRAM_DISCRIMINATOR: [u8; 8] = *b"sub_idle_bot";
-pub const MONTH_SECONDS: u64 = 30 * 24 * 3600;
-pub const PREMIUM_PRICE_USDT: u64 = 1_000_000; // 1 USDT (6 decimals)
+/// Premium length: 30 days.
+pub const MONTH_SECONDS: i64 = 30 * 24 * 3600;
+/// Premium price: 1 USDT (6 decimals).
+pub const PREMIUM_PRICE_USDT: u64 = 1_000_000;
+/// Free tier template limit.
 pub const FREE_LIMIT: u32 = 50;
+/// Premium tier template limit.
 pub const PREMIUM_LIMIT: u32 = 500;
 
-// ─── Account Types ───────────────────────────────────────────────────
-#[derive(Debug, Clone, Default, AnchorSerialize, AnchorDeserialize)]
+/// Subscription state: PDA seeds `[b"subscription", owner]`.
+#[account]
 pub struct SubscriptionAccount {
     pub program_id: Pubkey,
     pub owner: Pubkey,
-    pub premium_until: u64,
+    /// Unix timestamp until which the subscription is premium.
+    pub premium_until: i64,
     pub limit: u32,
-    pub last_transaction: u64,
+    /// Block timestamp of the last subscription transaction.
+    pub last_transaction: i64,
     pub padding: [u8; 56],
 }
 
-// ─── Program ─────────────────────────────────────────────────────────
-declare_id!("3DGzCYwvQoxCs9jGkV3zY95CsAJLB7mSaFQ3Eo7X7qRJ");
-
-#[program]
-pub mod subscription_program {
-    use super::*;
-
-    /// Initialize subscription account as PDA.
-    pub fn init_subscription(ctx: Context<InitSubscription>) -> Result<()> {
-        let account = &mut ctx.accounts.subscription_account;
-        account.program_id = ctx.program.id;
-        account.owner = ctx.accounts.authority.key();
-        account.premium_until = 0;
-        account.limit = FREE_LIMIT;
-        account.last_transaction = get_current_timestamp();
-        Ok(())
-    }
-
-    /// Purchase premium subscription (1 USDT for 30 days).
-    pub fn purchase_subscription(
-        ctx: Context<PurchaseSubscription>,
-        payment_token: Pubkey,
-        user: Pubkey,
-    ) -> Result<()> {
-        // Verify user is not already active
-        let subscription = &mut ctx.accounts.subscription_account;
-        let now = get_current_timestamp();
-        if subscription.premium_until > now {
-            subscription.premium_until += MONTH_SECONDS;
-        } else {
-            subscription.premium_until = now + MONTH_SECONDS;
-        }
-        subscription.limit = PREMIUM_LIMIT;
-        subscription.last_transaction = now;
-
-        // Transfer 1 USDT from payer to program wallet
-        let payer_ata_info = ctx.accounts.payer.try_borrow_mut_account()?;
-        let payer_ata = TokenAccount::try_deserialize(&payer_ata_info.data)
-            .map_err(|_| AnchorError::from("Invalid ATA"))?;
-
-        let program_ata = spl_token::instruction::get_associated_token_address(
-            &ctx.program.key(),
-            &USDT_MINT,
-        )?;
-
-        token::transfer(
-            CpiContext::new(
-                ctx.program.to_account_info(),
-                spl_token::Transfer {
-                    from: payer_ata,
-                    to: ctx.accounts.subscription_token_account.to_account_info(),
-                    amount: TokenAmount::from(PREMIUM_PRICE_USDT),
-                    authority: payer_ata_info.key,
-                },
-            ),
-            TokenAmount::from(PREMIUM_PRICE_USDT),
-        )?;
-
-        emit!(SubscriptionPurchased {
-            user,
-            premium_until: subscription.premium_until,
-        });
-
-        Ok(())
-    }
-
-    /// Refund if user is still active.
-    pub fn refund_subscription(
-        ctx: Context<RefundSubscription>,
-        payment_token: Pubkey,
-        user: Pubkey,
-    ) -> Result<()> {
-        let now = get_current_timestamp();
-        let subscription = &mut ctx.accounts.subscription_account;
-
-        if subscription.premium_until <= now {
-            return Err(ErrorCode::NotActive.into());
-        }
-
-        // Refund the payment
-        refund_to_payer(ctx.accounts.payer.key(), &ctx.accounts.payer.to_account_info())?;
-
-        subscription.premium_until = 0;
-        subscription.limit = FREE_LIMIT;
-        subscription.last_transaction = now;
-
-        emit!(SubscriptionRefunded { user });
-        Ok(())
-    }
-
-    /// Cancel if user is NOT active.
-    pub fn cancel_subscription(
-        ctx: Context<CancelSubscription>,
-        payment_token: Pubkey,
-        user: Pubkey,
-    ) -> Result<()> {
-        let now = get_current_timestamp();
-        let subscription = &mut ctx.accounts.subscription_account;
-
-        if subscription.premium_until > now {
-            return Err(ErrorCode::AlreadyActive.into());
-        }
-
-        refund_to_payer(ctx.accounts.payer.key(), &ctx.accounts.payer.to_account_info())?;
-        subscription.limit = FREE_LIMIT;
-        subscription.last_transaction = now;
-
-        emit!(SubscriptionRefunded { user });
-        Ok(())
-    }
-
-    /// Withdraw: refund remaining if active.
-    pub fn withdraw_subscription(
-        ctx: Context<WithdrawSubscription>,
-        payment_token: Pubkey,
-        user: Pubkey,
-    ) -> Result<()> {
-        let now = get_current_timestamp();
-        let subscription = &mut ctx.accounts.subscription_account;
-
-        if subscription.premium_until <= now {
-            return Err(ErrorCode::NotActive.into());
-        }
-
-        refund_to_payer(ctx.accounts.payer.key(), &ctx.accounts.payer.to_account_info())?;
-        subscription.premium_until = 0;
-        subscription.limit = FREE_LIMIT;
-        subscription.last_transaction = now;
-
-        emit!(SubscriptionRefunded { user });
-        Ok(())
-    }
+#[error_code]
+pub enum SubscriptionError {
+    #[msg("Subscription is not active")]
+    NotActive,
+    #[msg("Subscription is already active")]
+    AlreadyActive,
+    #[msg("Insufficient token balance")]
+    InsufficientBalance,
+    #[msg("Arithmetic overflow")]
+    Overflow,
+    #[msg("User does not match the subscription owner")]
+    InvalidUser,
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────
-fn get_current_timestamp() -> u64 {
-    match solana_program::clock::Clock::get() {
-        Ok(clock) => clock.unix_timestamp as u64,
-        Err(_) => 0,
-    }
+// ─── Events ──────────────────────────────────────────────────────────
+#[event]
+pub struct SubscriptionPurchased {
+    pub user: Pubkey,
+    pub premium_until: i64,
 }
 
-fn refund_to_payer(
-    payer_key: Pubkey,
-    payer_info: &AccountInfo,
-) -> Result<()> {
-    // Simplified: In production, refund via the proper ATA path
-    // This is a stub that would route to the token program's refund
+#[event]
+pub struct SubscriptionRefunded {
+    pub user: Pubkey,
+}
+
+// ─── Instructions ────────────────────────────────────────────────────
+/// Initialize a user's subscription account.
+pub fn init_subscription(ctx: Context<InitSubscription>) -> Result<()> {
+    let account = &mut ctx.accounts.subscription;
+    account.program_id = *ctx.program_id;
+    account.owner = ctx.accounts.authority.key();
+    account.premium_until = 0;
+    account.limit = FREE_LIMIT;
+    account.last_transaction = Clock::get()?.unix_timestamp;
     Ok(())
 }
 
-// ─── Instruction Accounts ────────────────────────────────────────────
-#[derive(Accounts)]
-pub struct InitSubscription<'info> {
-    #[account(mut)]
-    pub authority: Signer<'info>,
+/// Purchase premium: 1 USDT for 30 days (extends an active subscription).
+pub fn purchase_subscription(
+    ctx: Context<PurchaseSubscription>,
+    _payment_token: Pubkey,
+    user: Pubkey,
+) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    let subscription = &mut ctx.accounts.subscription;
 
-    /// CHECK: Subscription PDA
-    pub subscription_account: Account<'info, SubscriptionAccount>,
-    pub system_program: Program<'info, System>,
+    require!(
+        user == subscription.owner,
+        SubscriptionError::InvalidUser
+    );
+
+    let payer_balance =
+        crate::token_utils::get_balance(&ctx.accounts.payer_ata.to_account_info())?;
+    require!(
+        payer_balance >= PREMIUM_PRICE_USDT,
+        SubscriptionError::InsufficientBalance
+    );
+
+    // 1 USDT from payer ATA -> subscription PDA's ATA.
+    transfer_usdt(
+        &ctx.accounts.token_program,
+        ctx.accounts.payer_ata.to_account_info(),
+        ctx.accounts.subscription_ata.to_account_info(),
+        ctx.accounts.payer.to_account_info(),
+        PREMIUM_PRICE_USDT,
+    )?;
+
+    subscription.premium_until = subscription
+        .premium_until
+        .max(now)
+        .checked_add(MONTH_SECONDS)
+        .ok_or(SubscriptionError::Overflow)?;
+    subscription.limit = PREMIUM_LIMIT;
+    subscription.last_transaction = now;
+
+    emit!(SubscriptionPurchased {
+        user,
+        premium_until: subscription.premium_until,
+    });
+
+    Ok(())
 }
 
-#[derive(Accounts)]
-pub struct PurchaseSubscription<'info> {
-    /// CHECK: Subscription PDA
-    pub subscription_account: Account<'info, SubscriptionAccount>,
+/// Refund the price while the subscription is still active.
+pub fn refund_subscription(
+    ctx: Context<RefundSubscription>,
+    _payment_token: Pubkey,
+    user: Pubkey,
+) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
 
-    /// CHECK: Subscription token account (to receive payment)
-    #[account(mut)]
-    pub subscription_token_account: Account<'info, TokenAccount>,
+    require!(
+        ctx.accounts.subscription.premium_until > now,
+        SubscriptionError::NotActive
+    );
 
-    /// CHECK: Program (to authorize)
-    pub subscription_program: Program<'info, SubscriptionProgram>,
+    // Refund 1 USDT from the subscription PDA's ATA back to the payer.
+    let owner = ctx.accounts.subscription.owner;
+    let seeds: &[&[u8]] = &[b"subscription", owner.as_ref(), &[ctx.bumps.subscription]];
+    let subscription_info = ctx.accounts.subscription.to_account_info();
+    transfer_usdt_with_signer(
+        &ctx.accounts.token_program,
+        ctx.accounts.subscription_ata.to_account_info(),
+        ctx.accounts.payer_ata.to_account_info(),
+        subscription_info,
+        &[seeds],
+        PREMIUM_PRICE_USDT,
+    )?;
 
-    /// CHECK: User wallet
-    pub payer: Signer<'info>,
+    let subscription = &mut ctx.accounts.subscription;
+    subscription.premium_until = 0;
+    subscription.limit = FREE_LIMIT;
+    subscription.last_transaction = now;
+
+    emit!(SubscriptionRefunded { user });
+    Ok(())
 }
 
-#[derive(Accounts)]
-pub struct RefundSubscription<'info> {
-    /// CHECK: Subscription PDA
-    pub subscription_account: Account<'info, SubscriptionAccount>,
+/// Cancel an expired subscription (nothing is refunded — it already lapsed).
+pub fn cancel_subscription(
+    ctx: Context<CancelSubscription>,
+    _payment_token: Pubkey,
+    user: Pubkey,
+) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    let subscription = &mut ctx.accounts.subscription;
 
-    /// CHECK: Program
-    pub subscription_program: Program<'info, SubscriptionProgram>,
+    require!(
+        subscription.premium_until <= now,
+        SubscriptionError::AlreadyActive
+    );
 
-    /// CHECK: User wallet (payer)
-    pub payer: Signer<'info>,
+    subscription.premium_until = 0;
+    subscription.limit = FREE_LIMIT;
+    subscription.last_transaction = now;
+
+    emit!(SubscriptionRefunded { user });
+    Ok(())
 }
 
-#[derive(Accounts)]
-pub struct CancelSubscription<'info> {
-    /// CHECK: Subscription PDA
-    pub subscription_account: Account<'info, SubscriptionAccount>,
+/// Withdraw an active subscription: refund the remaining premium time and
+/// deactivate. The unexpired fraction of the 30-day window (computed from
+/// `last_transaction`, set at purchase) is returned to the payer — Spec 012
+/// ("refund remaining amount").
+pub fn withdraw_subscription(
+    ctx: Context<WithdrawSubscription>,
+    _payment_token: Pubkey,
+    user: Pubkey,
+) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
 
-    /// CHECK: Program
-    pub subscription_program: Program<'info, SubscriptionProgram>,
+    require!(
+        ctx.accounts.subscription.premium_until > now,
+        SubscriptionError::NotActive
+    );
 
-    /// CHECK: User wallet
-    pub payer: Signer<'info>,
+    let sub = &ctx.accounts.subscription;
+    let remaining_secs = (sub.premium_until - now).max(0) as u128;
+    let refund =
+        (PREMIUM_PRICE_USDT as u128 * remaining_secs / MONTH_SECONDS as u128) as u64;
+
+    let owner = sub.owner;
+    let seeds: &[&[u8]] = &[b"subscription", owner.as_ref(), &[ctx.bumps.subscription]];
+    let subscription_info = sub.to_account_info();
+    if refund > 0 {
+        transfer_usdt_with_signer(
+            &ctx.accounts.token_program,
+            ctx.accounts.subscription_ata.to_account_info(),
+            ctx.accounts.payer_ata.to_account_info(),
+            subscription_info,
+            &[seeds],
+            refund,
+        )?;
+    }
+
+    let subscription = &mut ctx.accounts.subscription;
+    subscription.premium_until = 0;
+    subscription.limit = FREE_LIMIT;
+    subscription.last_transaction = now;
+
+    emit!(SubscriptionRefunded { user });
+    Ok(())
 }
 
-#[derive(Accounts)]
-pub struct WithdrawSubscription<'info> {
-    /// CHECK: Subscription PDA
-    pub subscription_account: Account<'info, SubscriptionAccount>,
-
-    /// CHECK: Program
-    pub subscription_program: Program<'info, SubscriptionProgram>,
-
-    /// CHECK: User wallet (payer)
-    pub payer: Signer<'info>,
-}
+// ─── Instruction accounts ────────────────────────────────────────────
+// The `#[derive(Accounts)]` structs live at the crate root (lib.rs) — anchor
+// 0.30 generates client-account modules named after the first segment of the
+// `Context<...>` type, which only resolves for crate-root structs.

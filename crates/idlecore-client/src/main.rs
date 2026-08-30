@@ -26,7 +26,7 @@ mod net;
 mod fps_counter;
 mod touch;
 mod world_floor;
-mod tiny;
+mod slice;
 mod assets;
 
 
@@ -89,12 +89,16 @@ fn main() {
         .insert_resource(world_floor::WaterTextures::default())
         .insert_resource(world_floor::SolidFloorTextures::default())
         .insert_resource(world_floor::CityTextures::default())
-        .insert_resource(tiny::TinyKeyQueue::default())
+        .insert_resource(world_floor::PropTextures::default())
+        .insert_resource(world_floor::DecoTextures::default())
+        .init_resource::<slice::SliceRequests>()
+        .init_resource::<slice::SlicedAtlas>()
         .add_plugins(plugins::player::PlayerPlugin)
         .add_plugins(plugins::camera::CameraPlugin)
         .add_plugins(plugins::world::WorldPlugin)
         .add_plugins(skins::SkinsPlugin)
-        .add_systems(Update, tiny::process_key_queue)
+        .add_systems(Startup, world_floor::enqueue_model_slices)
+        .add_systems(Update, slice::pump_slices)
         .add_plugins(fps_counter::FpsCounterPlugin)
         .add_plugins(net::plugin::NetPlugin)
         .add_plugins(net::hud::NetHudPlugin)
@@ -105,6 +109,7 @@ fn main() {
         .insert_resource(PlayerTransform::default())
         .insert_resource(idle::IdleGainsState::default())
         .insert_resource(world_floor::FloorPlantState::default())
+        .insert_resource(world_floor::PlotFloorState::default())
         .insert_resource(world_floor::WorldObjectState::default())
         .init_resource::<world_floor::ActionTarget>()
         .add_systems(Startup, (
@@ -113,8 +118,6 @@ fn main() {
             minimap::spawn_minimap_ui,
             idle::spawn_idle_panel,
             world_floor::spawn_action_box,
-            world_floor::init_prop_textures,
-            world_floor::init_deco_textures,
             world_floor::init_city_textures,
         ))
         .add_systems(Update, (
@@ -144,10 +147,13 @@ fn main() {
             minimap::save_explored_on_exit,
             idle::update_idle_gains_panel,
             world_floor::update_plant_visuals,
+            world_floor::update_plot_visuals,
             world_floor::update_world_object_visuals,
             world_floor::update_action_box,
         ))
         .add_systems(Update, (
+            world_floor::init_prop_textures,
+            world_floor::init_deco_textures,
             world_floor::init_water_textures,
             world_floor::init_solid_floor_textures,
             world_floor::update_world_floor
@@ -155,7 +161,7 @@ fn main() {
                 .after(minimap::load_nearby_chunks)
                 .after(world_floor::init_water_textures)
                 .after(world_floor::init_solid_floor_textures),
-        ))
+        ).chain().after(slice::pump_slices))
         .add_systems(Update, (
             assets::spawn_cosmetic_layers,
             assets::sync_cosmetic_layers,

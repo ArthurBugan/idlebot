@@ -562,6 +562,25 @@ struct HexPlant {
     growth_time: u64,
 }
 
+/// Server-side per-slot plot state mirrored on the hex `plots` JSON
+/// (mirror of `types::PlotState`).
+#[derive(serde::Deserialize, Clone)]
+struct ClientPlotState {
+    tilled: bool,
+    kind: Option<String>,
+    planted_at: u64,
+    watered_at: Option<u64>,
+    growth_time: u64,
+    planted_by: Option<String>,
+}
+
+impl ClientPlotState {
+    /// The instant (unix secs) a watered plot matures.
+    fn mature_at(&self, watered_at: u64) -> u64 {
+        watered_at.saturating_add(self.growth_time.max(1))
+    }
+}
+
 /// Spec 004 T5.1 / Spec 022 §5 — `E` acts on the selected slot, routed by
 /// held item + slot contents:
 ///   1. held tool → tool action (Pickaxe→Rock, Axe→Tree, Shovel→Grass tuft,
@@ -699,12 +718,26 @@ fn interact_key_press(
                     super::hud::send_reducer(&mut net, |r| {
                         r.till_then(
                             hex_id,
+                            target.slot_x,
+                            target.slot_y,
                             super::hud::reducer_report("till", tx.clone(), hex_id),
                         )
                     });
                 } else {
                     net.push(NetEvent::ServerMessage("E: clear the plot before tilling".to_string()));
                 }
+                return;
+            }
+            Some("WateringCan") => {
+                // Water the planted plot so it can grow (needs no seed).
+                super::hud::send_reducer(&mut net, |r| {
+                    r.water_plot_then(
+                        hex_id,
+                        target.slot_x,
+                        target.slot_y,
+                        super::hud::reducer_report("water", tx.clone(), hex_id),
+                    )
+                });
                 return;
             }
             _ => {}
@@ -775,6 +808,43 @@ fn interact_key_press(
             )));
             return;
         };
+        // --- 4a. Per-slot Stardew plot: harvest a mature, watered crop, or
+        //          plant a seed on tilled soil. (Spec 022 §5)
+        let slot_key = format!("{}:{}", target.slot_x, target.slot_y);
+        let plots: std::collections::HashMap<String, ClientPlotState> = hex
+            .plots
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        if let Some(plot) = plots.get(&slot_key) {
+            if let Some(kind) = &plot.kind {
+                if let Some(wa) = plot.watered_at {
+                    if now >= plot.mature_at(wa) {
+                        super::hud::send_reducer(&mut net, |r| {
+                            r.harvest_plot_then(
+                                hex_id,
+                                target.slot_x,
+                                target.slot_y,
+                                super::hud::reducer_report("harvest", tx.clone(), hex_id),
+                            )
+                        });
+                        return;
+                    }
+                    net.push(NetEvent::ServerMessage(format!(
+                        "E: {kind} still growing ({}s left)",
+                        plot.mature_at(wa).saturating_sub(now)
+                    )));
+                    return;
+                }
+                if held.as_deref() != Some("WateringCan") {
+                    net.push(NetEvent::ServerMessage(format!(
+                        "E: {kind} needs water before it can grow"
+                    )));
+                    return;
+                }
+            }
+        }
+
         // --- 4. Harvest a mature crop or clean pollution (hex-level).
         if let Some(plant_json) = &hex.plant {
             match serde_json::from_str::<HexPlant>(plant_json) {
@@ -810,14 +880,26 @@ fn interact_key_press(
         // --- 5. Plant by held item on the empty plot (Spec 022 §1/§3).
         let (slot_x, slot_y) = (target.slot_x, target.slot_y);
         match held.as_deref() {
-            Some("Seed") => super::hud::send_reducer(&mut net, |r| {
-                r.plant_tree_then(
-                    hex_id,
-                    slot_x,
-                    slot_y,
-                    super::hud::reducer_report("plant_tree", tx.clone(), hex_id),
-                )
-            }),
+            Some("Seed") => {
+                // Seeds only go into tilled soil (till first with the Hoe);
+                // the planted crop must then be watered to grow.
+                let tilled = plots.get(&slot_key).map(|p| p.tilled).unwrap_or(false);
+                if tilled {
+                    super::hud::send_reducer(&mut net, |r| {
+                        r.plant_plot_then(
+                            hex_id,
+                            slot_x,
+                            slot_y,
+                            Some("Wheat".to_string()),
+                            super::hud::reducer_report("plant", tx.clone(), hex_id),
+                        )
+                    });
+                } else {
+                    net.push(NetEvent::ServerMessage(
+                        "E: till the soil with a Hoe before planting".to_string(),
+                    ));
+                }
+            }
             Some("Grass") => super::hud::send_reducer(&mut net, |r| {
                 r.plant_grass_then(
                     hex_id,

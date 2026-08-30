@@ -37,6 +37,7 @@ pub fn ensure_hex(ctx: &ReducerContext, q: i32, r: i32) -> bool {
             is_polluted: false,
             plant: None,
             planted_by: None,
+            plots: None,
             cleaned_at: None,
             last_interaction: 0,
         });

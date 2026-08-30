@@ -1,34 +1,38 @@
-//! Marketplace program — manages template listings on Solana.
+//! Marketplace program — template listings, purchases and platform fees.
 //!
-//! Maps 1:1 to the Solidity TemplateMarket.sol functionality:
-//! - publish_listing: Create a new listing (deduct 50 USDT publishing fee)
-//! - purchase_listing: Buy an unsold listing (collect 5% platform fee)
-//! - withdraw_listing: Refund a sold listing back to seller
-//! - get_listing: View a listing by ID
-//! - cleanup_expired: Mark unsold listings > 30 days old as sold
+//! Maps 1:1 to the Solidity TemplateMarket.sol functionality (Spec 012):
+//! - publish_listing: publish a template (min 0.01 USDT, 50 USDT publishing fee)
+//! - purchase_listing: buy an unsold listing (5% platform fee)
+//! - withdraw_listing: seller withdraws the proceeds of a sold listing
+//! - get_listing: view a listing by ID
+//! - cleanup_expired: mark unsold listings older than 30 days as sold
 
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Token, TokenAmount, TokenAccount};
+use anchor_spl::associated_token::get_associated_token_address;
 
-use crate::token_utils::{USDT_MINT, get_balance};
+use crate::token_utils::{transfer_usdt, transfer_usdt_with_signer};
+use crate::{InitMarketplace, PublishListing, PurchaseListing, WithdrawListing, GetListing, CleanupExpired};
 
-// ─── Constants ───────────────────────────────────────────────────────
-pub const PUBLISHING_FEE_USDT: u64 = 1_000_000; // 1 USDT minimum (Solidity was 10_000 = 0.01)
-pub const PLATFORM_FEE_PERCENT: u64 = 5; // 5%
-pub const MARKET_PROGRAM_DISCRIMINATOR: [u8; 8] = *b"market_idle";
-pub const MARKET_LENGTH_PDA: [&[u8]; 1] = &[b"market_length"];
-pub const MARKET_PADDING_PDA: [&[u8]; 1] = &[b"market_padding"];
+/// Minimum listing price: 0.01 USDT (6 decimals).
+pub const MIN_PRICE_USDT: u64 = 10_000;
+/// Publishing fee: 50 USDT.
+pub const PUBLISHING_FEE_USDT: u64 = 50_000_000;
+/// Platform fee: 5% of the price.
+pub const PLATFORM_FEE_BPS: u64 = 500;
+/// Listings expire after 30 days.
+pub const EXPIRE_SECONDS: i64 = 30 * 24 * 3600;
+/// Maximum listings kept in the marketplace account (Vec realloc budget).
+pub const MAX_LISTINGS: usize = 100;
 
-// ─── Account Types ───────────────────────────────────────────────────
-#[derive(Debug, Clone, Default, AnchorSerialize, AnchorDeserialize)]
+/// Marketplace state: PDA seeds `[b"marketplace"]`.
+#[account]
 pub struct MarketplaceAccount {
     pub program_id: Pubkey,
     pub market_authority: Pubkey,
     pub listings: Vec<Listing>,
-    pub padding: [u8; 12],
 }
 
-#[derive(Debug, Clone, AnchorSerialize, AnchorDeserialize)]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, Debug)]
 pub struct Listing {
     pub listing_id: u64,
     pub seller: Pubkey,
@@ -38,384 +42,295 @@ pub struct Listing {
     pub price_usdt: u64,
     pub sold: bool,
     pub buyer: Pubkey,
-    pub published_at: u64,
+    pub published_at: i64,
 }
 
-// ─── Discriminators ──────────────────────────────────────────────────
-declare_id!("Fg6PaFpoGk58pnDmIBm3wWV7eNu8g2cjzdDc9aX5J6ZP");
+/// Listing size with 64-char title, 96-char URL and 128-char description.
+pub const LISTING_SPACE: usize = 8 + 32 + 4 + 64 + 4 + 96 + 4 + 128 + 8 + 1 + 32 + 8;
 
-#[program]
-pub mod marketplace_program {
-    use super::*;
+#[error_code]
+pub enum MarketplaceError {
+    #[msg("Listing id already used")]
+    DuplicateListing,
+    #[msg("Price must be at least 0.01 USDT")]
+    PriceTooLow,
+    #[msg("Address already has a listing")]
+    AlreadyListed,
+    #[msg("Listing not found")]
+    ListingNotFound,
+    #[msg("Listing already sold")]
+    AlreadySold,
+    #[msg("Cannot buy your own listing")]
+    CannotBuyOwnListing,
+    #[msg("Only the seller can withdraw")]
+    NotSeller,
+    #[msg("Insufficient token balance")]
+    InsufficientBalance,
+    #[msg("Arithmetic overflow")]
+    Overflow,
+    #[msg("Token account mint mismatch")]
+    MintMismatch,
+}
 
-    /// Initialize the marketplace account as PDA.
-    pub fn init_marketplace(ctx: Context<InitMarketplace>) -> Result<()> {
-        let account = &mut ctx.accounts.marketplace_account;
-        account.program_id = ctx.program.id;
-        account.market_authority = ctx.accounts.authority.key();
-        account.listings = Vec::new();
-        Ok(())
+/// Check whether an address appears as seller or buyer of a listing.
+pub fn is_address_listed(account: &MarketplaceAccount, addr: &Pubkey) -> bool {
+    account
+        .listings
+        .iter()
+        .any(|l| l.seller == *addr || l.buyer == *addr)
+}
+
+/// Check whether a listing id is already in use.
+pub fn is_duplicate_listings(account: &MarketplaceAccount, listing_id: u64) -> bool {
+    account
+        .listings
+        .iter()
+        .any(|l| l.listing_id == listing_id)
+}
+
+// ─── Events ──────────────────────────────────────────────────────────
+#[event]
+pub struct ListingCreated {
+    pub listing_id: u64,
+    pub seller: Pubkey,
+    pub title: String,
+    pub price_usdt: u64,
+}
+
+#[event]
+pub struct ListingSold {
+    pub listing_id: u64,
+    pub seller: Pubkey,
+    pub buyer: Pubkey,
+    pub price_usdt: u64,
+}
+
+// ─── Instructions ────────────────────────────────────────────────────
+/// Initialize the marketplace as a PDA: seeds `[b"marketplace"]`.
+pub fn init_marketplace(ctx: Context<InitMarketplace>) -> Result<()> {
+    let account = &mut ctx.accounts.marketplace;
+    account.program_id = *ctx.program_id;
+    account.market_authority = ctx.accounts.authority.key();
+    account.listings = Vec::new();
+    Ok(())
+}
+
+/// Publish a template listing.
+///
+/// Requires: unique listing id, price >= 0.01 USDT, caller not already
+/// listed, and a 50 USDT publishing fee (caller ATA -> marketplace ATA).
+pub fn publish_listing(
+    ctx: Context<PublishListing>,
+    listing_id: u64,
+    title: String,
+    github_url: String,
+    description: String,
+    price_usdt: u64,
+) -> Result<()> {
+    let account = &mut ctx.accounts.marketplace;
+
+    require!(
+        !is_duplicate_listings(account, listing_id),
+        MarketplaceError::DuplicateListing
+    );
+    require!(price_usdt >= MIN_PRICE_USDT, MarketplaceError::PriceTooLow);
+    require!(
+        !is_address_listed(account, &ctx.accounts.publisher.key()),
+        MarketplaceError::AlreadyListed
+    );
+
+    let publisher_balance = crate::token_utils::get_balance(&ctx.accounts.publisher_ata.to_account_info())?;
+    require!(
+        publisher_balance >= PUBLISHING_FEE_USDT,
+        MarketplaceError::InsufficientBalance
+    );
+
+    // Publishing fee: seller ATA -> marketplace ATA (marketplace PDA authority).
+    transfer_usdt(
+        &ctx.accounts.token_program,
+        ctx.accounts.publisher_ata.to_account_info(),
+        ctx.accounts.marketplace_ata.to_account_info(),
+        ctx.accounts.publisher.to_account_info(),
+        PUBLISHING_FEE_USDT,
+    )?;
+
+    let now = Clock::get()?.unix_timestamp;
+    account.listings.push(Listing {
+        listing_id,
+        seller: ctx.accounts.publisher.key(),
+        title: title.clone(),
+        github_url: github_url.clone(),
+        description: description.clone(),
+        price_usdt,
+        sold: false,
+        buyer: Pubkey::default(),
+        published_at: now,
+    });
+
+    emit!(ListingCreated {
+        listing_id,
+        seller: ctx.accounts.publisher.key(),
+        title,
+        price_usdt,
+    });
+
+    Ok(())
+}
+
+/// Purchase an unsold listing. The buyer pays the full price to the
+/// marketplace ATA; 5% goes to the platform fee wallet, the rest to the
+/// seller (both from the marketplace ATA, signed by the marketplace PDA).
+pub fn purchase_listing(ctx: Context<PurchaseListing>, listing_id: u64) -> Result<()> {
+    let listing_idx = ctx
+        .accounts
+        .marketplace
+        .listings
+        .iter()
+        .position(|l| l.listing_id == listing_id)
+        .ok_or(MarketplaceError::ListingNotFound)?;
+
+    let listing = &ctx.accounts.marketplace.listings[listing_idx];
+
+    require!(!listing.sold, MarketplaceError::AlreadySold);
+    require!(
+        ctx.accounts.buyer.key() != listing.seller,
+        MarketplaceError::CannotBuyOwnListing
+    );
+
+    let price = listing.price_usdt;
+    let seller = listing.seller;
+    let buyer_balance =
+        crate::token_utils::get_balance(&ctx.accounts.buyer_ata.to_account_info())?;
+    require!(buyer_balance >= price, MarketplaceError::InsufficientBalance);
+
+    // Buyer pays the full price into the marketplace ATA.
+    transfer_usdt(
+        &ctx.accounts.token_program,
+        ctx.accounts.buyer_ata.to_account_info(),
+        ctx.accounts.marketplace_ata.to_account_info(),
+        ctx.accounts.buyer.to_account_info(),
+        price,
+    )?;
+
+    // Split: platform fee and seller amount, signed by the marketplace PDA.
+    let fee = price
+        .checked_mul(PLATFORM_FEE_BPS)
+        .ok_or(MarketplaceError::Overflow)?
+        / 10_000;
+    let seller_amount = price.saturating_sub(fee);
+
+    let seeds: &[&[u8]] = &[b"marketplace", &[ctx.bumps.marketplace]];
+    let marketplace_info = ctx.accounts.marketplace.to_account_info();
+    if fee > 0 {
+        transfer_usdt_with_signer(
+            &ctx.accounts.token_program,
+            ctx.accounts.marketplace_ata.to_account_info(),
+            ctx.accounts.platform_fee_ata.to_account_info(),
+            marketplace_info.clone(),
+            &[seeds],
+            fee,
+        )?;
+    }
+    if seller_amount > 0 {
+        transfer_usdt_with_signer(
+            &ctx.accounts.token_program,
+            ctx.accounts.marketplace_ata.to_account_info(),
+            ctx.accounts.seller_ata.to_account_info(),
+            marketplace_info,
+            &[seeds],
+            seller_amount,
+        )?;
     }
 
-    /// Publish a new template listing.
-    ///
-    /// Requires:
-    /// - Caller NOT already selling this listing
-    /// - Price >= 1 USDT
-    /// - Caller has >= 1 USDT (publishing fee)
-    pub fn publish_listing(
-        ctx: Context<PublishListing>,
-        listing_id: u64,
-        title: String,
-        github_url: String,
-        description: String,
-        price_usdt: u64,
-    ) -> Result<()> {
-        let account = &mut ctx.accounts.marketplace_account;
+    let account = &mut ctx.accounts.marketplace;
+    account.listings[listing_idx].sold = true;
+    account.listings[listing_idx].buyer = ctx.accounts.buyer.key();
 
-        // Validate duplicate listings
-        if is_duplicate_listings(account, listing_id) {
-            return Err(ErrorCode::DuplicateListing.into());
-        }
+    emit!(ListingSold {
+        listing_id,
+        seller,
+        buyer: ctx.accounts.buyer.key(),
+        price_usdt: price,
+    });
 
-        // Validate price
-        if price_usdt < PUBLISHING_FEE_USDT {
-            return Err(ErrorCode::PriceTooLow.into());
-        }
+    Ok(())
+}
 
-        // Check if user already has a listing
-        if is_address_listed(account, ctx.accounts.publisher.key()) {
-            return Err(ErrorCode::AlreadyListed.into());
-        }
+/// Seller withdraws the proceeds of a sold listing; the listing becomes
+/// unsold again and can be re-sold.
+pub fn withdraw_listing(ctx: Context<WithdrawListing>, listing_id: u64) -> Result<()> {
+    let listing_idx = ctx
+        .accounts
+        .marketplace
+        .listings
+        .iter()
+        .position(|l| l.listing_id == listing_id)
+        .ok_or(MarketplaceError::ListingNotFound)?;
 
-        // Deduct publishing fee
-        let signing_key = ctx.accounts.publisher.key();
-        let publisher_wallet = ctx.accounts.publisher.to_account_info();
-        let publisher ATA = spl_token::instruction::get_associated_token_address(
-            &ctx.accounts.publisher.key(),
-            &USDT_MINT,
-        )?;
-        let publisher_ata_info = publisher_wallet.try_borrow_mut_account()?;
-        let publisher_ata = TokenAccount::try_deserialize(&publisher_ata_info.data)
-            .map_err(|_| AnchorError::from("Invalid ATA"))?;
+    let listing = &ctx.accounts.marketplace.listings[listing_idx];
 
-        let mint_info = &spl_token::Mint::new(
-            USDT_MINT,
-            &spl_token::Mint::id(), // Associated token program
-            &publisher_wallet.key(),
-            false,
-            false,
-        );
+    require!(listing.sold, MarketplaceError::AlreadySold);
+    require!(
+        ctx.accounts.seller.key() == listing.seller,
+        MarketplaceError::NotSeller
+    );
 
-        let fee_amount = TokenAmount::from(1_000_000); // 1 USDT
-        token::transfer(
-            CpiContext::new(
-                ctx.program.to_account_info(),
-                spl_token::Transfer {
-                    from: publisher_ata,
-                    to: ctx.accounts.fee_wallet.to_account_info(),
-                    amount: fee_amount,
-                    authority: publisher_ata_info.key,
-                },
-            ),
-            fee_amount,
-        )?;
+    let price = listing.price_usdt;
+    let fee = price
+        .checked_mul(PLATFORM_FEE_BPS)
+        .ok_or(MarketplaceError::Overflow)?
+        / 10_000;
+    let amount = price.saturating_sub(fee);
 
-        // Check balance is OK after deduction
-        let payer_balance = get_balance(&ctx.accounts.publisher.key(), &ctx.accounts.publisher.to_account_info(), &ctx.accounts.publisher.key())?;
-        if payer_balance < 0 {
-            return Err(ErrorCode::InsufficientBalance.into());
-        }
+    let seeds: &[&[u8]] = &[b"marketplace", &[ctx.bumps.marketplace]];
+    let marketplace_info = ctx.accounts.marketplace.to_account_info();
+    transfer_usdt_with_signer(
+        &ctx.accounts.token_program,
+        ctx.accounts.marketplace_ata.to_account_info(),
+        ctx.accounts.seller_ata.to_account_info(),
+        marketplace_info,
+        &[seeds],
+        amount,
+    )?;
 
-        // Create listing
-        let now = get_current_timestamp();
-        let listing = Listing {
-            listing_id,
-            seller: ctx.accounts.publisher.key(),
-            title,
-            github_url,
-            description,
-            price_usdt,
-            sold: false,
-            buyer: Pubkey::default(),
-            published_at: now,
-        };
+    let account = &mut ctx.accounts.marketplace;
+    account.listings[listing_idx].sold = false;
+    account.listings[listing_idx].buyer = Pubkey::default();
 
-        account.listings.push(listing);
+    Ok(())
+}
 
-        emit!(ListingCreated {
-            listing_id,
-            seller: ctx.accounts.publisher.key(),
-            title,
-            price_usdt,
-        });
-
-        Ok(())
-    }
-
-    /// Purchase an unsold listing.
-    ///
-    /// Requires:
-    /// - Listing exists and not sold
-    /// - Caller != listing.seller
-    /// - Caller has sufficient USDT
-    pub fn purchase_listing(
-        ctx: Context<PurchaseListing>,
-        listing_id: u64,
-    ) -> Result<()> {
-        let account = &mut ctx.accounts.marketplace_account;
-
-        // Find listing
-        let listing_idx = account
+/// View a listing by id (returns an error if it does not exist).
+pub fn get_listing(ctx: Context<GetListing>, listing_id: u64) -> Result<()> {
+    require!(
+        ctx.accounts
+            .marketplace
             .listings
             .iter()
-            .position(|l| l.listing_id == listing_id);
-        let listing_idx = match listing_idx {
-            Some(idx) => idx,
-            None => return Err(ErrorCode::ListingNotFound.into()),
-        };
+            .any(|l| l.listing_id == listing_id),
+        MarketplaceError::ListingNotFound
+    );
+    Ok(())
+}
 
-        let listing = &mut account.listings[listing_idx];
-
-        // Validate
-        if listing.sold {
-            return Err(ErrorCode::AlreadySold.into());
+/// Mark unsold listings older than 30 days as sold (expired).
+pub fn cleanup_expired(ctx: Context<CleanupExpired>) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
+    let account = &mut ctx.accounts.marketplace;
+    for listing in account.listings.iter_mut() {
+        if !listing.sold && now.saturating_sub(listing.published_at) > EXPIRE_SECONDS {
+            listing.sold = true;
         }
-
-        if ctx.accounts.buyer.key() == listing.seller {
-            return Err(ErrorCode::CannotBuyOwnListing.into());
-        }
-
-        // Calculate fee and seller amount
-        let price = listing.price_usdt;
-        let fee_amount = price.checked_mul(PLATFORM_FEE_PERCENT)
-            .ok_or(ErrorCode::ArithmeticOverflow)?
-            / 100;
-        let seller_amount = price.saturating_sub(fee_amount);
-
-        // Transfer USDT from buyer to marketplace program wallet
-        let buyer_ata_info = ctx.accounts.buyer.try_borrow_mut_account()?;
-        let buyer_ata = TokenAccount::try_deserialize(&buyer_ata_info.data)
-            .map_err(|_| AnchorError::from("Invalid ATA"))?;
-
-        let buyer_balance = get_balance(&ctx.accounts.buyer.key(), &ctx.accounts.buyer.to_account_info(), &ctx.accounts.buyer.key())?;
-        if buyer_balance < price {
-            return Err(ErrorCode::InsufficientBalance.into());
-        }
-
-        // Transfer total price to marketplace program wallet
-        let program_ata = spl_token::instruction::get_associated_token_address(
-            &ctx.program.key(),
-            &USDT_MINT,
-        )?;
-        token::transfer(
-            CpiContext::new(
-                ctx.program.to_account_info(),
-                spl_token::Transfer {
-                    from: buyer_ata,
-                    to: ctx.accounts.marketplace_token_account.to_account_info(),
-                    amount: TokenAmount::from(price),
-                    authority: buyer_ata_info.key,
-                },
-            ),
-            TokenAmount::from(price),
-        )?;
-
-        // Split: fee to platform wallet, seller amount to seller
-        if fee_amount > 0 {
-            token::transfer(
-                CpiContext::new(
-                    ctx.program.to_account_info(),
-                    spl_token::Transfer {
-                        from: ctx.accounts.marketplace_token_account.to_account_info(),
-                        to: ctx.accounts.platform_fee_wallet.to_account_info(),
-                        amount: TokenAmount::from(fee_amount),
-                        authority: ctx.program.key(),
-                    },
-                ),
-                TokenAmount::from(fee_amount),
-            )?;
-        }
-
-        token::transfer(
-            CpiContext::new(
-                ctx.program.to_account_info(),
-                spl_token::Transfer {
-                    from: ctx.accounts.marketplace_token_account.to_account_info(),
-                    to: ctx.accounts.seller_wallet.to_account_info(),
-                    amount: TokenAmount::from(seller_amount),
-                    authority: ctx.program.key(),
-                },
-            ),
-            TokenAmount::from(seller_amount),
-        )?;
-
-        // Mark as sold
-        listing.sold = true;
-        listing.buyer = ctx.accounts.buyer.key();
-
-        emit!(ListingSold {
-            listing_id,
-            seller: listing.seller,
-            buyer: ctx.accounts.buyer.key(),
-            price_usdt: price,
-        });
-
-        Ok(())
     }
-
-    /// Withdraw a sold listing back to seller.
-    pub fn withdraw_listing(
-        ctx: Context<WithdrawListing>,
-        listing_id: u64,
-    ) -> Result<()> {
-        let account = &mut ctx.accounts.marketplace_account;
-
-        let listing_idx = account
-            .listings
-            .iter()
-            .position(|l| l.listing_id == listing_id);
-        let listing_idx = match listing_idx {
-            Some(idx) => idx,
-            None => return Err(ErrorCode::ListingNotFound.into()),
-        };
-
-        let listing = &mut account.listings[listing_idx];
-
-        // Validate
-        if listing.sold {
-            return Err(ErrorCode::AlreadySold.into());
-        }
-        if ctx.accounts.seller.key() != listing.seller {
-            return Err(ErrorCode::NotSeller.into());
-        }
-
-        let price = listing.price_usdt;
-        let fee_amount = price.checked_mul(PLATFORM_FEE_PERCENT)
-            .ok_or(ErrorCode::ArithmeticOverflow)?
-            / 100;
-        let amount = price.saturating_sub(fee_amount);
-
-        // Transfer all to seller
-        let seller_ata_info = ctx.accounts.seller.try_borrow_mut_account()?;
-        let seller_ata = TokenAccount::try_deserialize(&seller_ata_info.data)
-            .map_err(|_| AnchorError::from("Invalid ATA"))?;
-
-        token::transfer(
-            CpiContext::new(
-                ctx.program.to_account_info(),
-                spl_token::Transfer {
-                    from: ctx.accounts.marketplace_token_account.to_account_info(),
-                    to: seller_ata,
-                    amount: TokenAmount::from(amount),
-                    authority: ctx.program.key(),
-                },
-            ),
-            TokenAmount::from(amount),
-        )?;
-
-        // Reset to unsold
-        listing.sold = false;
-        listing.buyer = Pubkey::default();
-
-        Ok(())
-    }
-
-    /// Get a listing by ID (view-only).
-    pub fn get_listing(
-        ctx: Context<GetListing>,
-        listing_id: u64,
-    ) -> Result<()> {
-        let account = &ctx.accounts.marketplace_account;
-
-        if let Some(listing) = account.listings.iter().find(|l| l.listing_id == listing_id) {
-            return Ok(());
-        }
-        return Err(ErrorCode::ListingNotFound.into());
-    }
-
-    /// Clean up expired unsold listings (> 30 days old).
-    pub fn cleanup_expired(_ctx: Context<InitMarketplace>, _cleanup: u64) -> Result<()> {
-        // NOTE: In production, this would be a handler or triggered via event
-        // For now, just log the cleanup intent
-        return Ok(());
-    }
+    Ok(())
 }
 
-// ─── Instruction Accounts ────────────────────────────────────────────
-#[derive(Accounts)]
-#[instruction(listing_id: u64)]
-pub struct InitMarketplace<'info> {
-    #[account(mut)]
-    pub authority: Signer<'info>,
+// ─── Instruction accounts ────────────────────────────────────────────
+// The `#[derive(Accounts)]` structs live at the crate root (lib.rs) — anchor
+// 0.30 generates client-account modules named after the first segment of the
+// `Context<...>` type, which only resolves for crate-root structs.
 
-    /// CHECK: Marketplace PDA (fixed key derived from "market_authority" + authority)
-    pub marketplace_account: Account<'info, MarketplaceAccount>,
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct PublishListing<'info> {
-    #[account(mut)]
-    pub publisher: Signer<'info>,
-
-    /// CHECK: Marketplace PDA
-    pub marketplace_account: Account<'info, MarketplaceAccount>,
-
-    /// CHECK: Fee wallet PDA (platform)
-    #[account(mut)]
-    pub fee_wallet: UncheckedAccount<'info>,
-
-    /// CHECK: Marketplace ATA (to deduct fee)
-    #[account(mut)]
-    pub marketplace_token_account: Account<'info, TokenAccount>,
-}
-
-#[derive(Accounts)]
-pub struct PurchaseListing<'info> {
-    /// CHECK: Marketplace PDA
-    pub marketplace_account: Account<'info, MarketplaceAccount>,
-
-    /// CHECK: Marketplace token account (to receive payment)
-    #[account(mut)]
-    pub marketplace_token_account: Account<'info, TokenAccount>,
-
-    /// CHECK: Marketplace program
-    pub marketplace_program: Program<'info, MarketplaceProgram>,
-
-    /// CHECK: Platform fee wallet PDA
-    #[account(mut)]
-    pub platform_fee_wallet: UncheckedAccount<'info>,
-
-    /// CHECK: Seller wallet PDA (to receive seller amount)
-    #[account(mut)]
-    pub seller_wallet: UncheckedAccount<'info>,
-
-    /// CHECK: Buyer wallet (signer)
-    pub buyer: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct WithdrawListing<'info> {
-    /// CHECK: Marketplace PDA
-    pub marketplace_account: Account<'info, MarketplaceAccount>,
-
-    /// CHECK: Marketplace program
-    pub marketplace_program: Program<'info, MarketplaceProgram>,
-
-    /// CHECK: Marketplace token account
-    #[account(mut)]
-    pub marketplace_token_account: Account<'info, TokenAccount>,
-
-    /// CHECK: Platform fee wallet PDA (may still hold fee)
-    #[account(mut)]
-    pub platform_fee_wallet: UncheckedAccount<'info>,
-
-    /// CHECK: Seller wallet (signer)
-    pub seller: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct GetListing<'info> {
-    pub marketplace_account: Account<'info, MarketplaceAccount>,
+/// Helper to compute the marketplace PDA authority's USDT ATA.
+pub fn marketplace_ata_address(marketplace: &Pubkey, mint: &Pubkey) -> Pubkey {
+    get_associated_token_address(marketplace, mint)
 }

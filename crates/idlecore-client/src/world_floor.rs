@@ -176,21 +176,28 @@ pub fn update_action_box(
 // Prop textures: generated tuft/icons + loaded tree/rock art
 // ============================================================================
 
-/// Handles + aspects for every prop sprite, built once at startup.
-#[derive(Resource)]
+/// Handles + aspects for every prop sprite. Fields are filled in as their
+/// cropped art streams in; `ready` flips once the whole set is present, and
+/// the world-object spawner waits for it so it never renders a fallback.
+#[derive(Resource, Default)]
 pub struct PropTextures {
+    /// Default placeholder handle used before everything is ready.
+    pub ready: bool,
     pub grass: Handle<Image>,
     pub grass_aspect: f32,
+    /// Mature grass/wheat stand — taller than the young tuft.
+    pub grass_mature: Handle<Image>,
+    pub grass_mature_aspect: f32,
     pub tree: Handle<Image>,
     pub tree_aspect: f32,
     pub sapling: Handle<Image>,
     pub sapling_aspect: f32,
     pub rock: Handle<Image>,
     pub rock_aspect: f32,
-    /// Fallen log (Spec 022): Tiny Farm dead-wood tile.
+    /// Fallen log / wood planks (Spec 022).
     pub log: Handle<Image>,
     pub log_aspect: f32,
-    /// Craft bench (Spec 022): Tiny Dungeon crate, taller than plants.
+    /// Craft bench (Spec 022): the Workbench, taller than plants.
     pub bench: Handle<Image>,
     pub bench_aspect: f32,
     /// Square UI icons for inventory slots.
@@ -203,52 +210,234 @@ pub struct PropTextures {
     pub icon_axe: Handle<Image>,
     pub icon_shovel: Handle<Image>,
     pub icon_hoe: Handle<Image>,
-    /// Car (and other vehicles) inventory icon — Tiny Battle car tile.
+    pub icon_watering_can: Handle<Image>,
+    /// Car (and other vehicles) inventory icon — a city bus.
     pub icon_car: Handle<Image>,
+    /// Stardew plot tiles + wheat growth frames (per-slot farming).
+    pub plot_tilled: Handle<Image>,
+    pub plot_wet: Handle<Image>,
+    pub crop_stages: [Handle<Image>; 3],
 }
 
-/// Build all prop sprites once. Runs at Startup. All props are 16x16 tiles
-/// from the Tiny* packs; their baked backdrops are keyed by
-/// `tiny::process_key_queue`.
+/// Aspect ratios (art width ÷ art height) for the crop regions above.
+fn grass_aspect() -> f32 { 1.0 }
+fn grass_mature_aspect() -> f32 { 1.0 }
+fn tree_aspect() -> f32 { 38.0 / 34.0 }
+fn sapling_aspect() -> f32 { 1.0 }
+fn rock_aspect() -> f32 { 1.0 }
+fn log_aspect() -> f32 { 1.0 }
+fn bench_aspect() -> f32 { 1.0 }
+
+/// Atlas keys for every cropped sprite used below and by the floor/deco/water
+/// initialisers. `enqueue_model_slices` (startup) requests all of them; the
+/// per-resource inits wait until their keys are present in `SlicedAtlas`.
+pub mod atlas {
+    // Props / world objects
+    pub const GRASS: &str = "grass";
+    pub const GRASS_MATURE: &str = "grass_mature";
+    pub const TREE: &str = "tree";
+    pub const SAPLING: &str = "sapling";
+    pub const ROCK: &str = "rock";
+    pub const LOG: &str = "log";
+    pub const BENCH: &str = "bench";
+    // Inventory icons
+    pub const ICON_SEED: &str = "icon_seed";
+    pub const ICON_WOOD: &str = "icon_wood";
+    pub const ICON_STONE: &str = "icon_stone";
+    pub const ICON_GRASS: &str = "icon_grass";
+    pub const ICON_LOG: &str = "icon_log";
+    pub const ICON_PICKAXE: &str = "icon_pickaxe";
+    pub const ICON_AXE: &str = "icon_axe";
+    pub const ICON_SHOVEL: &str = "icon_shovel";
+    pub const ICON_HOE: &str = "icon_hoe";
+    pub const ICON_WATERING_CAN: &str = "icon_watering_can";
+    pub const ICON_CAR: &str = "icon_car";
+    // Floor tiles
+    pub const FLOOR_GRASS: &str = "floor_grass";
+    pub const FLOOR_SAND: &str = "floor_sand";
+    pub const FLOOR_SNOW: &str = "floor_snow";
+    pub const FLOOR_STONE: &str = "floor_stone";
+    pub const WATER: &str = "water";
+    // Stardew plot tiles (tilled & watered soil) + crop growth frames
+    pub const PLOT_TILLED: &str = "plot_tilled";
+    pub const PLOT_WET: &str = "plot_wet";
+    pub const CROP_STAGE_1: &str = "crop_stage_1";
+    pub const CROP_STAGE_2: &str = "crop_stage_2";
+    pub const CROP_STAGE_MATURE: &str = "crop_stage_mature";
+    // Ambient decorations (plants)
+    pub const DECO_WHEAT: &str = "deco_wheat";
+    pub const DECO_WHEAT2: &str = "deco_wheat2";
+    pub const DECO_CARROT: &str = "deco_carrot";
+    pub const DECO_BROCCOLI: &str = "deco_broccoli";
+    pub const DECO_POTATO: &str = "deco_potato";
+    pub const DECO_ONION: &str = "deco_onion";
+    pub const DECO_STRAWBERRY: &str = "deco_strawberry";
+    pub const DECO_BLUEBERRY: &str = "deco_blueberry";
+    pub const DECO_ROCK2: &str = "deco_rock2";
+    pub const DECO_TREE2: &str = "deco_tree2";
+    pub const DECO_STONE: &str = "deco_stone";
+    // Ambient decorations (critters / animals)
+    pub const CRIT_CHICKEN: &str = "crit_chicken";
+    pub const CRIT_SHEEP: &str = "crit_sheep";
+    pub const CRIT_COW: &str = "crit_cow";
+    pub const CRIT_FOX: &str = "crit_fox";
+    pub const CRIT_DEER: &str = "crit_deer";
+    pub const CRIT_RABBIT: &str = "crit_rabbit";
+    pub const CRIT_BUTTERFLY: &str = "crit_butterfly";
+    pub const CRIT_PENGUIN: &str = "crit_penguin";
+    pub const CRIT_CAPYBARA: &str = "crit_capybara";
+}
+
+/// Queue every sprite crop the game needs, against the new EmanuelleDev art.
+/// Runs once at startup; `slice::pump_slices` fulfils them as sheets stream
+/// in. Classic paths (`models/Tiny */...`) are gone.
+pub fn enqueue_model_slices(
+    mut requests: ResMut<crate::slice::SliceRequests>,
+    asset_server: Res<AssetServer>,
+) {
+    use crate::slice::{request, CropRect as C};
+    let mut r = |key: &str, path: &'static str, x: u32, y: u32, w: u32, h: u32| {
+        request(&mut requests, &asset_server, key, path, C::new(x, y, w, h));
+    };
+    // ---- Props & world objects ----
+    // Grass: tall stand of blades, tinted green at render time so it reads
+    // as grass rather than golden wheat.
+    r(atlas::GRASS, "models/Crops/Summer/Wheat.png", 0, 0, 16, 16);
+    r(atlas::GRASS_MATURE, "models/Crops/Summer/Wheat.png", 80, 0, 16, 16);
+    // Tree: a clean full-canopy mahogany tree. The sheet stacks a sapling
+    // (with a pale trunk) above the mature tree, so the crop must take only
+    // the bottom mature tree to avoid a stray white trunk.
+    r(atlas::TREE, "models/Objects/Tree/Common/Shadow/Mahogany Tree.png", 123, 60, 38, 34);
+    // Sapling: a young blade sprout, tinted green at render time.
+    r(atlas::SAPLING, "models/Crops/Summer/Wheat.png", 0, 0, 16, 16);
+    // Rock: a single rounded ground stone (not a two-stone cluster).
+    r(atlas::ROCK, "models/Objects/Props/Spring/Ground stones.png", 16, 16, 16, 16);
+    // Log: a proper cut-log with bark rim (not the flat plank it used to be).
+    r(atlas::LOG, "models/Objects/Tree/TREE TRUNKS copiar.png", 0, 0, 16, 16);
+    // Craft bench: the whole Workbench sprite.
+    r(atlas::BENCH, "models/Objects/Work Benches/Workbench.png", 0, 0, 32, 32);
+
+    // ---- Inventory icons ----
+    r(atlas::ICON_SEED, "models/Crops/Summer/Adzuki Bean.png", 0, 16, 16, 16);
+    r(atlas::ICON_WOOD, "models/Icons/RPG icons/Extras/Wood.png", 0, 0, 32, 16);
+    r(atlas::ICON_STONE, "models/Objects/Props/Spring/Ground stones.png", 0, 0, 16, 16);
+    r(atlas::ICON_GRASS, "models/Crops/Summer/Wheat.png", 80, 0, 16, 16);
+    r(atlas::ICON_LOG, "models/Objects/Tree/TREE TRUNKS copiar.png", 0, 0, 16, 16);
+    r(atlas::ICON_PICKAXE, "models/Icons/RPG icons/Weapons and Armor/1. Wood/Pickaxe.png", 2, 2, 28, 13);
+    r(atlas::ICON_AXE, "models/Icons/RPG icons/Weapons and Armor/1. Wood/Axe.png", 2, 0, 27, 15);
+    r(atlas::ICON_SHOVEL, "models/Icons/RPG icons/Weapons and Armor/1. Wood/Shovel.png", 2, 2, 28, 13);
+    r(atlas::ICON_HOE, "models/Icons/RPG icons/Weapons and Armor/1. Wood/Hoe.png", 2, 2, 28, 13);
+    r(atlas::ICON_WATERING_CAN, "models/Icons/RPG icons/Weapons and Armor/1. Wood/Watering can.png", 2, 2, 28, 13);
+    r(atlas::ICON_CAR, "models/Objects/Exterior/Bus.png", 8, 6, 99, 55);
+
+    // ---- Floor tiles (plain seamless 16×16 crops) ----
+    r(atlas::FLOOR_GRASS, "models/Tileset/Tileset Grass Summer.png", 144, 32, 16, 16);
+    r(atlas::FLOOR_SAND, "models/Tileset/Tileset Grass Summer.png", 144, 224, 16, 16);
+    r(atlas::FLOOR_SNOW, "models/Tileset/Tileset Grass Winter.png", 144, 32, 16, 16);
+    r(atlas::FLOOR_STONE, "models/Tileset/Dungeon tileset.png", 144, 128, 16, 16);
+    r(atlas::WATER, "models/Tileset/Water tile.png", 0, 0, 16, 16);
+
+    // ---- Stardew plots (tilled/wet soil + wheat growth frames) ----
+    r(atlas::PLOT_TILLED, "models/Tileset/Tilled Soil and wet soil.png", 16, 16, 16, 16);
+    r(atlas::PLOT_WET, "models/Tileset/Tilled Soil and wet soil.png", 16, 80, 16, 16);
+    r(atlas::CROP_STAGE_1, "models/Crops/Summer/Wheat.png", 0, 0, 16, 16);
+    r(atlas::CROP_STAGE_2, "models/Crops/Summer/Wheat.png", 32, 0, 16, 16);
+    r(atlas::CROP_STAGE_MATURE, "models/Crops/Summer/Wheat.png", 80, 0, 16, 16);
+
+    // ---- Ambient decoration plants (crop strips, one frame each) ----
+    r(atlas::DECO_WHEAT, "models/Crops/Summer/Wheat.png", 0, 0, 16, 16);
+    r(atlas::DECO_WHEAT2, "models/Crops/Summer/Wheat.png", 48, 0, 16, 16);
+    r(atlas::DECO_CARROT, "models/Crops/Spring/Carrot.png", 64, 0, 16, 16);
+    r(atlas::DECO_BROCCOLI, "models/Crops/Spring/Broccoli.png", 64, 0, 16, 16);
+    r(atlas::DECO_POTATO, "models/Crops/Spring/Potato.png", 64, 0, 16, 16);
+    r(atlas::DECO_ONION, "models/Crops/Spring/Onion.png", 112, 0, 16, 16);
+    r(atlas::DECO_STRAWBERRY, "models/Crops/Spring/Strawberry.png", 64, 0, 16, 16);
+    r(atlas::DECO_BLUEBERRY, "models/Crops/Spring/Blueberry.png", 82, 16, 16, 16);
+    r(atlas::DECO_ROCK2, "models/Objects/Props/Summer/Stones Summer.png", 36, 19, 12, 11);
+    r(atlas::DECO_TREE2, "models/Objects/Tree/Common/Shadow/Mahogany Tree.png", 123, 60, 38, 34);
+    r(atlas::DECO_STONE, "models/Objects/Props/Spring/Ground stones.png", 0, 0, 16, 16);
+
+    // ---- Critters / animals ----
+    r(atlas::CRIT_CHICKEN, "models/Animals/Farm/Chicken/Chicken White.png", 1, 0, 32, 48);
+    r(atlas::CRIT_SHEEP, "models/Animals/Farm/Sheep/Sheep Male.png", 2, 15, 32, 62);
+    r(atlas::CRIT_COW, "models/Animals/Farm/Cow/Common Cow/Female Cow Brown.png", 0, 13, 32, 62);
+    r(atlas::CRIT_FOX, "models/Animals/Forest/Fox/Red Fox.png", 6, 17, 32, 62);
+    r(atlas::CRIT_DEER, "models/Animals/Forest/Deer/Female/Idle.png", 5, 11, 32, 52);
+    r(atlas::CRIT_RABBIT, "models/Animals/Forest/Rabbit/Rabbit Brown.png", 1, 3, 30, 28);
+    r(atlas::CRIT_BUTTERFLY, "models/Animals/Forest/Bugs/Butterfly/Common Butterfly.png", 4, 4, 16, 12);
+    r(atlas::CRIT_PENGUIN, "models/Animals/Forest/Penguin/Penguin.png", 1, 3, 16, 16);
+    r(atlas::CRIT_CAPYBARA, "models/Animals/Forest/Capybara/Brown Capybara.png", 6, 13, 32, 62);
+}
+
+/// Build the prop/icon handle set once every cropped sprite has streamed in.
+/// Polls `SlicedAtlas` (filled by `slice::pump_slices`) and inserts
+/// `PropTextures` a single time.
 pub fn init_prop_textures(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    mut queue: ResMut<crate::tiny::TinyKeyQueue>,
+    atlas: Res<crate::slice::SlicedAtlas>,
+    mut props: ResMut<PropTextures>,
 ) {
-    fn prop(asset_server: &AssetServer, queue: &mut crate::tiny::TinyKeyQueue, path: &'static str) -> Handle<Image> {
-        let h = asset_server.load::<Image>(path);
-        queue.0.push(h.clone());
-        h
+    if props.ready {
+        return;
     }
-    commands.insert_resource(PropTextures {
-        // Grass tufts: Tiny Farm round grass plant (tile_0056); tree: Tiny
-        // Town round tree; sapling: Tiny Farm sapling; rock: Tiny Ski
-        // boulder; wood: crate; seed: bag; log: Farm dead wood (Spec 022);
-        // bench: Dungeon crate (Spec 022); tools: Town/Farm hand tools.
-        // All chroma-keyed via TinyKeyQueue.
-        grass: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0056.png"),
-        grass_aspect: 1.0,
-        tree: prop(&asset_server, &mut queue, "models/Tiny Town/Tiles/tile_0004.png"),
-        tree_aspect: 1.0,
-        sapling: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0004.png"),
-        sapling_aspect: 1.0,
-        rock: prop(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0081.png"),
-        rock_aspect: 1.0,
-        log: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0002.png"),
-        log_aspect: 1.0,
-        bench: prop(&asset_server, &mut queue, "models/Tiny Dungeon/Tiles/tile_0075.png"),
-        bench_aspect: 1.0,
-        icon_seed: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0009.png"),
-        icon_wood: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0076.png"),
-        icon_stone: prop(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0081.png"),
-        icon_grass: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0056.png"),
-        icon_log: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0002.png"),
-        icon_pickaxe: prop(&asset_server, &mut queue, "models/Tiny Town/Tiles/tile_0115.png"),
-        icon_axe: prop(&asset_server, &mut queue, "models/Tiny Town/Tiles/tile_0127.png"),
-        icon_shovel: prop(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0086.png"),
-        icon_hoe: prop(&asset_server, &mut queue, "models/Tiny Town/Tiles/tile_0129.png"),
-        icon_car: prop(&asset_server, &mut queue, "models/Tiny Battle/Tiles/tile_0114.png"),
-    });
+    let Some(grass) = atlas.items.get(atlas::GRASS).cloned() else { return };
+    let Some(grass_mature) = atlas.items.get(atlas::GRASS_MATURE).cloned() else { return };
+    let Some(tree) = atlas.items.get(atlas::TREE).cloned() else { return };
+    let Some(sapling) = atlas.items.get(atlas::SAPLING).cloned() else { return };
+    let Some(rock) = atlas.items.get(atlas::ROCK).cloned() else { return };
+    let Some(log) = atlas.items.get(atlas::LOG).cloned() else { return };
+    let Some(bench) = atlas.items.get(atlas::BENCH).cloned() else { return };
+    let Some(icon_seed) = atlas.items.get(atlas::ICON_SEED).cloned() else { return };
+    let Some(icon_wood) = atlas.items.get(atlas::ICON_WOOD).cloned() else { return };
+    let Some(icon_stone) = atlas.items.get(atlas::ICON_STONE).cloned() else { return };
+    let Some(icon_grass) = atlas.items.get(atlas::ICON_GRASS).cloned() else { return };
+    let Some(icon_log) = atlas.items.get(atlas::ICON_LOG).cloned() else { return };
+    let Some(icon_pickaxe) = atlas.items.get(atlas::ICON_PICKAXE).cloned() else { return };
+    let Some(icon_axe) = atlas.items.get(atlas::ICON_AXE).cloned() else { return };
+    let Some(icon_shovel) = atlas.items.get(atlas::ICON_SHOVEL).cloned() else { return };
+    let Some(icon_hoe) = atlas.items.get(atlas::ICON_HOE).cloned() else { return };
+    let Some(icon_watering_can) = atlas.items.get(atlas::ICON_WATERING_CAN).cloned() else { return };
+    let Some(icon_car) = atlas.items.get(atlas::ICON_CAR).cloned() else { return };
+    let Some(plot_tilled) = atlas.items.get(atlas::PLOT_TILLED).cloned() else { return };
+    let Some(plot_wet) = atlas.items.get(atlas::PLOT_WET).cloned() else { return };
+    let Some(crop_stage_1) = atlas.items.get(atlas::CROP_STAGE_1).cloned() else { return };
+    let Some(crop_stage_2) = atlas.items.get(atlas::CROP_STAGE_2).cloned() else { return };
+    let Some(crop_stage_mature) = atlas.items.get(atlas::CROP_STAGE_MATURE).cloned() else { return };
+
+    props.grass = grass;
+    props.grass_aspect = grass_aspect();
+    props.grass_mature = grass_mature;
+    props.grass_mature_aspect = grass_mature_aspect();
+    props.tree = tree;
+    props.tree_aspect = tree_aspect();
+    props.sapling = sapling;
+    props.sapling_aspect = sapling_aspect();
+    props.rock = rock;
+    props.rock_aspect = rock_aspect();
+    props.log = log;
+    props.log_aspect = log_aspect();
+    props.bench = bench;
+    props.bench_aspect = bench_aspect();
+    props.icon_seed = icon_seed;
+    props.icon_wood = icon_wood;
+    props.icon_stone = icon_stone;
+    props.icon_grass = icon_grass;
+    props.icon_log = icon_log;
+    props.icon_pickaxe = icon_pickaxe;
+    props.icon_axe = icon_axe;
+    props.icon_shovel = icon_shovel;
+    props.icon_hoe = icon_hoe;
+    props.icon_watering_can = icon_watering_can;
+    props.icon_car = icon_car;
+    props.plot_tilled = plot_tilled;
+    props.plot_wet = plot_wet;
+    props.crop_stages = [crop_stage_1, crop_stage_2, crop_stage_mature];
+    props.ready = true;
+
+    // No decoration depends on these; emit a log once so it's clear the
+    // new-art pipeline is live.
+    info!("Prop/icon textures built from cropped EmanuelleDev art");
+    let _ = commands;
 }
 
 // ============================================================================
@@ -267,6 +456,8 @@ pub struct Deco {
 #[derive(Resource, Default)]
 pub struct DecoTextures {
     pub by_terrain: HashMap<TerrainType, DecoSet>,
+    /// True once the cropped art has been assembled.
+    pub built: bool,
 }
 
 #[derive(Default)]
@@ -275,73 +466,71 @@ pub struct DecoSet {
     pub critters: Vec<Deco>,
 }
 
-/// Load every decoration tile once (chroma-keyed via the TinyKeyQueue).
+/// Build the per-terrain decoration sets once all their cropped sprites have
+/// streamed in. Polls `SlicedAtlas`; inserts `DecoTextures` a single time.
 pub fn init_deco_textures(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    mut queue: ResMut<crate::tiny::TinyKeyQueue>,
+    atlas: Res<crate::slice::SlicedAtlas>,
+    mut deco: ResMut<DecoTextures>,
 ) {
-    fn deco(
-        asset_server: &AssetServer,
-        queue: &mut crate::tiny::TinyKeyQueue,
-        path: &'static str,
-        height: f32,
-    ) -> Deco {
-        let h = asset_server.load::<Image>(path);
-        queue.0.push(h.clone());
-        Deco { image: h, height }
+    if !deco.by_terrain.is_empty() || deco.built {
+        return;
     }
+    let mut need = |keys: &[&str]| keys.iter().all(|k| atlas.items.contains_key(*k));
+    if !need(&[atlas::DECO_WHEAT, atlas::DECO_WHEAT2, atlas::DECO_CARROT,
+               atlas::DECO_BROCCOLI, atlas::DECO_POTATO, atlas::DECO_ONION,
+               atlas::DECO_STRAWBERRY, atlas::DECO_BLUEBERRY, atlas::DECO_ROCK2,
+               atlas::DECO_TREE2, atlas::DECO_STONE,
+               atlas::CRIT_CHICKEN, atlas::CRIT_SHEEP, atlas::CRIT_COW,
+               atlas::CRIT_FOX, atlas::CRIT_DEER, atlas::CRIT_RABBIT,
+               atlas::CRIT_BUTTERFLY, atlas::CRIT_PENGUIN, atlas::CRIT_CAPYBARA]) {
+        return;
+    }
+    let get = |k: &str| atlas.items.get(k).expect("checked").clone();
+    let to_deco = |k: &str, height: f32| Deco { image: get(k), height };
+
     let mut sets: HashMap<TerrainType, DecoSet> = HashMap::new();
     let mut add = |terrain: TerrainType, critter: bool, d: Deco| {
         let set = sets.entry(terrain).or_default();
         if critter { set.critters.push(d) } else { set.plants.push(d) }
     };
-    // Meadow: sprouts, wheat, berries — plus the odd chicken.
-    for path in [
-        "models/Tiny Town/Tiles/tile_0008.png",
-        "models/Tiny Town/Tiles/tile_0009.png",
-        "models/Tiny Town/Tiles/tile_0017.png",
-        "models/Tiny Farm/Tiles/tile_0005.png",
-        "models/Tiny Farm/Tiles/tile_0082.png",
-    ] {
-        add(TerrainType::Grass, false, deco(&asset_server, &mut queue, path, 1.0));
+    // Meadow: young wheat, strawberry, broccoli — plus the odd chicken.
+    for k in [atlas::DECO_WHEAT2, atlas::DECO_STRAWBERRY, atlas::DECO_BROCCOLI] {
+        add(TerrainType::Grass, false, to_deco(k, 1.0));
     }
-    add(TerrainType::Grass, true, deco(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0122.png", 1.1));
-    add(TerrainType::Grass, false, deco(&asset_server, &mut queue, "models/Tiny Town/Tiles/tile_0029.png", 0.8));
-    // Plains: wheat, with cows and sheep grazing.
-    for path in [
-        "models/Tiny Town/Tiles/tile_0009.png",
-        "models/Tiny Farm/Tiles/tile_0066.png",
-    ] {
-        add(TerrainType::Grassland, false, deco(&asset_server, &mut queue, path, 1.1));
-    }
-    add(TerrainType::Grassland, true, deco(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0121.png", 1.7));
-    add(TerrainType::Grassland, true, deco(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0120.png", 1.5));
-    // Woods: mushrooms and ferns under the trees.
-    for (path, h) in [
-        ("models/Tiny Town/Tiles/tile_0029.png", 0.9),
-        ("models/Tiny Town/Tiles/tile_0030.png", 0.8),
-        ("models/Tiny Town/Tiles/tile_0017.png", 0.9),
-    ] {
-        add(TerrainType::Forest, false, deco(&asset_server, &mut queue, path, h));
-    }
-    // Jungle: gourds and golden cane.
-    add(TerrainType::TropicalRainforest, false, deco(&asset_server, &mut queue, "models/Tiny Farm/Tiles/tile_0078.png", 1.1));
-    add(TerrainType::TropicalRainforest, false, deco(&asset_server, &mut queue, "models/Tiny Town/Tiles/tile_0021.png", 1.3));
-    // Desert: scattered stones.
-    add(TerrainType::Desert, false, deco(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0081.png", 0.9));
-    // Tundra: ice blocks and the odd abandoned sled.
-    add(TerrainType::Tundra, false, deco(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0078.png", 1.0));
-    add(TerrainType::Tundra, true, deco(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0068.png", 1.0));
-    // Taiga: dead trees, stones — and wolves.
-    add(TerrainType::Taiga, false, deco(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0007.png", 1.8));
-    add(TerrainType::Taiga, false, deco(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0081.png", 0.9));
-    add(TerrainType::Taiga, true, deco(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0072.png", 1.4));
-    add(TerrainType::Taiga, true, deco(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0076.png", 1.4));
+    add(TerrainType::Grass, true, to_deco(atlas::CRIT_CHICKEN, 1.1));
+    // Plains: golden wheat, with cows and sheep grazing.
+    add(TerrainType::Grassland, false, to_deco(atlas::DECO_WHEAT, 1.1));
+    add(TerrainType::Grassland, true, to_deco(atlas::CRIT_SHEEP, 1.7));
+    add(TerrainType::Grassland, true, to_deco(atlas::CRIT_COW, 1.5));
+    // Woods: carrot and onions under the trees, deer and fox about.
+    add(TerrainType::Forest, false, to_deco(atlas::DECO_CARROT, 0.9));
+    add(TerrainType::Forest, false, to_deco(atlas::DECO_ONION, 0.8));
+    add(TerrainType::Forest, true, to_deco(atlas::CRIT_DEER, 1.4));
+    add(TerrainType::Forest, true, to_deco(atlas::CRIT_FOX, 1.1));
+    // Jungle: potatoes and blueberries, capybaras by the water.
+    add(TerrainType::TropicalRainforest, false, to_deco(atlas::DECO_POTATO, 1.1));
+    add(TerrainType::TropicalRainforest, false, to_deco(atlas::DECO_BLUEBERRY, 1.0));
+    add(TerrainType::TropicalRainforest, true, to_deco(atlas::CRIT_CAPYBARA, 1.6));
+    add(TerrainType::TropicalRainforest, true, to_deco(atlas::CRIT_BUTTERFLY, 0.6));
+    // Desert: scattered stones and rock breaks.
+    add(TerrainType::Desert, false, to_deco(atlas::DECO_STONE, 0.9));
+    add(TerrainType::Desert, false, to_deco(atlas::DECO_ROCK2, 1.1));
+    // Tundra: frozen stones, penguins.
+    add(TerrainType::Tundra, false, to_deco(atlas::DECO_ROCK2, 1.0));
+    add(TerrainType::Tundra, true, to_deco(atlas::CRIT_PENGUIN, 1.0));
+    // Taiga: dead trees (old-tree variants), foxes and rabbits.
+    add(TerrainType::Taiga, false, to_deco(atlas::DECO_TREE2, 1.8));
+    add(TerrainType::Taiga, false, to_deco(atlas::DECO_STONE, 0.9));
+    add(TerrainType::Taiga, true, to_deco(atlas::CRIT_FOX, 1.2));
+    add(TerrainType::Taiga, true, to_deco(atlas::CRIT_RABBIT, 0.9));
     // Highlands: stones.
-    add(TerrainType::Mountain, false, deco(&asset_server, &mut queue, "models/Tiny Ski/Tiles/tile_0081.png", 1.0));
+    add(TerrainType::Mountain, false, to_deco(atlas::DECO_STONE, 1.0));
+    add(TerrainType::Mountain, false, to_deco(atlas::DECO_ROCK2, 1.2));
 
-    commands.insert_resource(DecoTextures { by_terrain: sets });
+    deco.by_terrain = sets;
+    deco.built = true;
+    let _ = commands;
 }
 
 /// Deterministic per-slot hash with a salt (independent streams for
@@ -368,41 +557,32 @@ pub struct SolidFloorTextures {
     pub by_terrain: HashMap<TerrainType, Vec<(Handle<Image>, [f32; 3])>>,
 }
 
-/// Load the floor tile handles (raw 16x16 art; streams in async).
+/// Load the floor tile handles from the cropped atlas once the art has
+/// streamed in. Polls `SlicedAtlas`; fills `SolidFloorTextures` a single time.
 pub fn init_solid_floor_textures(
-    images: ResMut<Assets<Image>>,
     mut solid: ResMut<SolidFloorTextures>,
-    asset_server: Res<AssetServer>,
-    mut handles: Local<Option<Vec<(TerrainType, Handle<Image>, [f32; 3])>>>,
-    mut solid_done: Local<bool>,
+    atlas: Res<crate::slice::SlicedAtlas>,
+    mut done: Local<bool>,
 ) {
-    if !solid.by_terrain.is_empty() {
+    if *done || !solid.by_terrain.is_empty() {
         return;
     }
-    if *solid_done {
+    // Land tiles all come from four atlas crops that must all be ready.
+    let keys = [atlas::FLOOR_GRASS, atlas::FLOOR_SAND, atlas::FLOOR_SNOW, atlas::FLOOR_STONE];
+    if keys.iter().any(|k| !atlas.items.contains_key(*k)) {
         return;
     }
-    let handles = handles.get_or_insert_with(|| {
-        let mut all: Vec<(TerrainType, Handle<Image>, [f32; 3])> = Vec::new();
-        for terrain in terrains_iter() {
-            for (path, tint) in floor_tiles_for(terrain) {
-                let handle = asset_server.load::<Image>(*path);
-                all.push((terrain, handle, *tint));
-            }
+    let get = |k: &str| atlas.items.get(k).expect("checked").clone();
+    for terrain in terrains_iter() {
+        let variants: Vec<(Handle<Image>, [f32; 3])> = floor_tiles_for(terrain)
+            .into_iter()
+            .map(|(key, tint)| (get(key), *tint))
+            .collect();
+        if !variants.is_empty() {
+            solid.by_terrain.insert(terrain, variants);
         }
-        all
-    });
-    if handles.iter().any(|(_, handle, _)| images.get(handle).is_none()) {
-        return; // not streamed yet — retry next frame
     }
-    for (terrain, handle, tint) in handles.iter() {
-        solid
-            .by_terrain
-            .entry(*terrain)
-            .or_default()
-            .push((handle.clone(), *tint));
-    }
-    *solid_done = true;
+    *done = true;
 }
 
 /// Terrain order matching the handle list built above.
@@ -422,71 +602,60 @@ fn terrains_iter() -> impl Iterator<Item = TerrainType> {
     .into_iter()
 }
 
-/// Seamless Tiny* tile variants per terrain (with per-variant tints), mixing
-/// the whole Tiny* family — they share one visual identity. Only border-free
-/// tiles qualify — bordered patch tiles would band when tiled.
+/// Atlas key + tint per terrain variant. Only seamless plain tiles qualify —
+/// the EmanuelleDev tilesets are authored seamless, and the sampled crops are
+/// flat enough to tile without banding.
 fn floor_tiles_for(terrain: TerrainType) -> &'static [(&'static str, [f32; 3])] {
     match terrain {
-        // Meadow grass: Tiny Town — plain green only (tile 2 has flowers
-        // baked in; flowers belong to the deco layer, not the floor).
+        // Meadow grass: plain green from the Summer tileset.
         TerrainType::Grass => &[
-            ("models/Tiny Town/Tiles/tile_0001.png", [1.0, 1.0, 1.0]),
-            ("models/Tiny Town/Tiles/tile_0000.png", [1.0, 1.0, 1.0]),
+            (atlas::FLOOR_GRASS, [1.0, 1.0, 1.0]),
         ],
-        // Dry plain: warm-tinted Town grass.
+        // Dry plain: warm-tinted grass.
         TerrainType::Grassland => &[
-            ("models/Tiny Town/Tiles/tile_0000.png", [1.05, 1.05, 0.95]),
-            ("models/Tiny Town/Tiles/tile_0001.png", [1.05, 1.05, 0.95]),
+            (atlas::FLOOR_GRASS, [1.05, 1.02, 0.87]),
+            (atlas::FLOOR_GRASS, [1.0, 1.0, 0.93]),
         ],
-        // Deep woods: the same grass, cooler and darker — growth biomes
-        // stay pure grass (soil-looking tiles are reserved for future farm
-        // plots).
+        // Deep woods: the same grass, cooler and darker.
         TerrainType::Forest => &[
-            ("models/Tiny Town/Tiles/tile_0001.png", [0.66, 0.82, 0.62]),
-            ("models/Tiny Town/Tiles/tile_0000.png", [0.66, 0.82, 0.62]),
+            (atlas::FLOOR_GRASS, [0.68, 0.84, 0.64]),
+            (atlas::FLOOR_GRASS, [0.62, 0.8, 0.6]),
         ],
         // Jungle: lush saturated grass.
         TerrainType::TropicalRainforest => &[
-            ("models/Tiny Town/Tiles/tile_0001.png", [0.88, 1.06, 0.85]),
-            ("models/Tiny Town/Tiles/tile_0000.png", [0.95, 1.1, 0.9]),
+            (atlas::FLOOR_GRASS, [0.88, 1.08, 0.82]),
+            (atlas::FLOOR_GRASS, [0.95, 1.12, 0.88]),
         ],
-        // Dunes: Tiny Town seamless dirt (25 = border-free sand earth).
+        // Dunes: seamless sand from the Summer tileset.
         TerrainType::Desert => &[
-            ("models/Tiny Town/Tiles/tile_0025.png", [1.0, 1.0, 1.0]),
-            ("models/Tiny Town/Tiles/tile_0025.png", [1.07, 0.97, 0.86]),
-            ("models/Tiny Town/Tiles/tile_0025.png", [0.95, 0.9, 1.02]),
+            (atlas::FLOOR_SAND, [1.0, 1.0, 1.0]),
+            (atlas::FLOOR_SAND, [1.07, 0.97, 0.86]),
+            (atlas::FLOOR_SAND, [0.95, 0.9, 1.02]),
         ],
-        // Snow: Tiny Ski.
+        // Snow: white from the Winter tileset.
         TerrainType::Tundra => &[
-            ("models/Tiny Ski/Tiles/tile_0000.png", [1.0, 1.0, 1.0]),
-            ("models/Tiny Ski/Tiles/tile_0002.png", [1.0, 1.0, 1.0]),
+            (atlas::FLOOR_SNOW, [1.0, 1.0, 1.0]),
         ],
         // Boreal snow: colder blue tint.
         TerrainType::Taiga => &[
-            ("models/Tiny Ski/Tiles/tile_0000.png", [0.82, 0.9, 1.08]),
-            ("models/Tiny Ski/Tiles/tile_0002.png", [0.82, 0.9, 1.08]),
+            (atlas::FLOOR_SNOW, [0.82, 0.9, 1.08]),
+            (atlas::FLOOR_SNOW, [0.78, 0.88, 1.1]),
         ],
-        // Rocky highlands: Dungeon scree, strongly greyed so the warm
-        // brown base reads as bare rock.
+        // Rocky highlands: warm stone from the Dungeon tileset, greyed so it
+        // reads as bare rock.
         TerrainType::Mountain => &[
-            ("models/Tiny Dungeon/Tiles/tile_0012.png", [0.66, 0.66, 0.76]),
-            ("models/Tiny Dungeon/Tiles/tile_0013.png", [0.6, 0.6, 0.72]),
-            ("models/Tiny Dungeon/Tiles/tile_0012.png", [0.78, 0.78, 0.88]),
+            (atlas::FLOOR_STONE, [0.66, 0.66, 0.76]),
+            (atlas::FLOOR_STONE, [0.6, 0.6, 0.72]),
+            (atlas::FLOOR_STONE, [0.78, 0.78, 0.88]),
         ],
-        // Asphalt + road markings: Tiny Battle streets.
-        TerrainType::City => &[
-            ("models/Tiny Battle/Tiles/tile_0108.png", [1.0, 1.0, 1.0]),
-            ("models/Tiny Battle/Tiles/tile_0109.png", [1.0, 1.0, 1.0]),
-            ("models/Tiny Battle/Tiles/tile_0110.png", [1.0, 1.0, 1.0]),
-        ],
-        // Blighted ground: scree with a sickly green tint.
+        // City streets/procedural: filled by init_city_textures, not here.
+        TerrainType::City => &[],
+        // Blighted ground: stone with a sickly green tint.
         TerrainType::Polluted => &[
-            ("models/Tiny Dungeon/Tiles/tile_0012.png", [0.85, 1.0, 0.85]),
-            ("models/Tiny Dungeon/Tiles/tile_0013.png", [0.75, 0.9, 0.75]),
+            (atlas::FLOOR_STONE, [0.85, 1.0, 0.85]),
+            (atlas::FLOOR_STONE, [0.75, 0.9, 0.75]),
         ],
-        TerrainType::Water => &[
-            ("models/Tiny Town/Tiles/tile_0000.png", [1.0, 1.0, 1.0]), // unused
-        ],
+        TerrainType::Water => &[(atlas::WATER, [1.0, 1.0, 1.0])],
     }
 }
 
@@ -542,6 +711,11 @@ pub fn update_world_object_visuals(
     mut last_py: Local<f32>,
     mut state: ResMut<WorldObjectState>,
 ) {
+    // The cropped prop art streams in over the first few frames; don't spawn
+    // world-object visuals until the whole set is ready.
+    if !props.ready {
+        return;
+    }
     // Perf: this scans every replicated world_object row; at planet scale that
     // set can be huge, so throttle it. While the player is moving we rescan at
     // ~7 Hz (objects pop in as you walk), but while standing still we only
@@ -616,7 +790,12 @@ pub fn update_world_object_visuals(
         let (handle, height, aspect, tint) = match row.kind.as_str() {
             "Grass" => {
                 if mature {
-                    (&props.grass, kind_height("Grass", true), props.grass_aspect, Color::WHITE)
+                    (
+                        &props.grass_mature,
+                        kind_height("Grass", true),
+                        props.grass_mature_aspect,
+                        Color::srgb(0.42, 0.72, 0.38),
+                    )
                 } else {
                     // Planted grass sprouts via the existing sapling path.
                     (
@@ -721,22 +900,19 @@ fn water_color(class: WaterClass) -> [f32; 3] {
     }
 }
 
-/// Build the water tints + shared white square once.
+/// Build the water tints + the shared water tile once. Replaces the old
+/// tinted white square with the actual `Water tile.png` art, recoloured per
+/// water class.
 pub fn init_water_textures(
-    mut images: ResMut<Assets<Image>>,
     mut water: ResMut<WaterTextures>,
+    atlas: Res<crate::slice::SlicedAtlas>,
 ) {
     if water.white.is_some() {
         return;
     }
-    let mut white = vec![255u8; 8 * 8 * 4];
-    let handle = images.add(Image::new(
-        Extent3d { width: 8, height: 8, depth_or_array_layers: 1 },
-        TextureDimension::D2,
-        std::mem::take(&mut white),
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::default(),
-    ));
+    let Some(tile) = atlas.items.get(atlas::WATER).cloned() else {
+        return; // water tile not cropped yet — retry next frame
+    };
     for class in [
         WaterClass::Ocean,
         WaterClass::Sea,
@@ -747,7 +923,7 @@ pub fn init_water_textures(
     ] {
         water.by_class.insert(class, water_color(class));
     }
-    water.white = Some(handle);
+    water.white = Some(tile);
 }
 
 // ============================================================================
@@ -984,18 +1160,14 @@ pub fn update_world_floor(
         } else if *terrain == TerrainType::City {
             // Procedural urban floor: roads / plazas / building bases.
             let cell = city_cell(cx, cy);
-            let road_variants = solid
-                .by_terrain
-                .get(&TerrainType::City)
-                .cloned()
-                .unwrap_or_default();
             match cell.kind {
                 CityCellKind::Road => {
-                    if road_variants.is_empty() {
-                        continue;
-                    }
-                    let (h, t) = road_variants[cell.variant % road_variants.len()].clone();
-                    (h, t)
+                    // Roads share the procedural pavement (grey asphalt);
+                    // slightly varied tint so the grid reads as streets.
+                    let Some(c) = city.as_ref() else { continue };
+                    let v = cell.variant as f32;
+                    let t = [0.9 + 0.1 * (v % 3.0) / 2.0, 0.9 + 0.1 * (v % 3.0) / 2.0, 0.95];
+                    (c.pavement.clone(), t)
                 }
                 CityCellKind::Block => {
                     let Some(c) = city.as_ref() else { continue };
@@ -1156,6 +1328,254 @@ pub struct ParsedPlant {
 /// Root entity rendering a plant or pollution marker on one hex.
 #[derive(Component)]
 pub struct HexPlantVisual;
+
+/// Per-slot visual cache for Stardew plots (tilled dirt + growing crops).
+#[derive(Resource, Default)]
+pub struct PlotFloorState {
+    /// slot → root entity holding the dirt tile sprite.
+    pub visuals: HashMap<(i32, i32), Entity>,
+    /// slot → encoded visual (wet + crop stage), to respawn only on real change.
+    pub stage: HashMap<(i32, i32), (bool, i8)>,
+    /// Last raw `HexTile.plots` JSON per hex, so unchanged hexes skip parsing.
+    pub hex_raw: HashMap<u64, u64>,
+    /// Cached per-hex plot maps (parsed once per hex change).
+    pub parsed: HashMap<u64, std::collections::HashMap<String, ClientPlot>>,
+}
+
+/// Root entity rendering one slot's plot (dirt tile + crop child).
+#[derive(Component)]
+pub struct PlotVisual;
+
+/// Mirror of a slot's `PlotState` parsed out of the hex `plots` JSON map.
+#[derive(serde::Deserialize, Clone)]
+struct ClientPlot {
+    #[serde(default)]
+    tilled: bool,
+    kind: Option<String>,
+    #[serde(default)]
+    planted_at: u64,
+    watered_at: Option<u64>,
+    #[serde(default)]
+    growth_time: u64,
+    #[serde(default)]
+    planted_by: Option<String>,
+}
+
+impl ClientPlot {
+    fn mature_at(&self, watered_at: u64) -> u64 {
+        watered_at.saturating_add(self.growth_time.max(1))
+    }
+}
+
+/// Scan the hexes near the player and render each tilled plot as a dirt tile
+/// (dry, or wet once watered) plus a crop at the current growth stage.
+///
+/// Cost is bounded by the number of *replicated hexes with plots* (not by the
+/// whole slot grid): each hex is parsed once per change, and a slot's sprite
+/// is respawned only when its visual (wet + crop stage) actually changes.
+pub fn update_plot_visuals(
+    mut commands: Commands,
+    net: Res<crate::net::plugin::Net>,
+    player_transform: Res<crate::player::PlayerTransform>,
+    time: Res<Time>,
+    props: Option<Res<PropTextures>>,
+    mut state: ResMut<PlotFloorState>,
+    mut next_scan: Local<f64>,
+    mut last_px: Local<f32>,
+    mut last_py: Local<f32>,
+) {
+    let Some(props) = props.as_ref() else { return };
+    if !props.ready {
+        return;
+    }
+    // Idle-aware throttle: moving ~7 Hz (plots pop in), standing ~1 Hz (only
+    // crop-stage maturity changes — cheap, since hexes are cached & skipped).
+    let px = player_transform.translation.x;
+    let py = player_transform.translation.y;
+    let moved = ((px - *last_px).powi(2) + (py - *last_py).powi(2)).sqrt();
+    let interval = if moved > 2.0 { 0.15 } else { 1.0 };
+    if time.elapsed_secs_f64() < *next_scan {
+        return;
+    }
+    *next_scan = time.elapsed_secs_f64() + interval;
+    *last_px = px;
+    *last_py = py;
+
+    let now = now_unix_secs();
+    let conn_guard = net.conn.lock().unwrap();
+    let Some(conn) = conn_guard.as_ref() else { return };
+    let (hq, hr) = world_pos_to_hex(px, py, WorldGenConfig::HEX_SIZE);
+    const MAX_DIST: f32 = 8.0;
+
+    // Every plot slot still in range this pass (for stale cleanup).
+    let mut seen: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
+
+    for row in crate::net::gen::HexTileTableAccess::hex_tile(&conn.db).iter() {
+        let dq = (row.hex_q - hq).abs() as f32;
+        let dr = (row.hex_r - hr).abs() as f32;
+        let ds = ((row.hex_q + row.hex_r) - (hq + hr)).abs() as f32;
+        if dq.max(dr).max(ds) > MAX_DIST {
+            continue;
+        }
+        let plots_json = row.plots.as_deref();
+        let empty = plots_json.map_or(true, str::is_empty);
+        if empty {
+            // Hex no longer has plots (e.g. scrolled out / all plots cleared).
+            state.hex_raw.remove(&row.hex_id);
+            state.parsed.remove(&row.hex_id);
+            continue;
+        }
+        let raw_hash = fnv_hash(plots_json.unwrap_or(""));
+        // Parse the hex's plot map only once until the JSON actually changes.
+        if state.hex_raw.get(&row.hex_id) != Some(&raw_hash) {
+            match serde_json::from_str::<std::collections::HashMap<String, ClientPlot>>(plots_json.unwrap_or("")) {
+                Ok(map) => {
+                    state.hex_raw.insert(row.hex_id, raw_hash);
+                    state.parsed.insert(row.hex_id, map);
+                }
+                Err(_) => {
+                    state.hex_raw.remove(&row.hex_id);
+                    state.parsed.remove(&row.hex_id);
+                    continue;
+                }
+            }
+        }
+        // Materialise the desired visuals (drops the `map` borrow so `state`
+        // can be mutated below without aliasing).
+        let mut desired: Vec<(i32, i32, (bool, i8))> = Vec::new();
+        if let Some(map) = state.parsed.get(&row.hex_id) {
+            for (key, plot) in map {
+                if let Some((sx, sy)) = parse_slot_key(key) {
+                    if let Some(vis) = plot_stage(plot, now) {
+                        desired.push((sx, sy, vis));
+                    }
+                }
+            }
+        }
+
+        for (sx, sy, vis) in desired {
+            seen.insert((sx, sy));
+            if state.stage.get(&(sx, sy)) == Some(&vis) {
+                continue; // unchanged — no respawn
+            }
+            let (cx, cy) = slot_center(sx, sy);
+            if let Some(root) = state.visuals.remove(&(sx, sy)) {
+                commands.entity(root).despawn();
+            }
+            if let Some(entity) = spawn_slot_plot(&mut commands, props, &vis, cx, cy) {
+                state.visuals.insert((sx, sy), entity);
+                state.stage.insert((sx, sy), vis);
+            }
+        }
+    }
+
+    // Despawn plots that left the scan radius or belong to a now-empty hex.
+    let stale: Vec<(i32, i32)> = state
+        .visuals
+        .keys()
+        .chain(state.stage.keys())
+        .filter(|k| !seen.contains(k))
+        .copied()
+        .collect();
+    for k in stale {
+        if let Some(e) = state.visuals.remove(&k) {
+            commands.entity(e).despawn();
+        }
+        state.stage.remove(&k);
+    }
+}
+
+/// The encoded visual for a plot: `(wet, crop_stage)` where `crop_stage` is
+/// -1 = no crop (bare dirt), else 0/1/2 = young / mid / mature. `None` when the
+/// plot isn't tilled (nothing to draw).
+fn plot_stage(plot: &ClientPlot, now: u64) -> Option<(bool, i8)> {
+    if !plot.tilled {
+        return None;
+    }
+    let wet = plot.watered_at.is_some();
+    let mut stage: i8 = -1;
+    if let Some(wa) = plot.watered_at {
+        if plot.kind.is_some() {
+            let growth = plot.growth_time.max(1) as f64;
+            let progress = now.saturating_sub(wa) as f64 / growth;
+            stage = if progress >= 1.0 {
+                2
+            } else if progress >= 0.5 {
+                1
+            } else {
+                0
+            };
+        }
+    }
+    Some((wet, stage))
+}
+
+/// Parse a `"{sx}:{sy}"` slot key back into coordinates.
+fn parse_slot_key(key: &str) -> Option<(i32, i32)> {
+    let (a, b) = key.split_once(':')?;
+    let sx = a.parse::<i32>().ok()?;
+    let sy = b.parse::<i32>().ok()?;
+    Some((sx, sy))
+}
+
+/// Fast 64-bit FNV-1a hash, used only to detect plot-JSON changes.
+fn fnv_hash(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// Spawn the dirt tile (+ wet overlay via texture + crop child) for one slot.
+fn spawn_slot_plot(
+    commands: &mut Commands,
+    props: &PropTextures,
+    vis: &(bool, i8),
+    cx: f32,
+    cy: f32,
+) -> Option<Entity> {
+    let (wet, stage) = *vis;
+    let dirt = if wet {
+        props.plot_wet.clone()
+    } else {
+        props.plot_tilled.clone()
+    };
+    let crop: Option<Handle<Image>> = if stage >= 0 {
+        Some(props.crop_stages[stage as usize].clone())
+    } else {
+        None
+    };
+
+    let root = commands
+        .spawn((
+            Name::new(format!("plot-{cx:.0}-{cy:.0}")),
+            PlotVisual,
+            Sprite {
+                image: dirt,
+                custom_size: Some(Vec2::splat(SLOT_SIZE)),
+                ..default()
+            },
+            Transform::from_xyz(cx, cy, floor_depth(cy)),
+            Visibility::Visible,
+        ))
+        .id();
+
+    if let Some(image) = crop {
+        commands.entity(root).with_child((
+            Name::new("plot-crop"),
+            Sprite {
+                image,
+                custom_size: Some(Vec2::splat(SLOT_SIZE * 0.9)),
+                ..default()
+            },
+            Transform::from_xyz(0.0, SLOT_SIZE * 0.18, prop_depth(cy) + 0.5),
+            Visibility::Visible,
+        ));
+    }
+    Some(root)
+}
 
 /// Spec 016 T4.6: per-plant-type young/mature colors. Unknown types fall
 /// back to None (caller uses the default young/mature pair).
@@ -1403,10 +1823,27 @@ mod tests_floor_variants {
             TerrainType::Polluted,
         ] {
             let variants = floor_tiles_for(terrain);
-            assert!(variants.len() >= 2, "{terrain:?} needs >= 2 floor variants");
-            for (path, tint) in variants {
-                assert!(path.contains("Tiny"), "{terrain:?} non-tiny tile {path}");
+            for (key, tint) in variants {
+                // Every key must be a real atlas constant (no leftover file
+                // paths) and every tint must stay a plausible shade.
+                assert!(!key.contains('/'), "{terrain:?} leaked a file path: {key}");
+                assert!(
+                    matches!(
+                        *key,
+                        atlas::FLOOR_GRASS
+                            | atlas::FLOOR_SAND
+                            | atlas::FLOOR_SNOW
+                            | atlas::FLOOR_STONE
+                            | atlas::WATER
+                    ),
+                    "{terrain:?} unknown floor key {key}"
+                );
                 assert!(tint.iter().all(|c| (0.5..=1.3).contains(c)));
+            }
+            // City streets are procedurally generated (no atlas floor), every
+            // other land terrain needs art to paint.
+            if terrain != TerrainType::City {
+                assert!(variants.len() >= 1, "{terrain:?} needs >= 1 floor variant");
             }
         }
     }

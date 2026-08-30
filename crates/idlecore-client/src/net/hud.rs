@@ -63,7 +63,7 @@ impl Plugin for NetHudPlugin {
             .add_systems(Startup, spawn_hud)
             .add_systems(
                 Update,
-                (update_hud_text, hud_buttons, name_input),
+                (update_hud_text, hud_buttons, name_input, cycle_character_keyboard),
             );
     }
 }
@@ -522,20 +522,16 @@ fn hud_buttons(
                         }
                     }
                     HudAction::AvatarNext => {
-                        // Visible effect, same as the ] key: cycle the skin
-                        // painted on the model, then persist the choice as
-                        // the avatar column so it survives reconnects.
-                        crate::skins::cycle_skin_dir(&mut skins, 1);
-                        let skin_name = crate::skins::CHARACTERS
-                            .first()
-                            .map(|n| n.to_string())
-                            .unwrap_or_default();
-                        send_reducer(&mut net, |r| r.update_profile_then(
-                            None,
-                            Some(skin_name),
-                            None,
-                            reducer_report("update_profile", tx.clone(), 0),
-                        ));
+                        // Cycle the skin painted on the model, then persist the
+                        // choice as the avatar column so it survives reconnects.
+                        if let Some(skin_name) = crate::skins::cycle_skin_dir(&mut skins, 1) {
+                            send_reducer(&mut net, |r| r.update_profile_then(
+                                None,
+                                Some(skin_name),
+                                None,
+                                reducer_report("update_profile", tx.clone(), 0),
+                            ));
+                        }
                     }
                     HudAction::Connect => {}
                 }
@@ -638,5 +634,33 @@ pub(super) fn toggle_debug_hud(
     let want = if state.0 { Display::Flex } else { Display::None };
     if let Ok(mut node) = panel.single_mut() {
         node.display = want;
+    }
+}
+
+/// [ and ] cycle the playable character (keyboard-only shortcut, same as the
+/// Avatar button) and persist the choice to the avatar column.
+pub(super) fn cycle_character_keyboard(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut skins: ResMut<crate::skins::PlayerSkins>,
+    mut net: ResMut<Net>,
+) {
+    let dir = if keys.just_pressed(KeyCode::BracketRight) {
+        1
+    } else if keys.just_pressed(KeyCode::BracketLeft) {
+        -1
+    } else {
+        return;
+    };
+    if net.conn.lock().unwrap().is_none() {
+        return; // only persist once connected
+    }
+    if let Some(skin_name) = crate::skins::cycle_skin_dir(&mut skins, dir) {
+        let tx = net.sender();
+        send_reducer(&mut net, |r| r.update_profile_then(
+            None,
+            Some(skin_name),
+            None,
+            reducer_report("update_profile", tx.clone(), 0),
+        ));
     }
 }

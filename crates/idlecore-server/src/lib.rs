@@ -283,15 +283,70 @@ pub fn craft(
     crate::objects::craft(ctx, &address, hex_id, slot_x, slot_y, ingredients)
 }
 
-/// Till the selected hex with the Hoe: plants Wheat by consuming a Seed
-/// (Spec 022 §5), reusing the crop system.
+/// Till the selected 16px slot with the Hoe: turns loose soil (no seed
+/// consumed). Plant a seed on it, then water it to grow (Spec 022 §5).
 #[reducer]
-pub fn till(ctx: &ReducerContext, hex_id: u64) -> Result<(), String> {
+pub fn till(
+    ctx: &ReducerContext,
+    hex_id: u64,
+    slot_x: i32,
+    slot_y: i32,
+) -> Result<(), String> {
     let Some(address) = address_of(ctx) else {
         return Err("Not logged in — connect first".to_string());
     };
-    let result = crate::interactions::till(ctx, &address, hex_id);
+    let result = crate::interactions::till(ctx, &address, hex_id, slot_x, slot_y);
     crate::player::log_outcome(ctx, &address, "till", result.clone());
+    result.into_result()
+}
+
+/// Plant a seed on a tilled plot (Spec 022 §5). The crop does not grow until
+/// watered.
+#[reducer]
+pub fn plant_plot(
+    ctx: &ReducerContext,
+    hex_id: u64,
+    slot_x: i32,
+    slot_y: i32,
+    kind: Option<String>,
+) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    let result = crate::interactions::plant_plot(ctx, &address, hex_id, slot_x, slot_y, kind);
+    crate::player::log_outcome(ctx, &address, "plant", result.clone());
+    result.into_result()
+}
+
+/// Water a planted plot with the WateringCan (Spec 022 §5).
+#[reducer]
+pub fn water_plot(
+    ctx: &ReducerContext,
+    hex_id: u64,
+    slot_x: i32,
+    slot_y: i32,
+) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    let result = crate::interactions::water_plot(ctx, &address, hex_id, slot_x, slot_y);
+    crate::player::log_outcome(ctx, &address, "water", result.clone());
+    result.into_result()
+}
+
+/// Harvest a mature, watered plot (Spec 022 §5).
+#[reducer]
+pub fn harvest_plot(
+    ctx: &ReducerContext,
+    hex_id: u64,
+    slot_x: i32,
+    slot_y: i32,
+) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    let result = crate::interactions::harvest_plot(ctx, &address, hex_id, slot_x, slot_y);
+    crate::player::log_outcome(ctx, &address, "harvest", result.clone());
     result.into_result()
 }
 

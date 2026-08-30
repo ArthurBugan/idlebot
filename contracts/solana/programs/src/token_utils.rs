@@ -2,66 +2,76 @@
 //! Maps Solidity USDTInterface.sol to Rust/Anchor equivalents.
 
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Token, TokenAccount};
+use anchor_lang::solana_program::pubkey;
+use anchor_spl::token::{transfer, Token, Transfer};
 
-/// USDT mint pubkey (Solana native wrapped SOL — standard USDT proxy)
+/// USDT mint pubkey (wrapped SOL placeholder until the USDC-branded SPL
+/// Token 2022 mint is deployed; programs receive the real mint as an
+/// instruction account so this constant is only used off-chain).
 pub const USDT_MINT: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 
-/// Check if balance is sufficient.
+/// Check whether a balance covers an amount.
 pub fn has_enough_balance(current: u64, amount: u64) -> bool {
     current >= amount
 }
 
-/// Get balance from a token account.
-pub fn get_balance(
-    token_account: &AccountInfo,
-) -> Result<u64> {
-    let ata = token_account.try_borrow_account()?;
-    let account = TokenAccount::try_deserialize(&ata.data)
-        .map_err(|_| AnchorError::msg("Invalid token account"))?;
+/// Read the raw token balance of an account.
+pub fn get_balance(token_account: &AccountInfo) -> Result<u64> {
+    let account = anchor_spl::token::TokenAccount::try_deserialize(&mut &**token_account.data.borrow())?;
     Ok(account.amount)
 }
 
-/// Transfer tokens from a source account to a destination (CPI).
+/// Transfer tokens between accounts, with `authority` as signer.
 pub fn transfer_usdt<'info>(
-    program_id: Pubkey,
+    token_program: &Program<'info, Token>,
     from: AccountInfo<'info>,
     to: AccountInfo<'info>,
+    authority: AccountInfo<'info>,
     amount: u64,
 ) -> Result<()> {
-    let mint_pubkey = pubkey!(USDT_MINT);
-    let dest_ata = spl_token::instruction::get_associated_token_address(&to.key(), &mint_pubkey)?;
-
-    token::transfer(
+    transfer(
         CpiContext::new(
-            program_id,
-            spl_token::Transfer {
+            token_program.to_account_info(),
+            Transfer {
                 from,
                 to,
-                amount: TokenAmount::from(amount),
-                authority: from.key,
+                authority,
             },
         ),
-        TokenAmount::from(amount),
-    )?;
-    Ok(())
+        amount,
+    )
 }
 
-/// Approve spending authority on a token account.
-pub fn approve_token<'info>(
-    program_id: Pubkey,
-    token_account: AccountInfo<'info>,
-    spender: Pubkey,
+/// Transfer tokens from a PDA-owned account, signing with `signer_seeds`.
+pub fn transfer_usdt_with_signer<'info>(
+    token_program: &Program<'info, Token>,
+    from: AccountInfo<'info>,
+    to: AccountInfo<'info>,
+    authority: AccountInfo<'info>,
+    signer_seeds: &[&[&[u8]]],
     amount: u64,
 ) -> Result<()> {
-    token::approve(
-        CpiContext::new(program_id, spl_token::Approve {
-            account: token_account,
-            authority: token_account.key,
-            delegate: spender,
-            amount: TokenAmount::from(amount),
-        }),
-        TokenAmount::from(amount),
-    )?;
-    Ok(())
+    transfer(
+        CpiContext::new_with_signer(
+            token_program.to_account_info(),
+            Transfer {
+                from,
+                to,
+                authority,
+            },
+            signer_seeds,
+        ),
+        amount,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn balance_checks() {
+        assert!(has_enough_balance(1_000_000, 1_000_000));
+        assert!(!has_enough_balance(999, 1_000));
+    }
 }

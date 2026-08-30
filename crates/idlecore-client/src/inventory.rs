@@ -37,6 +37,9 @@ pub fn load_item_icons(
         return;
     }
     let Some(props) = props.as_ref() else { return };
+    if !props.ready {
+        return; // icons not built yet (waiting on the sliced atlas)
+    }
     let mut by_item = std::collections::HashMap::new();
     by_item.insert("Seed".to_string(), props.icon_seed.clone());
     by_item.insert("Wood".to_string(), props.icon_wood.clone());
@@ -48,6 +51,7 @@ pub fn load_item_icons(
     by_item.insert("Axe".to_string(), props.icon_axe.clone());
     by_item.insert("Shovel".to_string(), props.icon_shovel.clone());
     by_item.insert("Hoe".to_string(), props.icon_hoe.clone());
+    by_item.insert("WateringCan".to_string(), props.icon_watering_can.clone());
     // Picked-up / placeable craft bench (Spec 022 §3).
     by_item.insert("Workbench".to_string(), props.bench.clone());
     // Vehicles appear as inventory items (equip/unequip from the panel).
@@ -120,6 +124,7 @@ fn item_badge(item: &str) -> (Color, &'static str) {
         "Axe" => (Color::srgb(0.62, 0.55, 0.45), "Ax"),
         "Shovel" => (Color::srgb(0.50, 0.58, 0.62), "Sh"),
         "Hoe" => (Color::srgb(0.58, 0.50, 0.58), "Ho"),
+        "WateringCan" => (Color::srgb(0.45, 0.62, 0.85), "Wc"),
         "Bicycle" => (Color::srgb(0.40, 0.44, 0.54), "Ca"),
         "Car" => (Color::srgb(0.40, 0.44, 0.54), "Ca"),
         "Scooter" => (Color::srgb(0.40, 0.44, 0.54), "Sc"),
@@ -1172,6 +1177,16 @@ fn update_slot_uis(
                         };
                     }
                     if let Some(name) = &item {
+                        // Grass: a classic-meadow green stand, matching the
+                        // world-floor grass tint rather than golden wheat.
+                        let want_color = if name == "Grass" {
+                            Color::srgb(0.42, 0.72, 0.38)
+                        } else {
+                            Color::WHITE
+                        };
+                        if image.color != want_color {
+                            image.color = want_color;
+                        }
                         if let Some(icons) = icons.as_ref() {
                             if let Some(handle) = icons.by_item.get(name) {
                                 if image.image.id() != handle.id() {

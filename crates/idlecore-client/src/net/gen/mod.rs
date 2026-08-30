@@ -19,6 +19,7 @@ pub mod eco_transaction_type;
 pub mod equip_cosmetic_reducer;
 pub mod equip_vehicle_reducer;
 pub mod gather_object_reducer;
+pub mod harvest_plot_reducer;
 pub mod harvest_reducer;
 pub mod heartbeat_reducer;
 pub mod hex_tile_table;
@@ -34,6 +35,7 @@ pub mod object_removed_table;
 pub mod object_removed_type;
 pub mod place_craft_bench_reducer;
 pub mod plant_grass_reducer;
+pub mod plant_plot_reducer;
 pub mod plant_reducer;
 pub mod plant_tree_reducer;
 pub mod player_cosmetic_table;
@@ -67,6 +69,7 @@ pub mod voice_channel_table;
 pub mod voice_channel_type;
 pub mod voice_join_reducer;
 pub mod voice_leave_reducer;
+pub mod water_plot_reducer;
 pub mod world_object_table;
 pub mod world_object_type;
 
@@ -83,6 +86,7 @@ pub use eco_transaction_type::EcoTransaction;
 pub use equip_cosmetic_reducer::equip_cosmetic;
 pub use equip_vehicle_reducer::equip_vehicle;
 pub use gather_object_reducer::gather_object;
+pub use harvest_plot_reducer::harvest_plot;
 pub use harvest_reducer::harvest;
 pub use heartbeat_reducer::heartbeat;
 pub use hex_tile_table::*;
@@ -98,6 +102,7 @@ pub use object_removed_table::*;
 pub use object_removed_type::ObjectRemoved;
 pub use place_craft_bench_reducer::place_craft_bench;
 pub use plant_grass_reducer::plant_grass;
+pub use plant_plot_reducer::plant_plot;
 pub use plant_reducer::plant;
 pub use plant_tree_reducer::plant_tree;
 pub use player_cosmetic_table::*;
@@ -131,6 +136,7 @@ pub use voice_channel_table::*;
 pub use voice_channel_type::VoiceChannel;
 pub use voice_join_reducer::voice_join;
 pub use voice_leave_reducer::voice_leave;
+pub use water_plot_reducer::water_plot;
 pub use world_object_table::*;
 pub use world_object_type::WorldObject;
 
@@ -177,6 +183,11 @@ pub enum Reducer {
     Harvest {
         hex_id: u64,
     },
+    HarvestPlot {
+        hex_id: u64,
+        slot_x: i32,
+        slot_y: i32,
+    },
     Heartbeat,
     Login {
         wallet_address: String,
@@ -206,6 +217,12 @@ pub enum Reducer {
         slot_x: i32,
         slot_y: i32,
     },
+    PlantPlot {
+        hex_id: u64,
+        slot_x: i32,
+        slot_y: i32,
+        kind: Option<String>,
+    },
     PlantTree {
         hex_id: u64,
         slot_x: i32,
@@ -230,6 +247,8 @@ pub enum Reducer {
     },
     Till {
         hex_id: u64,
+        slot_x: i32,
+        slot_y: i32,
     },
     UpdateProfile {
         display_name: Option<String>,
@@ -241,6 +260,11 @@ pub enum Reducer {
     },
     VoiceLeave {
         hex_id: u64,
+    },
+    WaterPlot {
+        hex_id: u64,
+        slot_x: i32,
+        slot_y: i32,
     },
 }
 
@@ -262,6 +286,7 @@ impl __sdk::Reducer for Reducer {
             Reducer::EquipVehicle { .. } => "equip_vehicle",
             Reducer::GatherObject { .. } => "gather_object",
             Reducer::Harvest { .. } => "harvest",
+            Reducer::HarvestPlot { .. } => "harvest_plot",
             Reducer::Heartbeat => "heartbeat",
             Reducer::Login { .. } => "login",
             Reducer::Logout { .. } => "logout",
@@ -269,6 +294,7 @@ impl __sdk::Reducer for Reducer {
             Reducer::PlaceCraftBench { .. } => "place_craft_bench",
             Reducer::Plant { .. } => "plant",
             Reducer::PlantGrass { .. } => "plant_grass",
+            Reducer::PlantPlot { .. } => "plant_plot",
             Reducer::PlantTree { .. } => "plant_tree",
             Reducer::PublishListing { .. } => "publish_listing",
             Reducer::ReleaseEscrow { .. } => "release_escrow",
@@ -278,6 +304,7 @@ impl __sdk::Reducer for Reducer {
             Reducer::UpdateProfile { .. } => "update_profile",
             Reducer::VoiceJoin { .. } => "voice_join",
             Reducer::VoiceLeave { .. } => "voice_leave",
+            Reducer::WaterPlot { .. } => "water_plot",
             _ => unreachable!(),
         }
     }
@@ -340,6 +367,15 @@ impl __sdk::Reducer for Reducer {
             Reducer::Harvest { hex_id } => __sats::bsatn::to_vec(&harvest_reducer::HarvestArgs {
                 hex_id: hex_id.clone(),
             }),
+            Reducer::HarvestPlot {
+                hex_id,
+                slot_x,
+                slot_y,
+            } => __sats::bsatn::to_vec(&harvest_plot_reducer::HarvestPlotArgs {
+                hex_id: hex_id.clone(),
+                slot_x: slot_x.clone(),
+                slot_y: slot_y.clone(),
+            }),
             Reducer::Heartbeat => __sats::bsatn::to_vec(&heartbeat_reducer::HeartbeatArgs {}),
             Reducer::Login { wallet_address } => __sats::bsatn::to_vec(&login_reducer::LoginArgs {
                 wallet_address: wallet_address.clone(),
@@ -388,6 +424,17 @@ impl __sdk::Reducer for Reducer {
                 slot_x: slot_x.clone(),
                 slot_y: slot_y.clone(),
             }),
+            Reducer::PlantPlot {
+                hex_id,
+                slot_x,
+                slot_y,
+                kind,
+            } => __sats::bsatn::to_vec(&plant_plot_reducer::PlantPlotArgs {
+                hex_id: hex_id.clone(),
+                slot_x: slot_x.clone(),
+                slot_y: slot_y.clone(),
+                kind: kind.clone(),
+            }),
             Reducer::PlantTree {
                 hex_id,
                 slot_x,
@@ -426,9 +473,13 @@ impl __sdk::Reducer for Reducer {
                     target_r: target_r.clone(),
                 })
             }
-            Reducer::Till { hex_id } => __sats::bsatn::to_vec(&till_reducer::TillArgs {
-                hex_id: hex_id.clone(),
-            }),
+            Reducer::Till { hex_id, slot_x, slot_y } => {
+                __sats::bsatn::to_vec(&till_reducer::TillArgs {
+                    hex_id: hex_id.clone(),
+                    slot_x: slot_x.clone(),
+                    slot_y: slot_y.clone(),
+                })
+            }
             Reducer::UpdateProfile {
                 display_name,
                 avatar,
@@ -448,6 +499,15 @@ impl __sdk::Reducer for Reducer {
                     hex_id: hex_id.clone(),
                 })
             }
+            Reducer::WaterPlot {
+                hex_id,
+                slot_x,
+                slot_y,
+            } => __sats::bsatn::to_vec(&water_plot_reducer::WaterPlotArgs {
+                hex_id: hex_id.clone(),
+                slot_x: slot_x.clone(),
+                slot_y: slot_y.clone(),
+            }),
             _ => unreachable!(),
         }
     }

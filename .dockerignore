@@ -13,7 +13,8 @@ dist/
 .DS_Store
 
 # Unrelated toolchains (not workspace members)
-contracts/
+# NOTE: contracts/ is needed by Dockerfile.solana, so it is no longer
+# excluded here; its build artifacts are still excluded via **/target/.
 node_modules/
 
 # Local cargo config overrides

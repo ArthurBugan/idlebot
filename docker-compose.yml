@@ -1,0 +1,47 @@
+# Full local stack for IdleBot (Spec 012 Solana contract + web client).
+#
+#   docker compose up -d client solana     # serve the game + run a Solana
+#                                           # test validator (RPC :8899)
+#   docker compose run --rm contract        # build + `anchor test` the
+#                                           # Solana programs against it
+#
+# The web client talks to the live SpacetimeDB module on db.nestfeed.app,
+# so no local DB is required for the client to run.
+
+services:
+  # Bevy/wasm web client, served by Bun on :3012 (built from Dockerfile).
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: idlebot-client:latest
+    ports:
+      - "3012:3012"
+    restart: unless-stopped
+
+  # Solana test validator (localnet) — RPC :8899, pubsub :8900, faucet :8901.
+  solana:
+    build:
+      context: .
+      dockerfile: Dockerfile.solana
+    image: idlebot-solana:latest
+    ports:
+      - "8899:8899"
+      - "8900:8900"
+      - "8901:8901"
+    restart: unless-stopped
+
+  # One-shot: build the contract and run `anchor test` against `solana`.
+  contract:
+    build:
+      context: .
+      dockerfile: Dockerfile.solana
+    image: idlebot-solana:latest
+    depends_on:
+      - solana
+    environment:
+      ANCHOR_SKIP_LOCAL_VALIDATOR: "1"
+    # Mount the source so edits are picked up without rebuilding the image.
+    volumes:
+      - ./contracts/solana:/code/contracts/solana
+    command: ["bash", "/code/contracts/solana/scripts/anchor-test.sh"]

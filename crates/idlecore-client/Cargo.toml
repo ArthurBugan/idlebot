@@ -7,7 +7,6 @@ default-run = "idlecore-client"
 [dependencies]
 idlecore-core = { path = "../idlecore-core" }
 bevy = { workspace = true }
-bevy_ecs = { version = "0.19", features = ["debug"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 spacetimedb-sdk = { workspace = true }

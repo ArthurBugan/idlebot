@@ -99,7 +99,7 @@ fn natural_spawn(terrain: TerrainType, slot: u8, h: u64) -> Option<&'static str>
         | TerrainType::Taiga
         | TerrainType::TropicalRainforest => {
             if slot == 5 {
-                (roll < 2).then_some(OBJ_ROCK)
+                (roll < 6).then_some(OBJ_ROCK) // scattered forest boulders
             } else if slot <= 2 {
                 // Forest floors: grass tufts plus fallen logs (Spec 022) —
                 // logs are the bootstrap resource for the first craft bench.

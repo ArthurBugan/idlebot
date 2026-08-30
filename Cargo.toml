@@ -35,3 +35,18 @@ base64 = "0.21"
 # Server-client protocol (Spec 021): borsh wire format + lz4 compression.
 borsh = { version = "1", features = ["derive"] }
 lz4_flex = "0.11"
+
+# ---------------------------------------------------------------------------
+# Performance: `cargo run` builds in debug (opt-level 0) by default, and Bevy
+# at opt-level 0 runs dramatically slower (render + batching + scheduling),
+# which drags FPS to ~40 even with a light scene. Optimise every dependency
+# (Bevy, ECS, etc.) at opt-level 3 while keeping the workspace's own crates at
+# opt-level 1 for fast incremental iteration.
+# ---------------------------------------------------------------------------
+[profile.dev]
+opt-level = 1
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 3
+

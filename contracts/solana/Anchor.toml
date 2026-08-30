@@ -7,12 +7,10 @@ cluster = "devnet"
 wallet = "~/.config/solana/idlebot-wallet.json"
 
 [programs.localnet]
-marketplace = "Fg6PaFpoGk58pnDmIBm3wWV7eNu8g2cjzdDc9aX5J6ZP"
-subscription = "3DGzCYwvQoxCs9jGkV3zY95CsAJLB7mSaFQ3Eo7X7qRJ"
+idlebot-anchor-workspace = "j9194JViAkUpfSgZc3CMxGSS8ANCCAHqZAJvfhJzdaZ"
 
 [programs.devnet]
-marketplace = "Fg6PaFpoGk58pnDmIBm3wWV7eNu8g2cjzdDc9aX5J6ZP"
-subscription = "3DGzCYwvQoxCs9jGkV3zY95CsAJLB7mSaFQ3Eo7X7qRJ"
+idlebot-anchor-workspace = "j9194JViAkUpfSgZc3CMxGSS8ANCCAHqZAJvfhJzdaZ"
 
 [registry]
 url = "https://api.apr.dev"

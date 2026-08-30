@@ -89,6 +89,9 @@ pub struct HexTile {
     pub is_polluted: bool,
     pub plant: Option<String>, // serialized Plant (see Plant::to_json)
     pub planted_by: Option<String>,
+    /// Per-slot Stardew plots on this hex: a JSON object mapping
+    /// "{slot_x}:{slot_y}" → `PlotState` (tilled / planted / watered).
+    pub plots: Option<String>, // serialized PlotMap (see PlotState::to_json_map)
     /// Set when a polluted hex was cleaned; pollution re-spreads after 48h.
     pub cleaned_at: Option<u64>,
     pub last_interaction: u64,
@@ -164,6 +167,50 @@ impl Plant {
             growth_time,
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Per-slot Stardew plots (Spec 022 §5) — stored as a JSON map on `HexTile.plots`
+// ---------------------------------------------------------------------------
+
+/// One 16px plot on a hex: whether it has been tilled by a Hoe, what seed was
+/// planted, and when it was last watered (a planted plot grows only once
+/// watered). Serialised as an object inside the `HexTile.plots` JSON map.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PlotState {
+    pub tilled: bool,
+    pub kind: Option<String>,
+    pub planted_at: u64,
+    pub watered_at: Option<u64>,
+    pub growth_time: u64,
+    pub planted_by: Option<String>,
+}
+
+impl PlotState {
+    /// Plot slot key "{slot_x}:{slot_y}".
+    pub fn key(slot_x: i32, slot_y: i32) -> String {
+        format!("{slot_x}:{slot_y}")
+    }
+    /// The instant (unix secs) a watered plot matures.
+    pub fn mature_at(&self, watered_at: u64) -> u64 {
+        watered_at.saturating_add(self.growth_time.max(1))
+    }
+}
+
+/// Encode a slot map into the `HexTile.plots` JSON string (None when empty).
+pub fn plot_map_to_json(plots: &std::collections::HashMap<String, PlotState>) -> Option<String> {
+    if plots.is_empty() {
+        return None;
+    }
+    serde_json::to_string(plots).ok()
+}
+
+/// Decode the `HexTile.plots` JSON string back into a slot map.
+pub fn plot_map_from_json(s: &str) -> std::collections::HashMap<String, PlotState> {
+    if s.trim().is_empty() {
+        return std::collections::HashMap::new();
+    }
+    serde_json::from_str(s).unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -537,6 +584,8 @@ pub const ITEM_PICKAXE: &str = "Pickaxe";
 pub const ITEM_AXE: &str = "Axe";
 pub const ITEM_SHOVEL: &str = "Shovel";
 pub const ITEM_HOE: &str = "Hoe";
+/// Waters a planted plot so it can grow (Spec 022 §5).
+pub const ITEM_WATERING_CAN: &str = "WateringCan";
 /// A picked-up craft bench. Picking one up (via `gather_object` on a
 /// `CraftBench` world object) grants this item; placing it back down consumes
 /// it in `place_craft_bench` (preferred over the 4-log recipe).
@@ -570,11 +619,12 @@ pub const CRAFT_INGREDIENTS: [&str; 4] = [ITEM_WOOD, ITEM_LOG, ITEM_STONE, ITEM_
 
 /// Recipe table: exactly four ingredients, order-insensitive, with
 /// `Log` substituting `Wood`. The first matching row wins.
-pub const RECIPES: [(&str, [&str; 4]); 4] = [
+pub const RECIPES: [(&str, [&str; 4]); 5] = [
     (ITEM_PICKAXE, [ITEM_STONE, ITEM_STONE, ITEM_STONE, ITEM_WOOD]),
     (ITEM_AXE, [ITEM_STONE, ITEM_STONE, ITEM_WOOD, ITEM_WOOD]),
     (ITEM_SHOVEL, [ITEM_STONE, ITEM_STONE, ITEM_GRASS, ITEM_WOOD]),
     (ITEM_HOE, [ITEM_WOOD, ITEM_WOOD, ITEM_GRASS, ITEM_GRASS]),
+    (ITEM_WATERING_CAN, [ITEM_WOOD, ITEM_WOOD, ITEM_STONE, ITEM_GRASS]),
 ];
 
 /// Crafting normalization: logs substitute wood in every recipe (Spec 022 §4).
@@ -706,14 +756,17 @@ mod tests {
 
     #[test]
     fn every_recipe_crafts_a_distinct_tool() {
-        assert_eq!(RECIPES.len(), 4);
+        assert_eq!(RECIPES.len(), 5);
         for (result, _) in RECIPES {
-            assert!(matches!(result, "Pickaxe" | "Axe" | "Shovel" | "Hoe"));
+            assert!(matches!(
+                result,
+                "Pickaxe" | "Axe" | "Shovel" | "Hoe" | "WateringCan"
+            ));
         }
         let mut results: Vec<&str> = RECIPES.iter().map(|(r, _)| *r).collect();
         results.sort_unstable();
         results.dedup();
-        assert_eq!(results.len(), 4, "recipes must craft distinct tools");
+        assert_eq!(results.len(), 5, "recipes must craft distinct tools");
     }
 
     #[test]

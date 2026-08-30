@@ -73,8 +73,12 @@ pub struct TouchPlugin;
 
 impl Plugin for TouchPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<TouchControls>()
-            .init_resource::<JoyState>()
+        // The touch state resource is always present so gameplay systems can
+        // read it without panicking; the on-screen controller (UI + touch
+        // event systems) is only registered on the web (wasm) build.
+        app.init_resource::<TouchControls>();
+        #[cfg(target_arch = "wasm32")]
+        app.init_resource::<JoyState>()
             .add_systems(Startup, spawn_touch_controls)
             .add_systems(
                 Update,

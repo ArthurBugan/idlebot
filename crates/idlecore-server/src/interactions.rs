@@ -4,13 +4,13 @@
 //! rules: hex locking with a 2 s timeout, one plant per hex, planter-only
 //! harvest rewards, 5 s action cooldown, max 8 players per hex.
 
-use spacetimedb::ReducerContext;
+use spacetimedb::{ReducerContext, Table};
 use crate::economy::{add_eco_points, add_gold, add_xp, record_eco_tx, spend_gold};
 use crate::types::{player, hex_tile,
-    now_secs, Plant, HexTile, ACTION_COOLDOWN_SECS, CLEAN_COST, CLEAN_GOLD_REWARD,
+    now_secs, Plant, PlotState, HexTile, ACTION_COOLDOWN_SECS, CLEAN_COST, CLEAN_GOLD_REWARD,
     CLEAN_XP_REWARD, ECO_FOR_CLEAN, ECO_FOR_HARVEST_TREE, ECO_FOR_PLANT_TREE,
     HARVEST_GOLD_REWARD, HARVEST_XP_REWARD, HEX_LOCK_TIMEOUT_SECS, MAX_PLAYERS_PER_HEX,
-    RATING_FOR_CLEAN, RATING_FOR_HARVEST, RATING_FOR_PLANT,
+    RATING_FOR_CLEAN, RATING_FOR_HARVEST, RATING_FOR_PLANT, ITEM_SEED,
 };
 use crate::player::players_in_hex;
 
@@ -151,48 +151,217 @@ pub fn plant_at(ctx: &ReducerContext, address: &str, hex_id: u64, plant_type: &s
     Outcome::ok(format!("Planted {plant_type} (-{cost}G, +5 XP)"))
 }
 
-/// Till an empty hex with the Hoe (Spec 022 §5): plants Wheat by consuming a
-/// Seed instead of gold, reusing the crop system (same Plant row, growth and
-/// harvest flow as `plant_at`).
-pub fn till(ctx: &ReducerContext, address: &str, hex_id: u64) -> Outcome {
+/// Terrain a Hoe can till into loose dirt for planting.
+fn tillable_terrain() -> [&'static str; 7] {
+    [
+        "Grass", "Forest", "Grassland", "TropicalRainforest",
+        "Tundra", "Taiga", "Desert",
+    ]
+}
+
+/// Load the per-slot plot map from the hex's `plots` JSON (Stardew-style).
+fn load_plot_map(hex: &HexTile) -> std::collections::HashMap<String, PlotState> {
+    hex.plots
+        .as_deref()
+        .map(crate::types::plot_map_from_json)
+        .unwrap_or_default()
+}
+
+/// Persist a mutated plot map back onto the hex row.
+fn commit_plot_map(ctx: &ReducerContext, mut hex: HexTile, plots: &std::collections::HashMap<String, PlotState>, now: u64) {
+    hex.plots = crate::types::plot_map_to_json(plots);
+    commit_hex(ctx, hex, now);
+}
+
+/// Till the selected 16px slot with the Hoe (Spec 022 §5): no seed is
+/// consumed here — it only turns the soil into loose dirt so a seed can be
+/// planted, which then needs watering to grow.
+pub fn till(ctx: &ReducerContext, address: &str, hex_id: u64, slot_x: i32, slot_y: i32) -> Outcome {
     let (mut p, hex) = match preflight(ctx, address, hex_id) {
         Ok(v) => v,
         Err(e) => return Outcome::err(e),
     };
 
-    if hex.plant.is_some() {
-        return Outcome::err("Hex already has a plant");
-    }
     if hex.is_polluted {
         return Outcome::err("Cannot till a polluted hex — clean it first");
     }
-    if hex.terrain != "Grass" && hex.terrain != "Forest" {
+    if !tillable_terrain().contains(&hex.terrain.as_str()) {
         return Outcome::err(format!("Cannot till {} terrain", hex.terrain));
     }
+    let mut plots = load_plot_map(&hex);
+    let key = PlotState::key(slot_x, slot_y);
+    if plots.get(&key).map(|p| p.tilled).unwrap_or(false) {
+        return Outcome::err("This soil is already tilled");
+    }
+    plots.insert(
+        key.clone(),
+        PlotState {
+            tilled: true,
+            kind: None,
+            planted_at: 0,
+            watered_at: None,
+            growth_time: 0,
+            planted_by: None,
+        },
+    );
+    let now = now_secs(ctx);
+    commit_plot_map(ctx, hex, &plots, now);
 
-    if !crate::objects::remove_item(ctx, &p.address, crate::types::ITEM_SEED, 1) {
-        return Outcome::err("No seeds — destroy tall grass first".to_string());
+    add_xp(ctx, &mut p, 2, "till");
+    ctx.db.player().address().update(p);
+
+    Outcome::ok("Tilled the soil — plant a seed with a Seed item")
+}
+
+/// Plant a seed onto a plot that has been tilled by a Hoe. Consumes one Seed.
+/// The planted crop does not grow until it is watered.
+pub fn plant_plot(
+    ctx: &ReducerContext,
+    address: &str,
+    hex_id: u64,
+    slot_x: i32,
+    slot_y: i32,
+    kind: Option<String>,
+) -> Outcome {
+    let (mut p, hex) = match preflight(ctx, address, hex_id) {
+        Ok(v) => v,
+        Err(e) => return Outcome::err(e),
+    };
+    if hex.is_polluted {
+        return Outcome::err("Cannot plant on a polluted hex — clean it first");
+    }
+    let mut plots = load_plot_map(&hex);
+    let key = PlotState::key(slot_x, slot_y);
+    let Some(mut plot) = plots.get(&key).cloned() else {
+        return Outcome::err("Till the soil first with a Hoe");
+    };
+    if !plot.tilled {
+        return Outcome::err("Soil not tilled — use a Hoe first");
+    }
+    if plot.kind.is_some() {
+        return Outcome::err("This plot is already planted");
+    }
+    if !crate::objects::remove_item(ctx, &p.address, ITEM_SEED, 1) {
+        return Outcome::err("No seeds — destroy tall grass first");
     }
 
     let now = now_secs(ctx);
-    let plant = Plant {
-        plant_type: "Wheat".to_string(),
-        planted_at: now,
-        growth_time: Plant::growth_seconds("Wheat"),
-    };
-    let mut hex = hex;
-    let rating_before = hex.eco_rating;
-    hex.plant = Some(plant.to_json());
-    hex.planted_by = Some(p.address.clone());
-    hex.eco_rating = (rating_before + RATING_FOR_PLANT).min(100);
-    let after = hex.eco_rating;
-    commit_hex(ctx, hex, now);
+    let pt = kind.unwrap_or_else(|| "Wheat".to_string());
+    if !Plant::valid_type(&pt) {
+        return Outcome::err("Unknown plant type");
+    }
+    plot.kind = Some(pt.clone());
+    plot.planted_at = now;
+    plot.watered_at = None;
+    plot.growth_time = Plant::growth_seconds(&pt);
+    plot.planted_by = Some(p.address.clone());
+    plots.insert(key, plot.clone());
+    commit_plot_map(ctx, hex, &plots, now);
 
-    p.plants_planted = p.plants_planted.saturating_add(1);
-    add_xp(ctx, &mut p, 5, "till");
+    add_xp(ctx, &mut p, 5, "plant");
     ctx.db.player().address().update(p);
 
-    Outcome::ok("Tilled and planted Wheat (-1 Seed, +5 XP)")
+    Outcome::ok(format!("Planted {pt} — water it to grow (-1 Seed)"))
+}
+
+/// Water a planted plot with the WateringCan (Spec 022 §5). A plot does not
+/// grow until watered; watering sets the clock from which it matures.
+pub fn water_plot(
+    ctx: &ReducerContext,
+    address: &str,
+    hex_id: u64,
+    slot_x: i32,
+    slot_y: i32,
+) -> Outcome {
+    let (mut p, hex) = match preflight(ctx, address, hex_id) {
+        Ok(v) => v,
+        Err(e) => return Outcome::err(e),
+    };
+    if hex.is_polluted {
+        return Outcome::err("Cannot water a polluted hex — clean it first");
+    }
+    let mut plots = load_plot_map(&hex);
+    let key = PlotState::key(slot_x, slot_y);
+    let Some(mut plot) = plots.get(&key).cloned() else {
+        return Outcome::err("No plot here — till the soil first");
+    };
+    let Some(kind) = plot.kind.clone() else {
+        return Outcome::err("Nothing planted here to water");
+    };
+    let now = now_secs(ctx);
+    if let Some(wa) = plot.watered_at {
+        if now < plot.mature_at(wa) {
+            return Outcome::err("This crop is already watered and growing");
+        }
+    }
+    plot.watered_at = Some(now);
+    plot.planted_at = plot.planted_at.max(1);
+    plots.insert(key, plot.clone());
+    commit_plot_map(ctx, hex, &plots, now);
+
+    add_xp(ctx, &mut p, 1, "water");
+    ctx.db.player().address().update(p);
+
+    Outcome::ok(format!("Watered the {kind} — it is now growing"))
+}
+
+/// Harvest a mature planted plot. Only the planter earns the reward; the
+/// soil stays tilled so it can be planted again.
+pub fn harvest_plot(
+    ctx: &ReducerContext,
+    address: &str,
+    hex_id: u64,
+    slot_x: i32,
+    slot_y: i32,
+) -> Outcome {
+    let (mut p, hex) = match preflight(ctx, address, hex_id) {
+        Ok(v) => v,
+        Err(e) => return Outcome::err(e),
+    };
+    let now = now_secs(ctx);
+    let mut plots = load_plot_map(&hex);
+    let key = PlotState::key(slot_x, slot_y);
+    let Some(plot) = plots.get(&key).cloned() else {
+        return Outcome::err("No plot here");
+    };
+    let Some(kind) = plot.kind.clone() else {
+        return Outcome::err("Nothing planted here to harvest");
+    };
+    let Some(watered_at) = plot.watered_at else {
+        return Outcome::err("This crop needs water before it can grow");
+    };
+    if now < plot.mature_at(watered_at) {
+        return Outcome::err(format!(
+            "Still growing ({}s left)",
+            plot.mature_at(watered_at).saturating_sub(now)
+        ));
+    }
+    let planter = plot.planted_by.clone().unwrap_or_default();
+    if planter != p.address {
+        return Outcome::err("Not your plant — only the planter earns the harvest");
+    }
+
+    let mut cleared = plot.clone();
+    cleared.kind = None;
+    cleared.planted_at = 0;
+    cleared.watered_at = None;
+    cleared.growth_time = 0;
+    cleared.planted_by = None;
+    plots.insert(key, cleared);
+    let rating_before = hex.eco_rating;
+    commit_plot_map(ctx, hex, &plots, now);
+
+    add_gold(ctx, &mut p, HARVEST_GOLD_REWARD, "harvest");
+    add_xp(ctx, &mut p, HARVEST_XP_REWARD, "harvest");
+    if kind == "Tree" {
+        add_eco_points(ctx, &mut p, ECO_FOR_HARVEST_TREE, "harvest_tree");
+        record_eco_tx(ctx, &p.address, hex_id, "harvest_tree", ECO_FOR_HARVEST_TREE, rating_before, (rating_before + RATING_FOR_HARVEST).min(100));
+    }
+    ctx.db.player().address().update(p);
+
+    Outcome::ok(format!(
+        "Harvested {kind} (+{HARVEST_GOLD_REWARD}G, +{HARVEST_XP_REWARD} XP)"
+    ))
 }
 
 /// Harvest a mature plant. +15G / +10XP for the planter only (PROPOSAL 3.3).
