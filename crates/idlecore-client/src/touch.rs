@@ -5,10 +5,11 @@
 //! floating/dynamic joysticks, axis locking, and works with mouse on desktop.
 
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::asset::RenderAssetUsages;
 use virtual_joystick::{
-    JoystickFloating, NoAction, VirtualJoystickBundle, VirtualJoystickInteractionArea, VirtualJoystickMessage,
-    VirtualJoystickMessageType, VirtualJoystickNode, VirtualJoystickPlugin,
-    VirtualJoystickUIBackground, VirtualJoystickUIKnob,
+    create_joystick, JoystickFloating, NoAction, VirtualJoystickMessage,
+    VirtualJoystickMessageType, VirtualJoystickPlugin,
 };
 
 /// Live touch input, written by the on-screen controls and read by gameplay.
@@ -70,7 +71,11 @@ impl Plugin for TouchPlugin {
     }
 }
 
-fn spawn_touch_controls(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn spawn_touch_controls(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut images: ResMut<Assets<Image>>,
+) {
     let font: Handle<Font> = asset_server.load("fonts/FiraSans-Bold.ttf");
 
     let root = commands
@@ -88,67 +93,44 @@ fn spawn_touch_controls(mut commands: Commands, asset_server: Res<AssetServer>) 
         ))
         .id();
 
-// --- Virtual joystick (bottom-left, floating) ---
-    commands.entity(root).with_children(|parent| {
-        parent.spawn((
-            VirtualJoystickBundle::new(
-                VirtualJoystickNode::<JoystickId>::default()
-                    .with_id(JoystickId::Main)
-                    .with_behavior(JoystickFloating)
-                    .with_action(NoAction),
-            )
-            .set_style(Node {
-                width: Val::Percent(50.0),
-                height: Val::Percent(100.0),
-                position_type: PositionType::Absolute,
-                left: Val::Percent(0.0),
-                bottom: Val::Percent(0.0),
-                ..default()
-            }),
-            BackgroundColor(Color::srgba(0.10, 0.10, 0.16, 0.45)),
-        ))
-        .with_children(|parent| {
-            // Interaction Area
-            parent.spawn((
-                VirtualJoystickInteractionArea,
-                Node {
-                    width: Val::Percent(100.0),
-                    height: Val::Percent(100.0),
-                    ..default()
-                },
-            ));
-            // Knob
-            parent.spawn((
-                VirtualJoystickUIKnob,
-                ImageNode {
-                    color: Color::srgba(0.55, 0.6, 0.7, 0.9),
-                    ..default()
-                },
-                Node {
-                    position_type: PositionType::Absolute,
-                    width: Val::Px(80.0),
-                    height: Val::Px(80.0),
-                    ..default()
-                },
-                ZIndex(1),
-            ));
-            // Background/Outline
-            parent.spawn((
-                VirtualJoystickUIBackground,
-                ImageNode {
-                    color: Color::srgba(0.10, 0.10, 0.16, 0.45),
-                    ..default()
-                },
-                Node {
-                    position_type: PositionType::Absolute,
-                    width: Val::Px(160.0),
-                    height: Val::Px(160.0),
-                    ..default()
-                },
-                ZIndex(0),
-            ));
-        });
-    });
+    // Create solid-color images for knob and background
+    let knob_img = images.add(Image::new_fill(
+        Extent3d { width: 80, height: 80, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        &[140, 153, 178, 230], // srgba(0.55, 0.6, 0.7, 0.9)
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    ));
+    let background_img = images.add(Image::new_fill(
+        Extent3d { width: 160, height: 160, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        &[25, 25, 40, 115], // srgba(0.10, 0.10, 0.16, 0.45)
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    ));
+
+    // Use the crate's helper to create a properly structured floating joystick
+    create_joystick(
+        &mut commands,
+        JoystickId::Main,
+        knob_img,
+        background_img,
+        None, // knob_color override
+        None, // background_color override
+        Some(Color::srgba(0.10, 0.10, 0.16, 0.45)), // interaction area color
+        Vec2::new(80.0, 80.0), // knob size
+        Vec2::new(160.0, 160.0), // background size
+        Node {
+            width: Val::Px(180.0),
+            height: Val::Px(180.0),
+            position_type: PositionType::Absolute,
+            left: Val::Px(24.0),
+            bottom: Val::Px(24.0),
+            ..default()
+        },
+        JoystickFloating,
+        NoAction,
+    );
 
     // --- Action buttons (bottom-right) ---
     commands
