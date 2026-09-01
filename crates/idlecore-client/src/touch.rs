@@ -5,12 +5,10 @@
 //! floating/dynamic joysticks, axis locking, and works with mouse on desktop.
 
 use bevy::prelude::*;
-use bevy::reflect::TypePath;
 use virtual_joystick::{
-    create_joystick, JoystickDeadZone, JoystickFloating, NoAction, VirtualJoystickAction,
-    VirtualJoystickBundle, VirtualJoystickInteractionArea, VirtualJoystickMessage,
-    VirtualJoystickMessageType, VirtualJoystickNode, VirtualJoystickPlugin, VirtualJoystickUIBackground,
-    VirtualJoystickUIKnob, VirtualJoystickID,
+    JoystickFloating, NoAction, VirtualJoystickBundle, VirtualJoystickInteractionArea, VirtualJoystickMessage,
+    VirtualJoystickMessageType, VirtualJoystickNode, VirtualJoystickPlugin,
+    VirtualJoystickUIBackground, VirtualJoystickUIKnob,
 };
 
 /// Live touch input, written by the on-screen controls and read by gameplay.

@@ -9,7 +9,7 @@
 use bevy::prelude::*;
 use bevy::input::ButtonState;
 use bevy::input::keyboard::KeyboardInput;
-use super::plugin::{Net, NetStatus, load_last_username, save_last_username};
+use super::plugin::{Net, NetStatus, load_last_username};
 
 /// Marks the fullscreen login overlay; hidden once logged in.
 #[derive(Component)]

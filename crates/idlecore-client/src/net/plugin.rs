@@ -485,8 +485,19 @@ fn save_token(identity: &str, token: &str) {
 
 /// Delete the saved identity pair (stale after a server re-key).
 #[cfg(not(target_arch = "wasm32"))]
-fn clear_saved_token() {
+pub fn clear_saved_token() {
     let _ = std::fs::remove_file(identity_token_path());
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn clear_saved_token() {
+    if let Some(window) = web_sys::window() {
+        if let Ok(Some(storage)) = window.local_storage() {
+            let _ = storage.remove_item("idlebot_token");
+            let _ = storage.remove_item("idlebot_identity");
+            let _ = storage.remove_item("idlebot_last_username");
+        }
+    }
 }
 
 // --- Last username persistence (native) ---
@@ -541,12 +552,12 @@ fn save_token(identity: &str, token: &str) {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn load_last_username() -> Option<String> {
+pub fn load_last_username() -> Option<String> {
     web_sys::window()?
         .local_storage()
         .ok()??
         .get_item("idlebot_last_username")
-        .ok()??
+        .ok()?
         .filter(|s| !s.is_empty())
 }
 
