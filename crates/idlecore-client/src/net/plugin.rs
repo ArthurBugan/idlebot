@@ -183,6 +183,10 @@ impl Net {
                             // Bind the account only on server confirmation.
                             if self.address.is_none() {
                                 self.address = self.pending_name.clone();
+                                // Persist the username for next time.
+                                if let Some(ref name) = self.address {
+                                    save_last_username(name);
+                                }
                             }
                             self.pending_name = None;
                             self.log_line(&format!("login: {msg}"));
@@ -485,6 +489,35 @@ fn clear_saved_token() {
     let _ = std::fs::remove_file(identity_token_path());
 }
 
+// --- Last username persistence (native) ---
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load_last_username() -> Option<String> {
+    let p = identity_token_path();
+    let content = std::fs::read_to_string(&p).ok()?;
+    let mut lines = content.lines();
+    lines.next(); // identity
+    lines.next(); // token
+    lines.next().map(|s| s.to_string()).filter(|s| !s.is_empty())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn save_last_username(username: &str) {
+    let p = identity_token_path();
+    let content = std::fs::read_to_string(&p).unwrap_or_default();
+    let mut lines: Vec<&str> = content.lines().collect();
+    // Ensure we have at least 2 lines (identity, token)
+    while lines.len() < 2 {
+        lines.push("");
+    }
+    // Set 3rd line as username
+    if lines.len() >= 3 {
+        lines[2] = username;
+    } else {
+        lines.push(username);
+    }
+    let _ = std::fs::write(identity_token_path(), lines.join("\n") + "\n");
+}
+
 // --- wasm: persist the token in the browser's localStorage ---
 #[cfg(target_arch = "wasm32")]
 fn load_saved_token() -> Option<String> {
@@ -508,11 +541,29 @@ fn save_token(identity: &str, token: &str) {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn clear_saved_token() {
+fn load_last_username() -> Option<String> {
+    web_sys::window()?
+        .local_storage()
+        .ok()??
+        .get_item("idlebot_last_username")
+        .ok()??
+        .filter(|s| !s.is_empty())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn save_last_username(username: &str) {
     if let Some(window) = web_sys::window() {
         if let Ok(Some(storage)) = window.local_storage() {
-            let _ = storage.remove_item("idlebot_token");
-            let _ = storage.remove_item("idlebot_identity");
+            let _ = storage.set_item("idlebot_last_username", username);
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn clear_last_username() {
+    if let Some(window) = web_sys::window() {
+        if let Ok(Some(storage)) = window.local_storage() {
+            let _ = storage.remove_item("idlebot_last_username");
         }
     }
 }

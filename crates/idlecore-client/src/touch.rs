@@ -1,15 +1,17 @@
-//! Mobile touch controls — a virtual joystick (movement "controller") plus a
-//! few on-screen action buttons, so the game is playable without a keyboard.
+//! Mobile touch controls using virtual_joystick crate — a virtual joystick
+//! plus on-screen action buttons, so the game is playable without a keyboard.
 //!
-//! The joystick uses raw `TouchInput` events for reliable dragging; the
-//! buttons are ordinary Bevy `Button`s (which already respond to touch). The
-//! resulting state lives in [`TouchControls`] and is read by the movement,
-//! interact, inventory and zoom systems. Controls are hidden unless the
-//! device has a coarse (touch) pointer, and while the inventory/ogin is up.
+//! Uses the `virtual_joystick` Bevy plugin which provides proper touch handling,
+//! floating/dynamic joysticks, axis locking, and works with mouse on desktop.
 
-use bevy::input::touch::{TouchInput, TouchPhase};
 use bevy::prelude::*;
-use bevy::ui::BorderRadius;
+use bevy::reflect::TypePath;
+use virtual_joystick::{
+    create_joystick, JoystickDeadZone, JoystickFloating, NoAction, VirtualJoystickAction,
+    VirtualJoystickBundle, VirtualJoystickInteractionArea, VirtualJoystickMessage,
+    VirtualJoystickMessageType, VirtualJoystickNode, VirtualJoystickPlugin, VirtualJoystickUIBackground,
+    VirtualJoystickUIKnob, VirtualJoystickID,
+};
 
 /// Live touch input, written by the on-screen controls and read by gameplay.
 #[derive(Resource, Default)]
@@ -23,74 +25,55 @@ pub struct TouchControls {
     pub zoom_out: bool,
 }
 
-/// Which touch (if any) is currently dragging the joystick.
-#[derive(Resource, Default)]
-struct JoyState {
-    active_id: Option<u64>,
-}
-
 #[derive(Component)]
 struct TouchRoot;
 
-#[derive(Component)]
-struct JoyBase;
+#[derive(Component, Clone, Copy, PartialEq, Eq, Hash, Debug, Default, Reflect)]
+#[reflect(Default, Hash, PartialEq)]
+enum JoystickId {
+    #[default]
+    Main,
+}
 
-#[derive(Component)]
-struct JoyKnob;
-
-#[derive(Component)]
-struct TouchBtn(ButtonKind);
+#[derive(Component, Clone, Copy)]
+struct ButtonKind(ButtonAction);
 
 #[derive(Clone, Copy)]
-enum ButtonKind {
+enum ButtonAction {
     Interact,
     Inventory,
     ZoomIn,
     ZoomOut,
 }
 
-const JOY_RADIUS: f32 = 64.0;
-const KNOB_RADIUS: f32 = 28.0;
-
-/// True on devices with a coarse (touch) pointer.
-fn is_touch_device() -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        use web_sys::window;
-        window()
-            .and_then(|w| w.match_media("(pointer: coarse)").ok())
-            .flatten()
-            .map(|m| m.matches())
-            .unwrap_or(false)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        false
-    }
-}
-
 pub struct TouchPlugin;
 
+#[cfg(target_arch = "wasm32")]
 impl Plugin for TouchPlugin {
     fn build(&self, app: &mut App) {
-        // The touch state resource is always present so gameplay systems can
-        // read it without panicking; the on-screen controller (UI + touch
-        // event systems) is only registered on the web (wasm) build.
-        app.init_resource::<TouchControls>();
-        #[cfg(target_arch = "wasm32")]
-        app.init_resource::<JoyState>()
+        app.init_resource::<TouchControls>()
+            .add_plugins(VirtualJoystickPlugin::<JoystickId>::default())
             .add_systems(Startup, spawn_touch_controls)
             .add_systems(
                 Update,
-                (joystick_touch, joystick_visual, touch_buttons, touch_visibility),
+                (
+                    joystick_input,
+                    touch_buttons,
+                    touch_visibility,
+                ),
             );
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Plugin for TouchPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<TouchControls>();
     }
 }
 
 fn spawn_touch_controls(mut commands: Commands, asset_server: Res<AssetServer>) {
     let font: Handle<Font> = asset_server.load("fonts/FiraSans-Bold.ttf");
-    let show = is_touch_device();
-    let disp = if show { Display::Flex } else { Display::None };
 
     let root = commands
         .spawn((
@@ -101,65 +84,93 @@ fn spawn_touch_controls(mut commands: Commands, asset_server: Res<AssetServer>) 
                 right: Val::Px(0.0),
                 top: Val::Px(0.0),
                 bottom: Val::Px(0.0),
-                display: disp,
+                display: Display::Flex,
                 ..default()
             },
         ))
         .id();
 
-    // --- Virtual joystick (bottom-left) ---
+// --- Virtual joystick (bottom-left, floating) ---
+    commands.entity(root).with_children(|parent| {
+        parent.spawn((
+            VirtualJoystickBundle::new(
+                VirtualJoystickNode::<JoystickId>::default()
+                    .with_id(JoystickId::Main)
+                    .with_behavior(JoystickFloating)
+                    .with_action(NoAction),
+            )
+            .set_style(Node {
+                width: Val::Percent(50.0),
+                height: Val::Percent(100.0),
+                position_type: PositionType::Absolute,
+                left: Val::Percent(0.0),
+                bottom: Val::Percent(0.0),
+                ..default()
+            }),
+            BackgroundColor(Color::srgba(0.10, 0.10, 0.16, 0.45)),
+        ))
+        .with_children(|parent| {
+            // Interaction Area
+            parent.spawn((
+                VirtualJoystickInteractionArea,
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+            ));
+            // Knob
+            parent.spawn((
+                VirtualJoystickUIKnob,
+                ImageNode {
+                    color: Color::srgba(0.55, 0.6, 0.7, 0.9),
+                    ..default()
+                },
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(80.0),
+                    height: Val::Px(80.0),
+                    ..default()
+                },
+                ZIndex(1),
+            ));
+            // Background/Outline
+            parent.spawn((
+                VirtualJoystickUIBackground,
+                ImageNode {
+                    color: Color::srgba(0.10, 0.10, 0.16, 0.45),
+                    ..default()
+                },
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(160.0),
+                    height: Val::Px(160.0),
+                    ..default()
+                },
+                ZIndex(0),
+            ));
+        });
+    });
+
+    // --- Action buttons (bottom-right) ---
     commands
         .entity(root)
         .with_children(|parent| {
-            parent
-                .spawn((
-                    JoyBase,
-                    Node {
-                        position_type: PositionType::Absolute,
-                        left: Val::Px(28.0),
-                        bottom: Val::Px(28.0),
-                        width: Val::Px(JOY_RADIUS * 2.0),
-                        height: Val::Px(JOY_RADIUS * 2.0),
-                        justify_content: JustifyContent::Center,
-                        align_items: AlignItems::Center,
-                        border: UiRect::all(Val::Px(3.0)),
-                        border_radius: BorderRadius::all(Val::Px(JOY_RADIUS)),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgba(0.10, 0.10, 0.16, 0.45)),
-                    BorderColor::all(Color::srgba(0.45, 0.45, 0.55, 0.8)),
-                    Interaction::default(),
-                ))
-                .with_children(|base| {
-                    base.spawn((
-                        JoyKnob,
-                        Node {
-                            position_type: PositionType::Absolute,
-                            left: Val::Px(JOY_RADIUS - KNOB_RADIUS),
-                            top: Val::Px(JOY_RADIUS - KNOB_RADIUS),
-                            width: Val::Px(KNOB_RADIUS * 2.0),
-                            height: Val::Px(KNOB_RADIUS * 2.0),
-                            border_radius: BorderRadius::all(Val::Px(KNOB_RADIUS)),
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgba(0.55, 0.6, 0.7, 0.9)),
-                    ));
-                });
 
             // --- Action buttons (bottom-right) ---
-            let btn_specs: [(ButtonKind, &str); 4] = [
-                (ButtonKind::Interact, "Act"),
-                (ButtonKind::Inventory, "Bag"),
-                (ButtonKind::ZoomIn, "+"),
-                (ButtonKind::ZoomOut, "−"),
+            let btn_specs: [(ButtonAction, &str); 4] = [
+                (ButtonAction::Interact, "Act"),
+                (ButtonAction::Inventory, "Bag"),
+                (ButtonAction::ZoomIn, "+"),
+                (ButtonAction::ZoomOut, "−"),
             ];
             for (i, (kind, label)) in btn_specs.iter().enumerate() {
                 let col = i % 2;
                 let row = i / 2;
                 parent
                     .spawn((
-                        TouchBtn(*kind),
                         Button,
+                        ButtonKind(*kind),
                         Node {
                             position_type: PositionType::Absolute,
                             right: Val::Px(28.0 + col as f32 * 76.0),
@@ -169,7 +180,7 @@ fn spawn_touch_controls(mut commands: Commands, asset_server: Res<AssetServer>) 
                             justify_content: JustifyContent::Center,
                             align_items: AlignItems::Center,
                             border: UiRect::all(Val::Px(2.0)),
-                            border_radius: BorderRadius::all(Val::Px(12.0)),
+                            border_radius: bevy::ui::BorderRadius::all(Val::Px(12.0)),
                             ..default()
                         },
                         BackgroundColor(Color::srgba(0.16, 0.18, 0.26, 0.85)),
@@ -191,64 +202,27 @@ fn spawn_touch_controls(mut commands: Commands, asset_server: Res<AssetServer>) 
         });
 }
 
-/// Drive the joystick from raw touch events (reliable drag, even off-base).
-fn joystick_touch(
-    mut touches: MessageReader<TouchInput>,
-    base_q: Query<&GlobalTransform, With<JoyBase>>,
+/// Read joystick axis and update TouchControls.move_vec
+fn joystick_input(
+    mut reader: MessageReader<VirtualJoystickMessage<JoystickId>>,
     mut touch: ResMut<TouchControls>,
-    mut joy: ResMut<JoyState>,
 ) {
-    let Ok(base_gt) = base_q.single() else {
-        return;
-    };
-    let center = base_gt.translation().truncate();
-    let max = JOY_RADIUS - KNOB_RADIUS;
-    for t in touches.read() {
-        let pos = t.position;
-        match t.phase {
-            TouchPhase::Started => {
-                if pos.distance(center) <= JOY_RADIUS * 1.6 {
-                    joy.active_id = Some(t.id);
-                    set_vec(&mut touch, pos, center, max);
-                }
-            }
-            TouchPhase::Moved => {
-                if joy.active_id == Some(t.id) {
-                    set_vec(&mut touch, pos, center, max);
-                }
-            }
-            TouchPhase::Ended | TouchPhase::Canceled => {
-                if joy.active_id == Some(t.id) {
-                    joy.active_id = None;
-                    touch.move_vec = Vec2::ZERO;
-                }
-            }
+    for msg in reader.read() {
+        // Only care about drag (movement) events
+        if matches!(msg.get_type(), VirtualJoystickMessageType::Drag) {
+            let axis = msg.axis();
+            touch.move_vec = Vec2::new(axis.x, -axis.y); // invert Y: screen down = world north
         }
-    }
-}
-
-fn set_vec(touch: &mut TouchControls, pos: Vec2, center: Vec2, max: f32) {
-    let mut d = pos - center;
-    let len = d.length();
-    if len > max {
-        d = d * (max / len);
-    }
-    // Screen y is down; world north is +y, so invert.
-    touch.move_vec = Vec2::new(d.x / max, -d.y / max);
-}
-
-/// Move the knob to follow `move_vec`.
-fn joystick_visual(mut knob_q: Query<&mut Node, With<JoyKnob>>, touch: Res<TouchControls>) {
-    if let Ok(mut style) = knob_q.single_mut() {
-        let off = touch.move_vec * (JOY_RADIUS - KNOB_RADIUS);
-        style.left = Val::Px(JOY_RADIUS - KNOB_RADIUS + off.x);
-        style.top = Val::Px(JOY_RADIUS - KNOB_RADIUS - off.y);
+        // On release, reset
+        if matches!(msg.get_type(), VirtualJoystickMessageType::Up) {
+            touch.move_vec = Vec2::ZERO;
+        }
     }
 }
 
 /// Action buttons raise edge-triggered flags consumed by gameplay systems.
 fn touch_buttons(
-    btn_q: Query<(&Interaction, &TouchBtn), Changed<Interaction>>,
+    btn_q: Query<(&Interaction, &ButtonKind), Changed<Interaction>>,
     mut touch: ResMut<TouchControls>,
 ) {
     for (interaction, kind) in &btn_q {
@@ -256,10 +230,10 @@ fn touch_buttons(
             continue;
         }
         match kind.0 {
-            ButtonKind::Interact => touch.interact = true,
-            ButtonKind::Inventory => touch.inventory = true,
-            ButtonKind::ZoomIn => touch.zoom_in = true,
-            ButtonKind::ZoomOut => touch.zoom_out = true,
+            ButtonAction::Interact => touch.interact = true,
+            ButtonAction::Inventory => touch.inventory = true,
+            ButtonAction::ZoomIn => touch.zoom_in = true,
+            ButtonAction::ZoomOut => touch.zoom_out = true,
         }
     }
 }

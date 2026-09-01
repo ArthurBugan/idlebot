@@ -9,7 +9,7 @@
 use bevy::prelude::*;
 use bevy::input::ButtonState;
 use bevy::input::keyboard::KeyboardInput;
-use super::plugin::{Net, NetStatus};
+use super::plugin::{Net, NetStatus, load_last_username, save_last_username};
 
 /// Marks the fullscreen login overlay; hidden once logged in.
 #[derive(Component)]
@@ -44,7 +44,7 @@ pub struct LoginPlugin;
 impl Plugin for LoginPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LoginPage>()
-            .add_systems(Startup, spawn_login_page)
+            .add_systems(Startup, (spawn_login_page, load_saved_username))
             .add_systems(Update, (
                 login_page_input,
                 login_page_button,
@@ -56,6 +56,13 @@ impl Plugin for LoginPlugin {
                 .add_systems(Startup, wasm_login::spawn_html_input)
                 .add_systems(Update, wasm_login::sync_html_input);
         }
+    }
+}
+
+/// Load the last used username on startup.
+fn load_saved_username(mut page: ResMut<LoginPage>) {
+    if let Some(username) = load_last_username() {
+        page.buffer = username;
     }
 }
 

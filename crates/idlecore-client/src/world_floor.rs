@@ -227,6 +227,27 @@ fn sapling_aspect() -> f32 { 1.0 }
 fn rock_aspect() -> f32 { 1.0 }
 fn log_aspect() -> f32 { 1.0 }
 fn bench_aspect() -> f32 { 1.0 }
+// Fruit trees (cropped mature tree: ~112x48)
+fn cherry_tree_aspect() -> f32 { 112.0 / 48.0 }
+fn orange_tree_aspect() -> f32 { 112.0 / 48.0 }
+fn apple_tree_aspect() -> f32 { 112.0 / 48.0 }
+// Farm props
+fn hay_bales_aspect() -> f32 { 1.0 }
+fn scarecrow_aspect() -> f32 { 16.0 / 16.0 }
+fn birdhouse_aspect() -> f32 { 32.0 / 32.0 }
+fn well_aspect() -> f32 { 16.0 / 16.0 }
+fn feed_trough_aspect() -> f32 { 1.0 }
+// Fences & paths
+fn fence_wood_aspect() -> f32 { 1.0 }
+fn fence_white_aspect() -> f32 { 1.0 }
+fn fence_stone_aspect() -> f32 { 1.0 }
+fn path_tile_aspect() -> f32 { 1.0 }
+// FX
+fn clouds_aspect() -> f32 { 1.0 }
+fn leaves_fall_aspect() -> f32 { 1.0 }
+fn snow_aspect() -> f32 { 1.0 }
+fn bonfire_aspect() -> f32 { 1.0 }
+fn water_edge_aspect() -> f32 { 1.0 }
 
 /// Atlas keys for every cropped sprite used below and by the floor/deco/water
 /// initialisers. `enqueue_model_slices` (startup) requests all of them; the
@@ -286,6 +307,90 @@ pub mod atlas {
     pub const CRIT_BUTTERFLY: &str = "crit_butterfly";
     pub const CRIT_PENGUIN: &str = "crit_penguin";
     pub const CRIT_CAPYBARA: &str = "crit_capybara";
+    // New critters for a livelier world
+    pub const CRIT_DUCK: &str = "crit_duck";
+    pub const CRIT_PIG: &str = "crit_pig";
+    pub const CRIT_GOAT: &str = "crit_goat";
+    pub const CRIT_OSTRICH: &str = "crit_ostrich";
+    pub const CRIT_BEE: &str = "crit_bee";
+    pub const CRIT_CROW: &str = "crit_crow";
+    pub const CRIT_FROG: &str = "crit_frog";
+    pub const CRIT_TURTLE: &str = "crit_turtle";
+    pub const CRIT_MONARCH: &str = "crit_monarch";
+    // Fall crops + fruit trees
+    pub const DECO_PUMPKIN: &str = "deco_pumpkin";
+    pub const DECO_CORN: &str = "deco_corn";
+    pub const DECO_EGGPLANT: &str = "deco_eggplant";
+    pub const TREE_CHERRY: &str = "tree_cherry";
+    pub const TREE_ORANGE: &str = "tree_orange";
+    pub const TREE_APPLE: &str = "tree_apple";
+    // Farm props
+    pub const PROP_HAY_BALES: &str = "prop_hay_bales";
+    pub const PROP_SCARECROW: &str = "prop_scarecrow";
+    pub const PROP_BIRDHOUSE: &str = "prop_birdhouse";
+    pub const PROP_WELL: &str = "prop_well";
+    pub const PROP_FEED_TROUGH: &str = "prop_feed_trough";
+    // Fences & paths
+    pub const PROP_FENCE_WOOD: &str = "prop_fence_wood";
+    pub const PROP_FENCE_WHITE: &str = "prop_fence_white";
+    pub const PROP_FENCE_STONE: &str = "prop_fence_stone";
+    pub const PROP_PATH_TILE: &str = "prop_path_tile";
+    // Weather / water FX
+    pub const FX_CLOUDS: &str = "fx_clouds";
+    pub const FX_LEAVES_FALL: &str = "fx_leaves_fall";
+    pub const FX_SNOW: &str = "fx_snow";
+    pub const FX_BONFIRE: &str = "fx_bonfire";
+    pub const PROP_WATER_EDGE: &str = "prop_water_edge";
+    // Animated frame strips (for animated deco)
+    pub const FX_LEAVES_FALL_0: &str = "fx_leaves_fall_0";
+    pub const FX_LEAVES_FALL_1: &str = "fx_leaves_fall_1";
+    pub const FX_LEAVES_FALL_2: &str = "fx_leaves_fall_2";
+    pub const FX_LEAVES_FALL_3: &str = "fx_leaves_fall_3";
+    pub const FX_LEAVES_FALL_4: &str = "fx_leaves_fall_4";
+    pub const FX_LEAVES_FALL_5: &str = "fx_leaves_fall_5";
+    pub const FX_SNOW_0: &str = "fx_snow_0";
+    pub const FX_SNOW_1: &str = "fx_snow_1";
+    pub const FX_SNOW_2: &str = "fx_snow_2";
+    pub const FX_SNOW_3: &str = "fx_snow_3";
+    pub const FX_SNOW_4: &str = "fx_snow_4";
+    pub const FX_SNOW_5: &str = "fx_snow_5";
+    pub const FX_BONFIRE_0: &str = "fx_bonfire_0";
+    pub const FX_BONFIRE_1: &str = "fx_bonfire_1";
+    pub const FX_BONFIRE_2: &str = "fx_bonfire_2";
+    pub const FX_BONFIRE_3: &str = "fx_bonfire_3";
+    pub const FX_BONFIRE_4: &str = "fx_bonfire_4";
+    pub const FX_BONFIRE_5: &str = "fx_bonfire_5";
+    pub const FX_CLOUDS_0: &str = "fx_clouds_0";
+    pub const FX_CLOUDS_1: &str = "fx_clouds_1";
+    pub const FX_CLOUDS_2: &str = "fx_clouds_2";
+    pub const FX_CLOUDS_3: &str = "fx_clouds_3";
+    pub const FX_CLOUDS_4: &str = "fx_clouds_4";
+    pub const FX_CLOUDS_5: &str = "fx_clouds_5";
+    pub const FX_CLOUDS_6: &str = "fx_clouds_6";
+    pub const FX_CLOUDS_7: &str = "fx_clouds_7";
+    pub const FX_CLOUDS_8: &str = "fx_clouds_8";
+    pub const PROP_WATER_EDGE_0: &str = "prop_water_edge_0";
+    pub const PROP_WATER_EDGE_1: &str = "prop_water_edge_1";
+    pub const PROP_WATER_EDGE_2: &str = "prop_water_edge_2";
+    pub const PROP_WATER_EDGE_3: &str = "prop_water_edge_3";
+    pub const CRIT_BUTTERFLY_0: &str = "crit_butterfly_0";
+    pub const CRIT_BUTTERFLY_1: &str = "crit_butterfly_1";
+    pub const CRIT_BUTTERFLY_2: &str = "crit_butterfly_2";
+    pub const CRIT_BUTTERFLY_3: &str = "crit_butterfly_3";
+    pub const CRIT_BUTTERFLY_4: &str = "crit_butterfly_4";
+    pub const CRIT_BUTTERFLY_5: &str = "crit_butterfly_5";
+    pub const CRIT_BUTTERFLY_6: &str = "crit_butterfly_6";
+    pub const CRIT_MONARCH_0: &str = "crit_monarch_0";
+    pub const CRIT_MONARCH_1: &str = "crit_monarch_1";
+    pub const CRIT_MONARCH_2: &str = "crit_monarch_2";
+    pub const CRIT_MONARCH_3: &str = "crit_monarch_3";
+    pub const CRIT_MONARCH_4: &str = "crit_monarch_4";
+    pub const CRIT_MONARCH_5: &str = "crit_monarch_5";
+    pub const CRIT_MONARCH_6: &str = "crit_monarch_6";
+    pub const CRIT_BEE_0: &str = "crit_bee_0";
+    pub const CRIT_BEE_1: &str = "crit_bee_1";
+    pub const CRIT_BEE_2: &str = "crit_bee_2";
+    pub const CRIT_BEE_3: &str = "crit_bee_3";
 }
 
 /// Queue every sprite crop the game needs, against the new EmanuelleDev art.
@@ -353,7 +458,15 @@ pub fn enqueue_model_slices(
     r(atlas::DECO_ONION, "models/Crops/Spring/Onion.png", 112, 0, 16, 16);
     r(atlas::DECO_STRAWBERRY, "models/Crops/Spring/Strawberry.png", 64, 0, 16, 16);
     r(atlas::DECO_BLUEBERRY, "models/Crops/Spring/Blueberry.png", 82, 16, 16, 16);
+    // Fall crops (new)
+    r(atlas::DECO_PUMPKIN, "models/Crops/Fall/Pumpkin.png", 0, 0, 16, 16);
+    r(atlas::DECO_CORN, "models/Crops/Fall/Corn.png", 0, 0, 16, 16);
+    r(atlas::DECO_EGGPLANT, "models/Crops/Fall/Eggplant.png", 0, 0, 16, 16);
     r(atlas::DECO_ROCK2, "models/Objects/Props/Summer/Stones Summer.png", 36, 19, 12, 11);
+    // Fruit trees: crop the mature tree from sheets that stack sapling + mature
+    r(atlas::TREE_CHERRY, "models/Crops/Fruits Tree/Spring/Cherry Tree.png", 128, 0, 112, 48);
+    r(atlas::TREE_ORANGE, "models/Crops/Fruits Tree/Summer/Orange Tree.png", 128, 0, 112, 48);
+    r(atlas::TREE_APPLE, "models/Crops/Fruits Tree/Fall/Apple Tree.png", 144, 0, 112, 48);
     r(atlas::DECO_TREE2, "models/Objects/Tree/Common/Shadow/Mahogany Tree.png", 123, 60, 38, 34);
     r(atlas::DECO_STONE, "models/Objects/Props/Spring/Ground stones.png", 0, 0, 16, 16);
 
@@ -367,6 +480,155 @@ pub fn enqueue_model_slices(
     r(atlas::CRIT_BUTTERFLY, "models/Animals/Forest/Bugs/Butterfly/Common Butterfly.png", 4, 4, 16, 12);
     r(atlas::CRIT_PENGUIN, "models/Animals/Forest/Penguin/Penguin.png", 1, 3, 16, 16);
     r(atlas::CRIT_CAPYBARA, "models/Animals/Forest/Capybara/Brown Capybara.png", 6, 13, 32, 62);
+    // New critters
+    r(atlas::CRIT_DUCK, "models/Animals/Farm/Ducks/Duck White.png", 0, 0, 16, 22);
+    r(atlas::CRIT_PIG, "models/Animals/Farm/Pig/Pig Pink.png", 0, 0, 16, 22);
+    r(atlas::CRIT_GOAT, "models/Animals/Farm/Goat/Goat Male Brown.png", 0, 0, 16, 22);
+    r(atlas::CRIT_OSTRICH, "models/Animals/Farm/Ostrich/Ostrich Brown.png", 0, 0, 16, 16);
+    r(atlas::CRIT_BEE, "models/Animals/Forest/Bugs/Bee/Bees.png", 0, 0, 16, 16);
+    r(atlas::CRIT_CROW, "models/Animals/Forest/Crow/Crow.png", 0, 0, 16, 16);
+    r(atlas::CRIT_FROG, "models/Animals/Forest/Frog/Frogs-Sheet.png", 0, 0, 16, 16);
+    r(atlas::CRIT_TURTLE, "models/Animals/Forest/Turttle/Green/Idle.png", 0, 0, 16, 16);
+    r(atlas::CRIT_MONARCH, "models/Animals/Forest/Bugs/Butterfly/Monarch Butterfly.png", 0, 0, 16, 16);
+    // Farm props
+    r(atlas::PROP_HAY_BALES, "models/Objects/Exterior/Hay Bales.png", 0, 0, 16, 16);
+    r(atlas::PROP_SCARECROW, "models/Objects/Exterior/Scarescrow.png", 0, 0, 16, 16);
+    r(atlas::PROP_BIRDHOUSE, "models/Objects/Exterior/Birdhouse.png", 0, 0, 32, 32);
+    r(atlas::PROP_WELL, "models/Objects/Exterior/Well .png", 0, 0, 16, 16);
+    r(atlas::PROP_FEED_TROUGH, "models/Objects/Exterior/Feed Trough.png", 0, 0, 16, 16);
+    // Fences & paths
+    r(atlas::PROP_FENCE_WOOD, "models/Objects/Exterior/Fence and Bridge/Fence Wood.png", 0, 0, 16, 16);
+    r(atlas::PROP_FENCE_WHITE, "models/Objects/Exterior/Fence and Bridge/White Fence.png", 0, 0, 16, 16);
+    r(atlas::PROP_FENCE_STONE, "models/Objects/Exterior/Fence and Bridge/Fence Stone.png", 0, 0, 16, 16);
+    r(atlas::PROP_PATH_TILE, "models/Tileset/Path tiles.png", 0, 0, 16, 16);
+    // Weather / water FX
+    r(atlas::FX_CLOUDS, "models/Objects/Props/clouds.png", 0, 0, 16, 16);
+    r(atlas::FX_LEAVES_FALL, "models/Objects/Tree/Common/Effects/FX Effects Orange Leafs Fall 2.png", 0, 0, 16, 16);
+    r(atlas::FX_SNOW, "models/Objects/Tree/Common/Effects/FX Effects Snow Leafs Winter 2.png", 0, 0, 16, 16);
+    r(atlas::FX_BONFIRE, "models/Objects/Exterior/Mine and Dungeon/bonfire.png", 0, 0, 16, 16);
+    r(atlas::PROP_WATER_EDGE, "models/Objects/Props/Water props.png", 0, 0, 16, 16);
+    // Animated frame strips
+    // Leaves fall: 96x48 = 6x3 frames (16x16 each), row 0
+    for i in 0..6 {
+        r(
+            match i {
+                0 => atlas::FX_LEAVES_FALL_0,
+                1 => atlas::FX_LEAVES_FALL_1,
+                2 => atlas::FX_LEAVES_FALL_2,
+                3 => atlas::FX_LEAVES_FALL_3,
+                4 => atlas::FX_LEAVES_FALL_4,
+                _ => atlas::FX_LEAVES_FALL_5,
+            },
+            "models/Objects/Tree/Common/Effects/FX Effects Orange Leafs Fall 2.png",
+            i * 16, 0, 16, 16,
+        );
+    }
+    // Snow: 96x48 = 6x3 frames, row 0
+    for i in 0..6 {
+        r(
+            match i {
+                0 => atlas::FX_SNOW_0,
+                1 => atlas::FX_SNOW_1,
+                2 => atlas::FX_SNOW_2,
+                3 => atlas::FX_SNOW_3,
+                4 => atlas::FX_SNOW_4,
+                _ => atlas::FX_SNOW_5,
+            },
+            "models/Objects/Tree/Common/Effects/FX Effects Snow Leafs Winter 2.png",
+            i * 16, 0, 16, 16,
+        );
+    }
+    // Bonfire: 96x32 = 6x2 frames, row 0
+    for i in 0..6 {
+        r(
+            match i {
+                0 => atlas::FX_BONFIRE_0,
+                1 => atlas::FX_BONFIRE_1,
+                2 => atlas::FX_BONFIRE_2,
+                3 => atlas::FX_BONFIRE_3,
+                4 => atlas::FX_BONFIRE_4,
+                _ => atlas::FX_BONFIRE_5,
+            },
+            "models/Objects/Exterior/Mine and Dungeon/bonfire.png",
+            i * 16, 0, 16, 16,
+        );
+    }
+    // Clouds: 144x96 = 9x6 frames, row 0 (first 9 frames)
+    for i in 0..9 {
+        r(
+            match i {
+                0 => atlas::FX_CLOUDS_0,
+                1 => atlas::FX_CLOUDS_1,
+                2 => atlas::FX_CLOUDS_2,
+                3 => atlas::FX_CLOUDS_3,
+                4 => atlas::FX_CLOUDS_4,
+                5 => atlas::FX_CLOUDS_5,
+                6 => atlas::FX_CLOUDS_6,
+                7 => atlas::FX_CLOUDS_7,
+                _ => atlas::FX_CLOUDS_8,
+            },
+            "models/Objects/Props/clouds.png",
+            i * 16, 0, 16, 16,
+        );
+    }
+    // Water edge: 64x16 = 4 frames
+    for i in 0..4 {
+        r(
+            match i {
+                0 => atlas::PROP_WATER_EDGE_0,
+                1 => atlas::PROP_WATER_EDGE_1,
+                2 => atlas::PROP_WATER_EDGE_2,
+                _ => atlas::PROP_WATER_EDGE_3,
+            },
+            "models/Objects/Props/Water props.png",
+            i * 16, 0, 16, 16,
+        );
+    }
+    // Common Butterfly: 112x32 = 7x2 frames, row 0
+    for i in 0..7 {
+        r(
+            match i {
+                0 => atlas::CRIT_BUTTERFLY_0,
+                1 => atlas::CRIT_BUTTERFLY_1,
+                2 => atlas::CRIT_BUTTERFLY_2,
+                3 => atlas::CRIT_BUTTERFLY_3,
+                4 => atlas::CRIT_BUTTERFLY_4,
+                5 => atlas::CRIT_BUTTERFLY_5,
+                _ => atlas::CRIT_BUTTERFLY_6,
+            },
+            "models/Animals/Forest/Bugs/Butterfly/Common Butterfly.png",
+            i * 16, 0, 16, 12,
+        );
+    }
+    // Monarch Butterfly: assume similar 7 frames
+    for i in 0..7 {
+        r(
+            match i {
+                0 => atlas::CRIT_MONARCH_0,
+                1 => atlas::CRIT_MONARCH_1,
+                2 => atlas::CRIT_MONARCH_2,
+                3 => atlas::CRIT_MONARCH_3,
+                4 => atlas::CRIT_MONARCH_4,
+                5 => atlas::CRIT_MONARCH_5,
+                _ => atlas::CRIT_MONARCH_6,
+            },
+            "models/Animals/Forest/Bugs/Butterfly/Monarch Butterfly.png",
+            i * 16, 0, 16, 16,
+        );
+    }
+    // Bee: 64x16 = 4 frames
+    for i in 0..4 {
+        r(
+            match i {
+                0 => atlas::CRIT_BEE_0,
+                1 => atlas::CRIT_BEE_1,
+                2 => atlas::CRIT_BEE_2,
+                _ => atlas::CRIT_BEE_3,
+            },
+            "models/Animals/Forest/Bugs/Bee/Bees.png",
+            i * 16, 0, 16, 16,
+        );
+    }
 }
 
 /// Build the prop/icon handle set once every cropped sprite has streamed in.
@@ -448,6 +710,9 @@ pub fn init_prop_textures(
 pub struct Deco {
     pub image: Handle<Image>,
     pub height: f32,
+    /// Optional base key for animated deco (e.g., "fx_leaves_fall").
+    /// If present, the spawned deco will get an AnimatedDeco component.
+    pub anim_key: Option<String>,
 }
 
 /// Ambient decoration set per terrain: `plants` are common garnish,
@@ -466,6 +731,94 @@ pub struct DecoSet {
     pub critters: Vec<Deco>,
 }
 
+/// Frame handles for animated deco sprites.
+#[derive(Resource, Default)]
+pub struct AnimatedDecoFrames {
+    /// Map from base key to vector of frame handles.
+    pub frames: HashMap<String, Vec<Handle<Image>>>,
+}
+
+/// Component marking a deco entity as animated.
+#[derive(Component)]
+pub struct AnimatedDeco {
+    pub base_key: String,
+    pub frame_keys: Vec<String>,
+    pub frame_index: usize,
+    pub timer: Timer,
+}
+
+/// Initialize animated deco frame handles from the sliced atlas.
+pub fn init_animated_deco_frames(
+    mut commands: Commands,
+    atlas: Res<crate::slice::SlicedAtlas>,
+    mut anim: ResMut<AnimatedDecoFrames>,
+) {
+    if !anim.frames.is_empty() {
+        return;
+    }
+    let get = |k: &str| atlas.items.get(k).expect("animated frame missing").clone();
+    // Leaves fall: 6 frames
+    anim.frames.insert(
+        "fx_leaves_fall".into(),
+        (0..6).map(|i| get(&format!("fx_leaves_fall_{}", i))).collect(),
+    );
+    // Snow: 6 frames
+    anim.frames.insert(
+        "fx_snow".into(),
+        (0..6).map(|i| get(&format!("fx_snow_{}", i))).collect(),
+    );
+    // Bonfire: 6 frames
+    anim.frames.insert(
+        "fx_bonfire".into(),
+        (0..6).map(|i| get(&format!("fx_bonfire_{}", i))).collect(),
+    );
+    // Clouds: 9 frames
+    anim.frames.insert(
+        "fx_clouds".into(),
+        (0..9).map(|i| get(&format!("fx_clouds_{}", i))).collect(),
+    );
+    // Water edge: 4 frames
+    anim.frames.insert(
+        "prop_water_edge".into(),
+        (0..4).map(|i| get(&format!("prop_water_edge_{}", i))).collect(),
+    );
+    // Common butterfly: 7 frames
+    anim.frames.insert(
+        "crit_butterfly".into(),
+        (0..7).map(|i| get(&format!("crit_butterfly_{}", i))).collect(),
+    );
+    // Monarch butterfly: 7 frames
+    anim.frames.insert(
+        "crit_monarch".into(),
+        (0..7).map(|i| get(&format!("crit_monarch_{}", i))).collect(),
+    );
+    // Bee: 4 frames
+    anim.frames.insert(
+        "crit_bee".into(),
+        (0..4).map(|i| get(&format!("crit_bee_{}", i))).collect(),
+    );
+}
+
+/// Animate deco sprites by cycling through frames.
+pub fn animate_deco(
+    time: Res<Time>,
+    anim_frames: Res<AnimatedDecoFrames>,
+    mut query: Query<(&mut Sprite, &mut AnimatedDeco)>,
+) {
+    let dt = time.delta();
+    for (mut sprite, mut anim) in &mut query {
+        anim.timer.tick(dt);
+        if anim.timer.just_finished() {
+            anim.frame_index = (anim.frame_index + 1) % anim.frame_keys.len();
+            if let Some(frames) = anim_frames.frames.get(&anim.base_key) {
+                if anim.frame_index < frames.len() {
+                    sprite.image = frames[anim.frame_index].clone();
+                }
+            }
+        }
+    }
+}
+
 /// Build the per-terrain decoration sets once all their cropped sprites have
 /// streamed in. Polls `SlicedAtlas`; inserts `DecoTextures` a single time.
 pub fn init_deco_textures(
@@ -477,56 +830,146 @@ pub fn init_deco_textures(
         return;
     }
     let mut need = |keys: &[&str]| keys.iter().all(|k| atlas.items.contains_key(*k));
-    if !need(&[atlas::DECO_WHEAT, atlas::DECO_WHEAT2, atlas::DECO_CARROT,
-               atlas::DECO_BROCCOLI, atlas::DECO_POTATO, atlas::DECO_ONION,
-               atlas::DECO_STRAWBERRY, atlas::DECO_BLUEBERRY, atlas::DECO_ROCK2,
-               atlas::DECO_TREE2, atlas::DECO_STONE,
-               atlas::CRIT_CHICKEN, atlas::CRIT_SHEEP, atlas::CRIT_COW,
-               atlas::CRIT_FOX, atlas::CRIT_DEER, atlas::CRIT_RABBIT,
-               atlas::CRIT_BUTTERFLY, atlas::CRIT_PENGUIN, atlas::CRIT_CAPYBARA]) {
+    if !need(&[
+        atlas::DECO_WHEAT, atlas::DECO_WHEAT2, atlas::DECO_CARROT,
+        atlas::DECO_BROCCOLI, atlas::DECO_POTATO, atlas::DECO_ONION,
+        atlas::DECO_STRAWBERRY, atlas::DECO_BLUEBERRY, atlas::DECO_ROCK2,
+        atlas::DECO_TREE2, atlas::DECO_STONE,
+        // Fall crops + fruit trees
+        atlas::DECO_PUMPKIN, atlas::DECO_CORN, atlas::DECO_EGGPLANT,
+        atlas::TREE_CHERRY, atlas::TREE_ORANGE, atlas::TREE_APPLE,
+        // New critters
+        atlas::CRIT_CHICKEN, atlas::CRIT_SHEEP, atlas::CRIT_COW,
+        atlas::CRIT_FOX, atlas::CRIT_DEER, atlas::CRIT_RABBIT,
+        atlas::CRIT_BUTTERFLY, atlas::CRIT_PENGUIN, atlas::CRIT_CAPYBARA,
+        atlas::CRIT_DUCK, atlas::CRIT_PIG, atlas::CRIT_GOAT,
+        atlas::CRIT_OSTRICH, atlas::CRIT_BEE, atlas::CRIT_CROW,
+        atlas::CRIT_FROG, atlas::CRIT_TURTLE, atlas::CRIT_MONARCH,
+        // Farm props
+        atlas::PROP_HAY_BALES, atlas::PROP_SCARECROW, atlas::PROP_BIRDHOUSE,
+        atlas::PROP_WELL, atlas::PROP_FEED_TROUGH,
+        // Fences & paths
+        atlas::PROP_FENCE_WOOD, atlas::PROP_FENCE_WHITE, atlas::PROP_FENCE_STONE,
+        atlas::PROP_PATH_TILE,
+        // Weather / water FX
+        atlas::FX_CLOUDS, atlas::FX_LEAVES_FALL, atlas::FX_SNOW,
+        atlas::FX_BONFIRE, atlas::PROP_WATER_EDGE,
+        // Animated frame strips
+        atlas::FX_LEAVES_FALL_0, atlas::FX_LEAVES_FALL_1, atlas::FX_LEAVES_FALL_2,
+        atlas::FX_LEAVES_FALL_3, atlas::FX_LEAVES_FALL_4, atlas::FX_LEAVES_FALL_5,
+        atlas::FX_SNOW_0, atlas::FX_SNOW_1, atlas::FX_SNOW_2,
+        atlas::FX_SNOW_3, atlas::FX_SNOW_4, atlas::FX_SNOW_5,
+        atlas::FX_BONFIRE_0, atlas::FX_BONFIRE_1, atlas::FX_BONFIRE_2,
+        atlas::FX_BONFIRE_3, atlas::FX_BONFIRE_4, atlas::FX_BONFIRE_5,
+        atlas::FX_CLOUDS_0, atlas::FX_CLOUDS_1, atlas::FX_CLOUDS_2,
+        atlas::FX_CLOUDS_3, atlas::FX_CLOUDS_4, atlas::FX_CLOUDS_5,
+        atlas::FX_CLOUDS_6, atlas::FX_CLOUDS_7, atlas::FX_CLOUDS_8,
+        atlas::PROP_WATER_EDGE_0, atlas::PROP_WATER_EDGE_1,
+        atlas::PROP_WATER_EDGE_2, atlas::PROP_WATER_EDGE_3,
+        atlas::CRIT_BUTTERFLY_0, atlas::CRIT_BUTTERFLY_1, atlas::CRIT_BUTTERFLY_2,
+        atlas::CRIT_BUTTERFLY_3, atlas::CRIT_BUTTERFLY_4, atlas::CRIT_BUTTERFLY_5,
+        atlas::CRIT_BUTTERFLY_6,
+        atlas::CRIT_MONARCH_0, atlas::CRIT_MONARCH_1, atlas::CRIT_MONARCH_2,
+        atlas::CRIT_MONARCH_3, atlas::CRIT_MONARCH_4, atlas::CRIT_MONARCH_5,
+        atlas::CRIT_MONARCH_6,
+        atlas::CRIT_BEE_0, atlas::CRIT_BEE_1, atlas::CRIT_BEE_2, atlas::CRIT_BEE_3,
+    ]) {
         return;
     }
     let get = |k: &str| atlas.items.get(k).expect("checked").clone();
-    let to_deco = |k: &str, height: f32| Deco { image: get(k), height };
+    let to_deco = |k: &str, height: f32| Deco { image: get(k), height, anim_key: None };
+    let to_deco_anim = |k: &str, height: f32, anim_key: &str| Deco { image: get(k), height, anim_key: Some(anim_key.into()) };
 
     let mut sets: HashMap<TerrainType, DecoSet> = HashMap::new();
     let mut add = |terrain: TerrainType, critter: bool, d: Deco| {
         let set = sets.entry(terrain).or_default();
         if critter { set.critters.push(d) } else { set.plants.push(d) }
     };
-    // Meadow: young wheat, strawberry, broccoli — plus the odd chicken.
-    for k in [atlas::DECO_WHEAT2, atlas::DECO_STRAWBERRY, atlas::DECO_BROCCOLI] {
+    // Meadow: young wheat, strawberry, broccoli, fall crops — plus farm animals and props.
+    for k in [atlas::DECO_WHEAT2, atlas::DECO_STRAWBERRY, atlas::DECO_BROCCOLI,
+              atlas::DECO_PUMPKIN, atlas::DECO_CORN, atlas::DECO_EGGPLANT] {
         add(TerrainType::Grass, false, to_deco(k, 1.0));
     }
+    // Farm props on meadow
+    for k in [atlas::PROP_HAY_BALES, atlas::PROP_SCARECROW, atlas::PROP_BIRDHOUSE,
+              atlas::PROP_WELL, atlas::PROP_FEED_TROUGH] {
+        add(TerrainType::Grass, false, to_deco(k, 1.2));
+    }
+    // Fences & paths on meadow
+    for k in [atlas::PROP_FENCE_WOOD, atlas::PROP_FENCE_WHITE, atlas::PROP_PATH_TILE] {
+        add(TerrainType::Grass, false, to_deco(k, 1.0));
+    }
+    // Critters on meadow: chickens, ducks, pigs, goats, ostriches, bees, crows
     add(TerrainType::Grass, true, to_deco(atlas::CRIT_CHICKEN, 1.1));
-    // Plains: golden wheat, with cows and sheep grazing.
+    add(TerrainType::Grass, true, to_deco(atlas::CRIT_DUCK, 0.9));
+    add(TerrainType::Grass, true, to_deco(atlas::CRIT_PIG, 1.0));
+    add(TerrainType::Grass, true, to_deco(atlas::CRIT_GOAT, 1.0));
+    add(TerrainType::Grass, true, to_deco(atlas::CRIT_OSTRICH, 1.3));
+    add(TerrainType::Grass, true, to_deco(atlas::CRIT_BEE, 0.5));
+    add(TerrainType::Grass, true, to_deco(atlas::CRIT_CROW, 0.8));
+    // Plains: golden wheat, with cows, sheep, and farm animals.
     add(TerrainType::Grassland, false, to_deco(atlas::DECO_WHEAT, 1.1));
+    add(TerrainType::Grassland, false, to_deco(atlas::DECO_PUMPKIN, 1.1));
     add(TerrainType::Grassland, true, to_deco(atlas::CRIT_SHEEP, 1.7));
     add(TerrainType::Grassland, true, to_deco(atlas::CRIT_COW, 1.5));
-    // Woods: carrot and onions under the trees, deer and fox about.
+    add(TerrainType::Grassland, true, to_deco(atlas::CRIT_DUCK, 0.9));
+    add(TerrainType::Grassland, true, to_deco(atlas::CRIT_PIG, 1.0));
+    add(TerrainType::Grassland, true, to_deco(atlas::CRIT_GOAT, 1.0));
+    add(TerrainType::Grassland, true, to_deco(atlas::CRIT_OSTRICH, 1.3));
+    add(TerrainType::Grassland, true, to_deco(atlas::CRIT_BEE, 0.5));
+    add(TerrainType::Grassland, true, to_deco(atlas::CRIT_CROW, 0.8));
+    // Woods: carrot, onions, fall crops under trees; deer, fox, monarch butterflies, frogs, crows; fruit trees.
     add(TerrainType::Forest, false, to_deco(atlas::DECO_CARROT, 0.9));
     add(TerrainType::Forest, false, to_deco(atlas::DECO_ONION, 0.8));
+    add(TerrainType::Forest, false, to_deco(atlas::DECO_PUMPKIN, 0.9));
+    add(TerrainType::Forest, false, to_deco(atlas::DECO_CORN, 0.9));
+    add(TerrainType::Forest, false, to_deco(atlas::DECO_EGGPLANT, 0.9));
+    add(TerrainType::Forest, false, to_deco(atlas::TREE_CHERRY, 2.5));
+    add(TerrainType::Forest, false, to_deco(atlas::TREE_ORANGE, 2.5));
+    add(TerrainType::Forest, false, to_deco(atlas::TREE_APPLE, 2.5));
     add(TerrainType::Forest, true, to_deco(atlas::CRIT_DEER, 1.4));
     add(TerrainType::Forest, true, to_deco(atlas::CRIT_FOX, 1.1));
-    // Jungle: potatoes and blueberries, capybaras by the water.
+    add(TerrainType::Forest, true, to_deco_anim(atlas::CRIT_MONARCH, 0.6, "crit_monarch"));
+    add(TerrainType::Forest, true, to_deco(atlas::CRIT_FROG, 0.7));
+    add(TerrainType::Forest, true, to_deco(atlas::CRIT_CROW, 0.8));
+    // Jungle: potatoes, blueberries, capybaras by the water; frogs, turtles, fruit trees.
     add(TerrainType::TropicalRainforest, false, to_deco(atlas::DECO_POTATO, 1.1));
     add(TerrainType::TropicalRainforest, false, to_deco(atlas::DECO_BLUEBERRY, 1.0));
+    add(TerrainType::TropicalRainforest, false, to_deco(atlas::TREE_CHERRY, 2.5));
+    add(TerrainType::TropicalRainforest, false, to_deco(atlas::TREE_ORANGE, 2.5));
+    add(TerrainType::TropicalRainforest, false, to_deco(atlas::TREE_APPLE, 2.5));
     add(TerrainType::TropicalRainforest, true, to_deco(atlas::CRIT_CAPYBARA, 1.6));
-    add(TerrainType::TropicalRainforest, true, to_deco(atlas::CRIT_BUTTERFLY, 0.6));
+    add(TerrainType::TropicalRainforest, true, to_deco_anim(atlas::CRIT_BUTTERFLY, 0.6, "crit_butterfly"));
+    add(TerrainType::TropicalRainforest, true, to_deco(atlas::CRIT_FROG, 0.7));
+    add(TerrainType::TropicalRainforest, true, to_deco(atlas::CRIT_TURTLE, 0.6));
+    add(TerrainType::TropicalRainforest, false, to_deco_anim(atlas::PROP_WATER_EDGE, 0.8, "prop_water_edge"));
     // Desert: scattered stones and rock breaks.
     add(TerrainType::Desert, false, to_deco(atlas::DECO_STONE, 0.9));
     add(TerrainType::Desert, false, to_deco(atlas::DECO_ROCK2, 1.1));
-    // Tundra: frozen stones, penguins.
+    add(TerrainType::Desert, false, to_deco(atlas::PROP_FENCE_STONE, 1.0));
+    // Tundra: frozen stones, penguins, snow FX.
     add(TerrainType::Tundra, false, to_deco(atlas::DECO_ROCK2, 1.0));
+    add(TerrainType::Tundra, false, to_deco_anim(atlas::FX_SNOW, 1.5, "fx_snow"));
     add(TerrainType::Tundra, true, to_deco(atlas::CRIT_PENGUIN, 1.0));
-    // Taiga: dead trees (old-tree variants), foxes and rabbits.
+    // Taiga: dead trees (old-tree variants), foxes, rabbits, snow FX, fruit trees.
     add(TerrainType::Taiga, false, to_deco(atlas::DECO_TREE2, 1.8));
     add(TerrainType::Taiga, false, to_deco(atlas::DECO_STONE, 0.9));
+    add(TerrainType::Taiga, false, to_deco(atlas::TREE_CHERRY, 2.5));
+    add(TerrainType::Taiga, false, to_deco(atlas::TREE_APPLE, 2.5));
+    add(TerrainType::Taiga, false, to_deco_anim(atlas::FX_SNOW, 1.5, "fx_snow"));
     add(TerrainType::Taiga, true, to_deco(atlas::CRIT_FOX, 1.2));
     add(TerrainType::Taiga, true, to_deco(atlas::CRIT_RABBIT, 0.9));
-    // Highlands: stones.
+    add(TerrainType::Taiga, true, to_deco(atlas::CRIT_CROW, 0.8));
+    // Highlands: stones, bonfire, clouds.
     add(TerrainType::Mountain, false, to_deco(atlas::DECO_STONE, 1.0));
     add(TerrainType::Mountain, false, to_deco(atlas::DECO_ROCK2, 1.2));
+    add(TerrainType::Mountain, false, to_deco_anim(atlas::FX_BONFIRE, 1.5, "fx_bonfire"));
+    add(TerrainType::Mountain, false, to_deco_anim(atlas::FX_CLOUDS, 2.0, "fx_clouds"));
+    // City: paths, benches, wells.
+    add(TerrainType::City, false, to_deco(atlas::PROP_PATH_TILE, 1.0));
+    add(TerrainType::City, false, to_deco(atlas::BENCH, 1.2));
+    add(TerrainType::City, false, to_deco(atlas::PROP_WELL, 1.2));
+    add(TerrainType::City, true, to_deco(atlas::CRIT_CROW, 0.8));
 
     deco.by_terrain = sets;
     deco.built = true;
@@ -1222,18 +1665,38 @@ pub fn update_world_floor(
                     let jx = ((h >> 13) % 9) as f32 / 9.0 - 0.4;
                     let jy = ((h >> 17) % 9) as f32 / 9.0 - 0.4;
                     let dy = cy + jy * SLOT_SIZE;
-                    commands.entity(entity).with_child((
+                    let child_entity = commands.spawn((
                         Name::new("deco"),
                         Sprite {
                             image: d.image.clone(),
                             custom_size: Some(Vec2::splat(d.height * scale)),
                             ..default()
                         },
-                        // Bottom-anchored at a jittered spot in the slot; the
-                        // +2 z lift clears the next tile row to the south.
                         bevy::sprite::Anchor::BOTTOM_CENTER,
                         Transform::from_xyz(cx + jx * SLOT_SIZE, dy + SLOT_SIZE * 0.2, 2.0),
-                    ));
+                    )).id();
+                    if let Some(ref anim_key) = d.anim_key {
+                        let frame_keys: Vec<String> = match anim_key.as_str() {
+                            "fx_leaves_fall" => (0..6).map(|i| format!("fx_leaves_fall_{}", i)).collect(),
+                            "fx_snow" => (0..6).map(|i| format!("fx_snow_{}", i)).collect(),
+                            "fx_bonfire" => (0..6).map(|i| format!("fx_bonfire_{}", i)).collect(),
+                            "fx_clouds" => (0..9).map(|i| format!("fx_clouds_{}", i)).collect(),
+                            "prop_water_edge" => (0..4).map(|i| format!("prop_water_edge_{}", i)).collect(),
+                            "crit_butterfly" => (0..7).map(|i| format!("crit_butterfly_{}", i)).collect(),
+                            "crit_monarch" => (0..7).map(|i| format!("crit_monarch_{}", i)).collect(),
+                            "crit_bee" => (0..4).map(|i| format!("crit_bee_{}", i)).collect(),
+                            _ => vec![],
+                        };
+                        if !frame_keys.is_empty() {
+                            commands.entity(child_entity).insert(AnimatedDeco {
+                                base_key: anim_key.clone(),
+                                frame_keys,
+                                frame_index: 0,
+                                timer: Timer::from_seconds(0.15, TimerMode::Repeating),
+                            });
+                        }
+                    }
+                    commands.entity(entity).add_child(child_entity);
                 }
             }
         }
