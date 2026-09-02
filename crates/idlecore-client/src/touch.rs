@@ -17,6 +17,8 @@ use virtual_joystick::{
 pub struct TouchControls {
     /// Normalized movement vector (-1..1 each axis) from the joystick.
     pub move_vec: Vec2,
+    /// Whether the joystick is at max radius (triggers sprint).
+    pub sprint: bool,
     /// Edge-triggered action flags, each consumed by its owning system.
     pub interact: bool,
     pub inventory: bool,
@@ -191,11 +193,16 @@ fn joystick_input(
         // Only care about drag (movement) events
         if matches!(msg.get_type(), VirtualJoystickMessageType::Drag) {
             let axis = msg.axis();
-            touch.move_vec = Vec2::new(axis.x, -axis.y); // invert Y: screen down = world north
+            // Library returns screen coords (down=+Y), world uses north=+Y, so invert Y.
+            // Also check if at max radius (length ~1.0) to trigger sprint.
+            let len = axis.length();
+            touch.move_vec = Vec2::new(axis.x, -axis.y);
+            touch.sprint = len >= 0.95;
         }
         // On release, reset
         if matches!(msg.get_type(), VirtualJoystickMessageType::Up) {
             touch.move_vec = Vec2::ZERO;
+            touch.sprint = false;
         }
     }
 }

@@ -110,7 +110,7 @@ fn player_movement(
     if let Some(v) = &player.owned_vehicle {
         speed *= v.speed_multiplier();
     }
-    if keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight) {
+    if keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight) || touch.sprint {
         speed *= SPRINT_MULTIPLIER;
     }
     // Partial joystick tilt scales speed for precise analog movement.
