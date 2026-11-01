@@ -59,6 +59,7 @@ impl Plugin for TdPlugin {
                     init_td_hex_tex,
                     sync_td_entities,
                     glide_td_markers,
+                    animate_mobs,
                     td_pulse,
                     td_place_hints,
                     td_build_keys,
@@ -120,9 +121,9 @@ pub struct TdCapitalSnapshot {
 #[derive(Resource, Default)]
 pub struct TdTextures {
     pub ready: bool,
-    pub mob_scav: (Handle<Image>, f32),
-    pub mob_walker: (Handle<Image>, f32),
-    pub mob_husk: (Handle<Image>, f32),
+    /// One entry per enemy-kind name (Spec 025 §3): idle frame + two walk
+    /// frames + art aspect for the marker's `custom_size`.
+    pub mobs: HashMap<String, MobSprite>,
     pub capital: (Handle<Image>, f32),
     pub barricade: (Handle<Image>, f32),
     pub arrow_tower: (Handle<Image>, f32),
@@ -135,12 +136,25 @@ pub struct TdTextures {
     pub icon_ballista: Handle<Image>,
 }
 
+/// A raider kind's sprite set (Spec 025 §5). `walk` frames alternate while
+/// the marker glides; rooted kinds point walk frames at the idle crop.
+#[derive(Clone, Debug)]
+pub struct MobSprite {
+    pub idle: Handle<Image>,
+    pub walk: [Handle<Image>; 2],
+    pub aspect: f32,
+}
+
 /// Last replicated mob positions (mob_id → position + observed time) used to
 /// derive glide speeds: the server simulates on 1s ticks, so consecutive
 /// snapshots give each mob a march velocity to animate between.
 #[derive(Resource, Default)]
 pub struct TdTracker {
     pub last: HashMap<u64, (Vec2, Instant)>,
+    /// Last replicated HP per mob — a drop arms the red damage flash.
+    pub last_hp: HashMap<u64, u32>,
+    /// Seconds left on each mob's damage flash (spec 025 §5).
+    pub flash: HashMap<u64, f32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +164,14 @@ pub struct TdTracker {
 /// World marker for one raider (child: HP bar).
 #[derive(Component)]
 pub struct TdMobMarker;
+
+/// Per-raider animation state: replicated id (flash lookup) + roster kind
+/// (sprite lookup). Carried by the marker entity, driven by [`animate_mobs`].
+#[derive(Component)]
+pub struct TdMobAnim {
+    pub mob_id: u64,
+    pub kind: String,
+}
 
 /// World marker for one tower/wall (child: HP bar).
 #[derive(Component)]
@@ -176,6 +198,19 @@ struct TdMove {
 // Textures
 // ---------------------------------------------------------------------------
 
+/// Spec 025 §5: roster name → (idle, walk0, walk1) atlas crops. The
+/// rooted Venom Bloom reuses its idle frame for both walk slots.
+const MOB_ATLAS: [(&str, &str, &str, &str); 8] = [
+    ("Slime", atlas::TD_SLIME, atlas::TD_SLIME_W0, atlas::TD_SLIME_W1),
+    ("Blue Slime", atlas::TD_SLIME_BLUE, atlas::TD_SLIME_BLUE_W0, atlas::TD_SLIME_BLUE_W1),
+    ("Big Slime", atlas::TD_BIG_SLIME, atlas::TD_BIG_SLIME_W0, atlas::TD_BIG_SLIME_W1),
+    ("Spear Goblin", atlas::TD_GOBLIN_SPEAR, atlas::TD_GOBLIN_SPEAR_W0, atlas::TD_GOBLIN_SPEAR_W1),
+    ("Archer Goblin", atlas::TD_GOBLIN_ARCHER, atlas::TD_GOBLIN_ARCHER_W0, atlas::TD_GOBLIN_ARCHER_W1),
+    ("Bomb Goblin", atlas::TD_GOBLIN_BOMB, atlas::TD_GOBLIN_BOMB_W0, atlas::TD_GOBLIN_BOMB_W1),
+    ("Myconid", atlas::TD_MYCONID, atlas::TD_MYCONID_W0, atlas::TD_MYCONID_W1),
+    ("Venom Bloom", atlas::TD_VENOM_BLOOM, atlas::TD_VENOM_BLOOM, atlas::TD_VENOM_BLOOM),
+];
+
 fn init_td_textures(atlas: Res<crate::slice::SlicedAtlas>, mut td: ResMut<TdTextures>) {
     if td.ready {
         return;
@@ -184,13 +219,6 @@ fn init_td_textures(atlas: Res<crate::slice::SlicedAtlas>, mut td: ResMut<TdText
     // Art aspects (crop width ÷ height) — the tower/capital are tall, mobs
     // and walls square.
     let with_aspect = |key: &str, aspect: f32| g(key).map(|h| (h, aspect));
-    let (Some(mob_scav), Some(mob_walker), Some(mob_husk)) = (
-        with_aspect(atlas::TD_MOB_SCAV, 1.0),
-        with_aspect(atlas::TD_MOB_WALKER, 1.0),
-        with_aspect(atlas::TD_MOB_HUSK, 1.0),
-    ) else {
-        return;
-    };
     let (Some(capital), Some(barricade), Some(arrow_tower), Some(ballista)) = (
         with_aspect(atlas::TD_CAPITAL, 128.0 / 112.0),
         with_aspect(atlas::TD_BARRICADE, 1.0),
@@ -199,6 +227,21 @@ fn init_td_textures(atlas: Res<crate::slice::SlicedAtlas>, mut td: ResMut<TdText
     ) else {
         return;
     };
+    // Spec 025 roster map — built from MOB_ATLAS so tests can pin coverage.
+    let mut mobs = HashMap::new();
+    for (kind, idle, w0, w1) in MOB_ATLAS {
+        let (Some(idle), Some(w0), Some(w1)) = (g(idle), g(w0), g(w1)) else {
+            return;
+        };
+        mobs.insert(
+            kind.to_string(),
+            MobSprite {
+                idle,
+                walk: [w0, w1],
+                aspect: 1.0,
+            },
+        );
+    }
     let (Some(icon_core), Some(icon_part), Some(icon_bone)) = (
         g(atlas::ICON_CAPITAL_CORE),
         g(atlas::ICON_METAL_PART),
@@ -213,9 +256,7 @@ fn init_td_textures(atlas: Res<crate::slice::SlicedAtlas>, mut td: ResMut<TdText
     ) else {
         return;
     };
-    td.mob_scav = mob_scav;
-    td.mob_walker = mob_walker;
-    td.mob_husk = mob_husk;
+    td.mobs = mobs;
     td.capital = capital;
     td.barricade = barricade;
     td.arrow_tower = arrow_tower;
@@ -230,13 +271,13 @@ fn init_td_textures(atlas: Res<crate::slice::SlicedAtlas>, mut td: ResMut<TdText
     info!("TD textures ready (Spec 023)");
 }
 
-/// Placeholder tints — the icons stay readable with plain color blends.
-fn mob_texture(td: &TdTextures, kind: &str) -> (Handle<Image>, f32, Color) {
-    match kind {
-        "Scavenger" => (td.mob_scav.0.clone(), td.mob_scav.1, Color::srgb(0.72, 0.5, 0.95)),
-        "BoneWalker" => (td.mob_walker.0.clone(), td.mob_walker.1, Color::srgb(0.95, 0.93, 0.86)),
-        _ => (td.mob_husk.0.clone(), td.mob_husk.1, Color::srgb(0.85, 0.45, 0.2)),
-    }
+/// Sprite lookup by roster name; unknown rows fall back to the Slime set
+/// so a stale/renamed kind still renders something visible.
+fn mob_sprite_kind<'a>(td: &'a TdTextures, kind: &str) -> &'a MobSprite {
+    td.mobs
+        .get(kind)
+        .or_else(|| td.mobs.get("Slime"))
+        .expect("Slime is in the Spec 025 roster map")
 }
 
 fn structure_sprite(td: &TdTextures, kind: &str) -> (Handle<Image>, f32, Color) {
@@ -649,7 +690,17 @@ fn sync_td_entities(
     // ---- mobs ----
     for row in &snap.mobs {
         let Some(mob) = cfg::mob_kind(&row.kind) else { continue };
-        let (image, aspect, color) = mob_texture(&td_tex, &row.kind);
+        let ms = mob_sprite_kind(&td_tex, &row.kind);
+        let aspect = ms.aspect;
+        // Spec 025 §5: HP drop since the last snapshot arms a 0.15 s red
+        // flash; the animate system ticks the remainder down.
+        match tracker.last_hp.get(&row.mob_id) {
+            Some(prev) if row.hp < *prev => {
+                tracker.flash.insert(row.mob_id, 0.15);
+            }
+            _ => {}
+        }
+        tracker.last_hp.insert(row.mob_id, row.hp);
         let ratio = clamp_ratio(row.hp as f32, mob.hp as f32);
         let pos = Vec3::new(row.x, row.y, prop_depth(row.y) + 40.0);
         // Glide speed from the previous replicated position: server ticks run
@@ -667,13 +718,17 @@ fn sync_td_entities(
         );
         commands.spawn((
             TdMobMarker,
+            TdMobAnim {
+                mob_id: row.mob_id,
+                kind: row.kind.clone(),
+            },
             TdMove {
                 target: Vec2::new(pos.x, pos.y),
                 speed,
             },
             Sprite {
-                image,
-                color,
+                image: ms.idle.clone(),
+                color: Color::WHITE,
                 custom_size: Some(Vec2::new(1.8 * aspect, 1.8)),
                 ..default()
             },
@@ -707,6 +762,44 @@ fn glide_td_markers(time: Res<Time>, mut markers: Query<(&mut Transform, &mut Td
         }
         transform.translation.x += dx / dist * step;
         transform.translation.y += dy / dist * step;
+    }
+}
+
+/// Per-raider animation (Spec 025 §5): the idle frame when standing, one of
+/// two walk frames (0.25 s cadence) while gliding, and a 0.15 s red tint
+/// when the tracker says this mob just took a hit. HP bars are children
+/// without the marker component, so this query only reaches the body.
+fn animate_mobs(
+    time: Res<Time>,
+    td_tex: Res<TdTextures>,
+    mut tracker: ResMut<TdTracker>,
+    mut mobs: Query<(&TdMobAnim, &TdMove, &mut Sprite), With<TdMobMarker>>,
+) {
+    let dt = time.delta_secs();
+    tracker.flash.retain(|_, left| {
+        *left -= dt;
+        *left > 0.0
+    });
+    let walk_flip = (time.elapsed_secs() / 0.25) as usize % 2;
+    for (anim, mv, mut sprite) in &mut mobs {
+        let ms = mob_sprite_kind(&td_tex, &anim.kind);
+        let image = if mv.speed > 0.05 {
+            ms.walk[walk_flip].clone()
+        } else {
+            ms.idle.clone()
+        };
+        if sprite.image.id() != image.id() {
+            sprite.image = image;
+        }
+        let flash_on = tracker.flash.contains_key(&anim.mob_id);
+        let color = if flash_on {
+            Color::srgb(1.0, 0.3, 0.25)
+        } else {
+            Color::WHITE
+        };
+        if sprite.color != color {
+            sprite.color = color;
+        }
     }
 }
 
@@ -1897,6 +1990,34 @@ mod stat_tests {
         // No own structure in reach → nothing to transfer into.
         assert_eq!(choose_upgrade_target("me", HexCoord::new(9, 9), &rows), None);
         assert_eq!(choose_upgrade_target("nobody", me, &rows), None);
+    }
+
+    #[test]
+    fn every_roster_kind_has_a_sprite_map_entry() {
+        // The client atlas map covers the full server roster, byte-for-byte
+        // on the names (Spec 025 §5 — `Unknown` fallback covers stale rows).
+        let mut names: Vec<&str> = MOB_ATLAS.iter().map(|(name, ..)| *name).collect();
+        names.sort_unstable();
+        let mut roster: Vec<&str> = cfg::MOB_KINDS.iter().map(|k| k.name).collect();
+        roster.sort_unstable();
+        assert_eq!(names, roster);
+        // Rooted blooms animate idle-only: walk slots share the idle crop.
+        let (_, venom_idle, venom_w0, venom_w1) = mob_atlas_row("Venom Bloom");
+        assert_eq!(venom_idle, venom_w0);
+        assert_eq!(venom_w0, venom_w1);
+    }
+
+    #[test]
+    fn walk_flip_cadence_alternates_two_frames() {
+        // The animate system flips every 0.25 s: sample the cadence math.
+        for (elapsed, want) in [(0.0, 0), (0.24, 0), (0.25, 1), (0.49, 1), (0.52, 0), (1.0, 0)] {
+            assert_eq!((elapsed / 0.25) as usize % 2, want, "at {elapsed}s");
+        }
+    }
+
+    /// The MOB_ATLAS row for one kind name (test helper).
+    fn mob_atlas_row(name: &str) -> (&'static str, &'static str, &'static str, &'static str) {
+        *MOB_ATLAS.iter().find(|(n, ..)| *n == name).unwrap()
     }
 
     #[test]

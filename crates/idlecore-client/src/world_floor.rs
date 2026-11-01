@@ -225,7 +225,8 @@ fn grass_mature_aspect() -> f32 { 1.0 }
 fn tree_aspect() -> f32 { 38.0 / 34.0 }
 fn sapling_aspect() -> f32 { 1.0 }
 fn rock_aspect() -> f32 { 1.0 }
-fn log_aspect() -> f32 { 1.0 }
+// LOG: trunk-sheet cell is 32×16 → 2:1 lying log.
+fn log_aspect() -> f32 { 2.0 }
 fn bench_aspect() -> f32 { 1.0 }
 // Fruit trees (cropped mature tree: ~112x48)
 fn cherry_tree_aspect() -> f32 { 112.0 / 48.0 }
@@ -273,10 +274,30 @@ pub mod atlas {
     pub const ICON_HOE: &str = "icon_hoe";
     pub const ICON_WATERING_CAN: &str = "icon_watering_can";
     pub const ICON_CAR: &str = "icon_car";
-    // Tower-defense layer (Spec 023) — placeholder crops, tinted at render.
-    pub const TD_MOB_SCAV: &str = "td_mob_scav";
-    pub const TD_MOB_WALKER: &str = "td_mob_walker";
-    pub const TD_MOB_HUSK: &str = "td_mob_husk";
+    // Tower-defense layer (Spec 023) — capital/structures + icons.
+    // Spec 025: enemy roster crops (idle + 2 walk frames per kind).
+    pub const TD_SLIME: &str = "td_slime";
+    pub const TD_SLIME_W0: &str = "td_slime_w0";
+    pub const TD_SLIME_W1: &str = "td_slime_w1";
+    pub const TD_SLIME_BLUE: &str = "td_slime_blue";
+    pub const TD_SLIME_BLUE_W0: &str = "td_slime_blue_w0";
+    pub const TD_SLIME_BLUE_W1: &str = "td_slime_blue_w1";
+    pub const TD_BIG_SLIME: &str = "td_big_slime";
+    pub const TD_BIG_SLIME_W0: &str = "td_big_slime_w0";
+    pub const TD_BIG_SLIME_W1: &str = "td_big_slime_w1";
+    pub const TD_GOBLIN_SPEAR: &str = "td_goblin_spear";
+    pub const TD_GOBLIN_SPEAR_W0: &str = "td_goblin_spear_w0";
+    pub const TD_GOBLIN_SPEAR_W1: &str = "td_goblin_spear_w1";
+    pub const TD_GOBLIN_ARCHER: &str = "td_goblin_archer";
+    pub const TD_GOBLIN_ARCHER_W0: &str = "td_goblin_archer_w0";
+    pub const TD_GOBLIN_ARCHER_W1: &str = "td_goblin_archer_w1";
+    pub const TD_GOBLIN_BOMB: &str = "td_goblin_bomb";
+    pub const TD_GOBLIN_BOMB_W0: &str = "td_goblin_bomb_w0";
+    pub const TD_GOBLIN_BOMB_W1: &str = "td_goblin_bomb_w1";
+    pub const TD_MYCONID: &str = "td_myconid";
+    pub const TD_MYCONID_W0: &str = "td_myconid_w0";
+    pub const TD_MYCONID_W1: &str = "td_myconid_w1";
+    pub const TD_VENOM_BLOOM: &str = "td_venom_bloom";
     pub const TD_CAPITAL: &str = "td_capital";
     pub const TD_BARRICADE: &str = "td_barricade";
     pub const TD_ARROW_TOWER: &str = "td_arrow_tower";
@@ -432,7 +453,9 @@ pub fn enqueue_model_slices(
     // Rock: a single rounded ground stone (not a two-stone cluster).
     r(atlas::ROCK, "models/Objects/Props/Spring/Ground stones.png", 16, 16, 16, 16);
     // Log: a proper cut-log with bark rim (not the flat plank it used to be).
-    r(atlas::LOG, "models/Objects/Tree/TREE TRUNKS copiar.png", 0, 0, 16, 16);
+    // The trunk sheet is 128×32 = 32×16 cells; the log spans the full first
+    // cell (x4..29), so a 16×16 crop sliced it in half.
+    r(atlas::LOG, "models/Objects/Tree/TREE TRUNKS copiar.png", 0, 0, 32, 16);
     // Craft bench: the whole Workbench sprite.
     r(atlas::BENCH, "models/Objects/Work Benches/Workbench.png", 0, 0, 32, 32);
 
@@ -441,7 +464,7 @@ pub fn enqueue_model_slices(
     r(atlas::ICON_WOOD, "models/Icons/RPG icons/Extras/Wood.png", 0, 0, 32, 16);
     r(atlas::ICON_STONE, "models/Objects/Props/Spring/Ground stones.png", 0, 0, 16, 16);
     r(atlas::ICON_GRASS, "models/Crops/Summer/Wheat.png", 80, 0, 16, 16);
-    r(atlas::ICON_LOG, "models/Objects/Tree/TREE TRUNKS copiar.png", 0, 0, 16, 16);
+    r(atlas::ICON_LOG, "models/Objects/Tree/TREE TRUNKS copiar.png", 0, 0, 32, 16);
     r(atlas::ICON_PICKAXE, "models/Icons/RPG icons/Weapons and Armor/1. Wood/Pickaxe.png", 2, 2, 28, 13);
     r(atlas::ICON_AXE, "models/Icons/RPG icons/Weapons and Armor/1. Wood/Axe.png", 2, 0, 27, 15);
     r(atlas::ICON_SHOVEL, "models/Icons/RPG icons/Weapons and Armor/1. Wood/Shovel.png", 2, 2, 28, 13);
@@ -451,9 +474,30 @@ pub fn enqueue_model_slices(
 
     // ---- Tower-defense layer (Spec 023) — existing art, tinted at render ----
     // Mobs: first standing frame of each animation strip (16×16 cells).
-    r(atlas::TD_MOB_SCAV, "models/Animals/Forest/Frog/Frogs-Sheet.png", 0, 0, 16, 16);
-    r(atlas::TD_MOB_WALKER, "models/Animals/Forest/Crow/Crow.png", 0, 0, 16, 16);
-    r(atlas::TD_MOB_HUSK, "models/Animals/Farm/Ostrich/Ostrich Brown.png", 0, 0, 16, 16);
+    // Spec 025 enemy roster: idle frame 0 + two walk frames per kind from the
+    // shipped 32×32 Enemy sheets (Venom Bloom: rooted, 48×48, no walk anim).
+    r(atlas::TD_SLIME, "models/Enemy/Slimes/Green/Slime/Idle.png", 0, 0, 32, 32);
+    r(atlas::TD_SLIME_W0, "models/Enemy/Slimes/Green/Slime/Walk.png", 0, 0, 32, 32);
+    r(atlas::TD_SLIME_W1, "models/Enemy/Slimes/Green/Slime/Walk.png", 32, 0, 32, 32);
+    r(atlas::TD_SLIME_BLUE, "models/Enemy/Slimes/Blue/Slime/Idle.png", 0, 0, 32, 32);
+    r(atlas::TD_SLIME_BLUE_W0, "models/Enemy/Slimes/Blue/Slime/Walk.png", 0, 0, 32, 32);
+    r(atlas::TD_SLIME_BLUE_W1, "models/Enemy/Slimes/Blue/Slime/Walk.png", 32, 0, 32, 32);
+    r(atlas::TD_BIG_SLIME, "models/Enemy/Slimes/Golden/Big Slime/Idle.png", 0, 0, 32, 32);
+    r(atlas::TD_BIG_SLIME_W0, "models/Enemy/Slimes/Golden/Big Slime/Walk.png", 0, 0, 32, 32);
+    r(atlas::TD_BIG_SLIME_W1, "models/Enemy/Slimes/Golden/Big Slime/Walk.png", 32, 0, 32, 32);
+    r(atlas::TD_GOBLIN_SPEAR, "models/Enemy/Goblins/Spear Goblin/Idle.png", 0, 0, 32, 32);
+    r(atlas::TD_GOBLIN_SPEAR_W0, "models/Enemy/Goblins/Spear Goblin/Walk.png", 0, 0, 32, 32);
+    r(atlas::TD_GOBLIN_SPEAR_W1, "models/Enemy/Goblins/Spear Goblin/Walk.png", 32, 0, 32, 32);
+    r(atlas::TD_GOBLIN_ARCHER, "models/Enemy/Goblins/Archer Goblin/Idle.png", 0, 0, 32, 32);
+    r(atlas::TD_GOBLIN_ARCHER_W0, "models/Enemy/Goblins/Archer Goblin/Walk.png", 0, 0, 32, 32);
+    r(atlas::TD_GOBLIN_ARCHER_W1, "models/Enemy/Goblins/Archer Goblin/Walk.png", 32, 0, 32, 32);
+    r(atlas::TD_GOBLIN_BOMB, "models/Enemy/Goblins/Bomb Goblin/Idle.png", 0, 0, 32, 32);
+    r(atlas::TD_GOBLIN_BOMB_W0, "models/Enemy/Goblins/Bomb Goblin/Walk bomb.png", 0, 0, 32, 32);
+    r(atlas::TD_GOBLIN_BOMB_W1, "models/Enemy/Goblins/Bomb Goblin/Walk bomb.png", 32, 0, 32, 32);
+    r(atlas::TD_MYCONID, "models/Enemy/Myconid/Green/Idle.png", 0, 0, 32, 32);
+    r(atlas::TD_MYCONID_W0, "models/Enemy/Myconid/Green/Walk.png", 0, 0, 32, 32);
+    r(atlas::TD_MYCONID_W1, "models/Enemy/Myconid/Green/Walk.png", 32, 0, 32, 32);
+    r(atlas::TD_VENOM_BLOOM, "models/Enemy/Venom Bloom/Purple/idle.png", 0, 0, 48, 48);
     // Capital: one full house (128×112) — a city hall reads better than a well.
     r(atlas::TD_CAPITAL, "models/Objects/Exterior/Houses/1.png", 0, 0, 128, 112);
     // Barricade: the stone chunk sits mid-sheet on the fence border frame.

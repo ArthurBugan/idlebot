@@ -121,6 +121,30 @@ fn spawn_wave(ctx: &ReducerContext, capital: &Capital, now: u64) -> bool {
         .count();
     let size = cfg::wave_size(claimed, capital.level);
     let composition = cfg::wave_composition(size, capital.level);
+    // Boss cadence (Spec 025 §4): every 4th wave leads with a Big Slime.
+    let wave_index = ctx
+        .db
+        .raid_wave()
+        .wave_by_capital()
+        .filter(capital.capital_id)
+        .count() as u64;
+    let mut composition: Vec<&'static str> = composition;
+    if cfg::boss_wave(wave_index, capital.level) {
+        composition[0] = "Big Slime";
+    }
+    // Rooted blooms (Spec 025 §4) sprout inside the territory, at ≤2 hexes
+    // from their capital, instead of marching over the frontier.
+    let (cq0, cr0) = hex_coords_of(capital.hex_id);
+    let mut inner_spots: Vec<(i32, i32)> = ctx
+        .db
+        .territory()
+        .territory_by_owner()
+        .filter(&capital.owner)
+        .map(|t| hex_coords_of(t.hex_id))
+        .filter(|&(q, r)| hex_distance(q, r, cq0, cr0) <= 2)
+        .collect();
+    inner_spots.sort_unstable();
+    let mut inner_iter = inner_spots.into_iter();
     let borders = border_hexes(ctx, capital);
     if borders.is_empty() {
         return false;
@@ -142,7 +166,13 @@ fn spawn_wave(ctx: &ReducerContext, capital: &Capital, now: u64) -> bool {
     });
     for (i, kind_name) in composition.iter().enumerate() {
         let Some(kind) = cfg::mob_kind(kind_name) else { continue };
-        let (sq, sr) = points[i % points.len()];
+        // Rooted kinds spawn on an inner territory hex; everyone else on a
+        // pushed-out border point.
+        let (sq, sr) = if kind.step_interval_secs == 0 {
+            inner_iter.next().unwrap_or(points[i % points.len()])
+        } else {
+            points[i % points.len()]
+        };
         let (sx, sy) = hex_center(sq, sr);
         ctx.db.mob().insert(Mob {
             mob_id: 0,
@@ -277,24 +307,58 @@ pub fn raid_tick(ctx: &ReducerContext) {
 // 1s combat simulation
 // ---------------------------------------------------------------------------
 
-/// Pure engagement pick (Spec 023 §3.5, unit-testable): the nearest structure
-/// within melee adjacency wins the mob's attention; otherwise the capital
-/// when it is adjacent; otherwise both are None (keep marching).
+/// Pure engagement pick (Spec 023 §3.5 + Spec 025 §4, unit-testable): the
+/// nearest structure within the mob's attack `range` wins the mob's
+/// attention; otherwise the capital when within range; otherwise both are
+/// None (keep marching). Melee kinds pass 1, ranged kinds their reach.
 pub fn engagement_target(
     nearby: &[(u64, i32)], // (structure_id, hex distance from mob)
     capital_dist: i32,
+    range: i32,
 ) -> (Option<u64>, bool) {
     if let Some(&(sid, _)) = nearby
         .iter()
-        .filter(|(_, d)| *d <= 1)
+        .filter(|(_, d)| *d <= range)
         .min_by_key(|&(id, d)| (d, id))
     {
         return (Some(sid), false);
     }
-    if capital_dist <= 1 {
+    if capital_dist <= range {
         return (None, true);
     }
     (None, false)
+}
+
+/// Pure sapper damage (Spec 025 §4): a wall-bonus kind pays `wall_dps` extra
+/// while chewing a wall structure (the chest counts as a wall too? No — the
+/// `is_wall` flag gates it; only barricades are chew-through targets).
+pub fn sapper_dps(base: u32, wall_dps: u32, target_is_wall: bool) -> u32 {
+    if target_is_wall {
+        base + wall_dps
+    } else {
+        base
+    }
+}
+
+/// Pure splash pick (Spec 025 §4): every OTHER structure within 1 hex of the
+/// attacker (deterministic ascending structure-id order).
+pub fn splash_targets(
+    target: u64,
+    nearby: &[(u64, i32)], // (structure_id, hex distance from the attacker)
+) -> Vec<u64> {
+    let mut hits: Vec<u64> = nearby
+        .iter()
+        .filter(|(id, d)| *id != target && *d <= 1)
+        .map(|(id, _)| *id)
+        .collect();
+    hits.sort_unstable();
+    hits
+}
+
+/// Pure attack-damage helper: `kind.dps` (+ wall bonus when the victim is a
+/// wall), i.e. `sapper_dps` specialized on a `MobKind`.
+pub fn engagement_dps(kind: &cfg::MobKind, target_is_wall: bool) -> u32 {
+    sapper_dps(kind.dps, kind.wall_dps, target_is_wall)
 }
 
 /// Every 1 second: tower fire, mob march + melee, damage bookkeeping, wave
@@ -344,9 +408,15 @@ pub fn tick(ctx: &ReducerContext) {
     // ---- Mob melee + marching (skip mobs dead this tick) ----
     let mut struct_damage: HashMap<u64, u32> = HashMap::new();
     let mut capital_damage: HashMap<u64, u32> = HashMap::new();
-    let tower_hexes: HashMap<u64, (i32, i32)> = towers_all
+    let tower_hexes: HashMap<u64, (i32, i32, bool)> = towers_all
         .iter()
-        .map(|s| (s.structure_id, hex_coords_of(s.hex_id)))
+        .map(|s| {
+            let (q, r) = hex_coords_of(s.hex_id);
+            (
+                s.structure_id,
+                (q, r, cfg::defense_kind(&s.kind).map(|k| k.is_wall).unwrap_or(false)),
+            )
+        })
         .collect();
 
     for mob in mob_rows.iter() {
@@ -370,15 +440,28 @@ pub fn tick(ctx: &ReducerContext) {
 
         let nearby: Vec<(u64, i32)> = tower_hexes
             .iter()
-            .map(|(sid, hy)| (*sid, hex_distance(mob.hex_q, mob.hex_r, hy.0, hy.1)))
+            .map(|(sid, (hq, hr, _))| (*sid, hex_distance(mob.hex_q, mob.hex_r, *hq, *hr)))
             .collect();
-        let (target_structure, attacking_capital) = engagement_target(&nearby, capital_dist);
+        let (target_structure, attacking_capital) =
+            engagement_target(&nearby, capital_dist, kind.range_hexes);
 
         if let Some(sid) = target_structure {
-            *struct_damage.entry(sid).or_insert(0) += kind.dps;
+            // Sapper (Spec 025 §4): +wall_dps while chewing a wall.
+            let is_wall = tower_hexes.get(&sid).is_some_and(|(_, _, w)| *w);
+            let dmg = engagement_dps(kind, is_wall);
+            *struct_damage.entry(sid).or_insert(0) += dmg;
+            // Bomb (Spec 025 §4): splash half dps onto every OTHER structure
+            // adjacent to the mob.
+            if kind.splash {
+                let splash = (kind.dps / 2).max(1);
+                for other in splash_targets(sid, &nearby) {
+                    *struct_damage.entry(other).or_insert(0) += splash;
+                }
+            }
         } else if attacking_capital {
             *capital_damage.entry(capital.capital_id).or_insert(0) += kind.dps;
-        } else {
+        } else if kind.step_interval_secs > 0 {
+            // Rooted kinds (Venom Bloom, step 0) never march.
             march(ctx, mob, kind.step_interval_secs, cq, cr);
         }
     }
@@ -552,7 +635,7 @@ mod tests {
         // A wall one hex away stops the mob even when the capital is
         // adjacent — walls are the shield, priority structure > capital.
         let nearby = [(7u64, 1)];
-        let (target, capital) = engagement_target(&nearby, 1);
+        let (target, capital) = engagement_target(&nearby, 1, 1);
         assert_eq!(target, Some(7));
         assert!(!capital);
     }
@@ -561,35 +644,74 @@ mod tests {
     fn mobs_only_melee_structures_within_one_hex() {
         // A tower 2 hexes away is out of melee reach: keep marching.
         let nearby = [(7u64, 2)];
-        let (target, capital) = engagement_target(&nearby, 3);
+        let (target, capital) = engagement_target(&nearby, 3, 1);
         assert_eq!(target, None);
         assert!(!capital, "capital 3 hexes away is not reachable");
     }
 
     #[test]
+    fn archers_hit_structures_their_measly_melee_kind_would_miss() {
+        // Same stand-off (2 hexes): melee kind marches on, the ranged one
+        // (Archer Goblin, reach 3) starts shooting.
+        let nearby = [(7u64, 2)];
+        assert_eq!(engagement_target(&nearby, 3, 1).0, None);
+        let archer = cfg::mob_kind("Archer Goblin").unwrap();
+        let (target, _) = engagement_target(&nearby, 3, archer.range_hexes);
+        assert_eq!(target, Some(7), "ranged mobs open fire without closing");
+        // Reach 3 still misses a target 4 hexes away.
+        let far = [(7u64, 4)];
+        assert_eq!(engagement_target(&far, 9, archer.range_hexes).0, None);
+    }
+
+    #[test]
     fn mobs_hit_the_capital_when_adjacent_and_unobstructed() {
-        let (target, capital) = engagement_target(&NO_STRUCTS, 1);
+        let (target, capital) = engagement_target(&NO_STRUCTS, 1, 1);
         assert_eq!(target, None);
         assert!(capital);
         // Same hex counts as adjacency (distance 0).
-        let (_, capital0) = engagement_target(&NO_STRUCTS, 0);
+        let (_, capital0) = engagement_target(&NO_STRUCTS, 0, 1);
         assert!(capital0);
         // Nothing in range → both None (keep marching).
-        let (t, c) = engagement_target(&NO_STRUCTS, 4);
+        let (t, c) = engagement_target(&NO_STRUCTS, 4, 1);
         assert_eq!(t, None);
         assert!(!c);
+        // A ranged mob reaches the capital from its stand-off too.
+        let (_, capital_far) = engagement_target(&NO_STRUCTS, 2, 3);
+        assert!(capital_far, "archers hit the capital from 2 hexes out");
     }
 
     #[test]
     fn ties_pick_the_deterministic_structure() {
         // Two walls both one hex away: the lower id wins, always.
         let nearby = [(99u64, 1), (42u64, 1)];
-        let (target, _) = engagement_target(&nearby, 1);
+        let (target, _) = engagement_target(&nearby, 1, 1);
         assert_eq!(target, Some(42));
         // A strictly closer structure beats a lower id at greater distance.
         let near2 = [(1u64, 0), (2u64, 1)];
-        let (target2, _) = engagement_target(&near2, 1);
+        let (target2, _) = engagement_target(&near2, 1, 1);
         assert_eq!(target2, Some(1));
+    }
+
+    #[test]
+    fn sapper_bonus_only_applies_to_walls() {
+        let spear = cfg::mob_kind("Spear Goblin").unwrap();
+        assert_eq!(engagement_dps(spear, true), spear.dps + spear.wall_dps);
+        assert_eq!(engagement_dps(spear, false), spear.dps, "towers pay full");
+        // Non-sapper kinds never get the wall bonus.
+        let slime = cfg::mob_kind("Slime").unwrap();
+        assert_eq!(engagement_dps(slime, true), slime.dps);
+    }
+
+    #[test]
+    fn splash_hits_every_other_adjacent_structure() {
+        // The bomb (10 dps) hits its target at full value; neighbors take 5.
+        let bomb = cfg::mob_kind("Bomb Goblin").unwrap();
+        let nearby = [(42u64, 0), (7u64, 1), (99u64, 1), (100u64, 2)];
+        let target = engagement_target(&nearby, 3, bomb.range_hexes).0.unwrap();
+        assert_eq!(target, 42);
+        assert_eq!(splash_targets(target, &nearby), vec![7, 99], "42 excluded, 100 out of reach");
+        // Self-targeting waves only splash nothing when alone.
+        assert_eq!(splash_targets(42, &[(42u64, 0)]), Vec::<u64>::new());
     }
 
     #[test]

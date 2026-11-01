@@ -8,6 +8,7 @@
 pub const ITEM_CAPITAL_CORE: &str = "CapitalCore";
 pub const ITEM_METAL_PART: &str = "MetalPart";
 pub const ITEM_BONE: &str = "Bone";
+pub const ITEM_SLIME_GEL: &str = "SlimeGel";
 pub const ITEM_BONE_BARRICADE: &str = "BoneBarricade";
 pub const ITEM_ARROW_TOWER: &str = "ArrowTower";
 pub const ITEM_BALLISTA: &str = "Ballista";
@@ -151,6 +152,14 @@ pub struct MobKind {
     pub step_interval_secs: u32,
     /// Minimum capital level before this kind joins waves.
     pub min_capital_level: u32,
+    /// Attack reach: melee kinds need adjacency (1); ranged kinds hit from
+    /// up to this many hexes away without closing (Spec 025 §3).
+    pub range_hexes: i32,
+    /// Bonus dps vs wall structures (sapper — Spear Goblin).
+    pub wall_dps: u32,
+    /// Splash damage: main target takes full dps, every OTHER structure
+    /// within 1 hex of the mob takes half (Bomb Goblin).
+    pub splash: bool,
     /// (drop item, chance %) — credited to defending player on kill.
     pub drop_item: &'static str,
     /// Drop quantity is `drop_qty` when the chance-% roll hits.
@@ -158,36 +167,114 @@ pub struct MobKind {
     pub drop_qty: u32,
 }
 
-pub const MOB_KINDS: [MobKind; 3] = [
+/// Spec 025 §3 roster — real enemy art, distinct mechanics. March rule and
+/// 1s combat tick stay from Spec 023; new knobs only add behavior.
+pub const MOB_KINDS: [MobKind; 8] = [
     MobKind {
-        name: "Scavenger",
+        name: "Slime",
+        hp: 22,
+        dps: 3,
+        step_interval_secs: 2,
+        min_capital_level: 1,
+        range_hexes: 1,
+        wall_dps: 0,
+        splash: false,
+        drop_item: ITEM_SLIME_GEL,
+        drop_chance_pct: 35,
+        drop_qty: 1,
+    },
+    MobKind {
+        name: "Blue Slime",
         hp: 30,
         dps: 4,
         step_interval_secs: 2,
         min_capital_level: 1,
-        drop_item: ITEM_BONE,
-        drop_chance_pct: 40,
+        range_hexes: 1,
+        wall_dps: 0,
+        splash: false,
+        drop_item: ITEM_SLIME_GEL,
+        drop_chance_pct: 55,
         drop_qty: 1,
     },
     MobKind {
-        name: "BoneWalker",
-        hp: 80,
-        dps: 8,
+        name: "Spear Goblin",
+        hp: 55,
+        dps: 7,
         step_interval_secs: 3,
         min_capital_level: 2,
+        range_hexes: 1,
+        wall_dps: 5,
+        splash: false,
         drop_item: ITEM_BONE,
-        drop_chance_pct: 90,
+        drop_chance_pct: 60,
+        drop_qty: 1,
+    },
+    MobKind {
+        name: "Archer Goblin",
+        hp: 40,
+        dps: 6,
+        step_interval_secs: 2,
+        min_capital_level: 2,
+        range_hexes: 3,
+        wall_dps: 0,
+        splash: false,
+        drop_item: ITEM_BONE,
+        drop_chance_pct: 40,
         drop_qty: 2,
     },
     MobKind {
-        name: "RustHusk",
-        hp: 140,
-        dps: 12,
+        name: "Myconid",
+        hp: 70,
+        dps: 5,
         step_interval_secs: 4,
         min_capital_level: 3,
+        range_hexes: 2,
+        wall_dps: 0,
+        splash: false,
+        drop_item: ITEM_SLIME_GEL,
+        drop_chance_pct: 45,
+        drop_qty: 2,
+    },
+    MobKind {
+        name: "Bomb Goblin",
+        hp: 45,
+        dps: 10,
+        step_interval_secs: 2,
+        min_capital_level: 3,
+        range_hexes: 2,
+        wall_dps: 0,
+        splash: true,
         drop_item: ITEM_METAL_PART,
         drop_chance_pct: 50,
         drop_qty: 1,
+    },
+    // Rooted turret: never marches — spawns inside the territory ring and
+    // spits from up to 3 hexes.
+    MobKind {
+        name: "Venom Bloom",
+        hp: 90,
+        dps: 8,
+        step_interval_secs: 0,
+        min_capital_level: 4,
+        range_hexes: 3,
+        wall_dps: 0,
+        splash: false,
+        drop_item: ITEM_SLIME_GEL,
+        drop_chance_pct: 80,
+        drop_qty: 3,
+    },
+    MobKind {
+        name: "Big Slime",
+        hp: 260,
+        dps: 14,
+        step_interval_secs: 5,
+        min_capital_level: 4,
+        range_hexes: 1,
+        wall_dps: 0,
+        splash: false,
+        drop_item: ITEM_SLIME_GEL,
+        drop_chance_pct: 100,
+        drop_qty: 5,
     },
 ];
 
@@ -223,6 +310,12 @@ pub fn wave_size(claimed_hexes: usize, capital_level: u32) -> usize {
 pub fn wave_composition(size: usize, capital_level: u32) -> Vec<&'static str> {
     let kinds = mob_kinds_for_level(capital_level);
     (0..size).map(|i| kinds[i % kinds.len()].name).collect()
+}
+
+/// Boss cadence (Spec 025 §4): every 4th wave (0-based index 3, 7, …) against
+/// a capital of L4+ leads with a Big Slime. Deterministic, no RNG.
+pub fn boss_wave(wave_index: u64, capital_level: u32) -> bool {
+    capital_level >= 4 && wave_index % 4 == 3
 }
 
 // ---------------------------------------------------------------------------
@@ -327,13 +420,58 @@ mod tests {
     #[test]
     fn mob_kinds_unlock_by_capital_level() {
         let l1 = mob_kinds_for_level(1);
-        assert_eq!(l1.len(), 1);
-        assert_eq!(l1[0].name, "Scavenger");
-        let l2 = mob_kinds_for_level(2);
-        assert_eq!(l2.len(), 2);
-        assert!(mob_kinds_for_level(3).len() == 3);
-        assert!(mob_kind("Scavenger").is_some());
+        assert_eq!(l1.len(), 2, "both slimes open the roster (Spec 025 §3)");
+        assert_eq!(l1[0].name, "Slime");
+        assert_eq!(l1[1].name, "Blue Slime");
+        assert_eq!(mob_kinds_for_level(2).len(), 4, "+ Spear/Archer");
+        assert_eq!(mob_kinds_for_level(3).len(), 6, "+ Myconid/Bomb");
+        assert_eq!(mob_kinds_for_level(4).len(), 8, "+ rooted bloom/boss");
+        assert!(mob_kind("Slime").is_some());
+        assert!(mob_kind("Big Slime").is_some());
+        assert!(mob_kind("Scavenger").is_none(), "Spec 023 roster retired");
         assert!(mob_kind("Skeleton").is_none(), "no invented kinds");
+    }
+
+    #[test]
+    fn mob_roster_mechanic_knobs_are_sane() {
+        for kind in &MOB_KINDS {
+            // Melee kinds reach 1 hex; ranged kinds reach more; nothing has
+            // zero reach (a rooted bloom still bites at ring 3).
+            assert!(
+                kind.range_hexes >= 1,
+                "{} must be able to hit something",
+                kind.name
+            );
+            assert!(
+                kind.step_interval_secs > 0 || kind.name == "Venom Bloom",
+                "only the rooted bloom never marches, got {} step={}",
+                kind.name,
+                kind.step_interval_secs
+            );
+            assert!(
+                kind.drop_chance_pct <= 100 && kind.drop_qty >= 1,
+                "{} drop roll unsafe",
+                kind.name
+            );
+        }
+        // Sapper + splash are unique to their goblins.
+        assert_eq!(mob_kind("Spear Goblin").unwrap().wall_dps, 5);
+        assert!(MOB_KINDS.iter().filter(|k| k.wall_dps > 0).count() == 1);
+        assert!(mob_kind("Bomb Goblin").unwrap().splash);
+        assert!(MOB_KINDS.iter().filter(|k| k.splash).count() == 1);
+        // The boss is the big stat-stick, rarely: highest hp.
+        let boss = mob_kind("Big Slime").unwrap();
+        assert!(MOB_KINDS.iter().all(|k| k.hp <= boss.hp));
+    }
+
+    #[test]
+    fn boss_cadence_is_every_fourth_wave_from_l4() {
+        assert!(!boss_wave(0, 4));
+        assert!(!boss_wave(1, 4));
+        assert!(!boss_wave(2, 4));
+        assert!(boss_wave(3, 4), "4th wave indexes 3/8/12…");
+        assert!(boss_wave(7, 4));
+        assert!(!boss_wave(3, 3), "pre-L4 capitals never field the boss");
     }
 
     #[test]
@@ -354,11 +492,13 @@ mod tests {
 
     #[test]
     fn wave_composition_unlocks_kinds_in_order() {
-        assert_eq!(wave_composition(2, 1), ["Scavenger", "Scavenger"]);
+        assert_eq!(wave_composition(2, 1), ["Slime", "Blue Slime"]);
         let mixed = wave_composition(4, 2);
-        assert!(mixed.contains(&"BoneWalker"), "{mixed:?}");
+        assert!(mixed.contains(&"Spear Goblin"), "{mixed:?}");
         let all = wave_composition(6, 3);
-        assert!(all.contains(&"RustHusk"), "{all:?}");
+        assert!(all.contains(&"Myconid"), "{all:?}");
+        let top = wave_composition(8, 4);
+        assert!(top.contains(&"Venom Bloom"), "{top:?}");
     }
 
     #[test]
@@ -430,13 +570,15 @@ mod tests {
 
     #[test]
     fn damage_downs_mobs_within_expected_ticks() {
-        // Arrow tower (10 dps) kills a Scavenger (30 hp) in 3 ticks.
-        let scav = mob_kind("Scavenger").unwrap();
+        // Arrow tower (10 dps) kills a Slime (22 hp) in 3 ticks.
+        let slime = mob_kind("Slime").unwrap();
         let tower = defense_kind("ArrowTower").unwrap();
-        assert_eq!(scav.hp.div_ceil(tower.dps), 3);
-        // Ballista (22) drops a RustHusk (140) in 7 ticks.
-        let husk = mob_kind("RustHusk").unwrap();
+        assert_eq!(slime.hp.div_ceil(tower.dps), 3);
+        // Ballista (22) drops a Myconid (70) in 4 ticks.
+        let myconid = mob_kind("Myconid").unwrap();
         let ballista = defense_kind("Ballista").unwrap();
-        assert_eq!(husk.hp.div_ceil(ballista.dps), 7);
+        assert_eq!(myconid.hp.div_ceil(ballista.dps), 4);
+        // The boss (260) takes 10 ballista shots + change — worth a siege.
+        assert_eq!(mob_kind("Big Slime").unwrap().hp / ballista.dps, 11);
     }
 }
