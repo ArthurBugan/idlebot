@@ -557,9 +557,10 @@ mod tests {
     }
 
     #[test]
-    fn run_frame_wraps_at_six() {
+    fn run_frame_wraps_at_eight() {
+        // RUN_FRAMES = 8: advance at 7 wraps to 0, never mid-run.
         assert_eq!(step_run_frame(0), 1);
-        assert_eq!(step_run_frame(5), 0);
+        assert_eq!(step_run_frame(7), 0);
     }
 
     #[test]
