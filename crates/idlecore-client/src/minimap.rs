@@ -183,6 +183,14 @@ fn estimated_hex_count(mm_size: f32, pixel_scale: f32) -> usize {
     (std::f32::consts::PI * (half_w / hex_w) * (half_h / hex_h)) as usize
 }
 
+/// Image row → the map-space y it samples. Bevy `Image` row 0 paints the
+/// TOP of the node and map space is y-down, so both grow together — no
+/// additional flip. A mistake here mirrors the zoomed-out map N/S (the
+/// "top and bottom inverted" report).
+fn merged_row_y(ry: u32, step: f32) -> f32 {
+    (ry as f32 + 0.5) * step
+}
+
 /// Paint the zoomed-out map: one texture covering the whole minimap box,
 /// refreshed only on key change (~10 Hz max), sampling the streamed chunk
 /// cells through the same pixel↔world math as the tiles. Fog semantics:
@@ -210,10 +218,12 @@ fn render_merged_map(
     let mut pixels = vec![0u8; (grid * grid * 4) as usize];
     for ry in 0..grid {
         for rx in 0..grid {
-            // Sample each grid cell's center; image row 0 = the map's top
-            // edge (bevy Image data is bottom-up, so flip y).
+            // Sample each grid cell's center. Bevy Image row 0 paints the
+            // TOP of the node, so row ry samples map y = ry·step (map space
+            // is y-down — the same convention the tile nodes and markers
+            // share). A flip here mirrors the whole zoomed-out map N/S.
             let sample_x = (rx as f32 + 0.5) * step;
-            let sample_y = mm - (ry as f32 + 0.5) * step;
+            let sample_y = merged_row_y(ry, step);
             let (world_x, world_y) = map_pixel_to_world(
                 (sample_x, sample_y),
                 (player_pos.x, player_pos.y),
@@ -1812,6 +1822,35 @@ pub fn render_selection_marker(
 #[cfg(test)]
 mod tests_zoom_budget {
     use super::*;
+
+    #[test]
+    fn merged_rows_sample_top_down_in_one_direction() {
+        // Row 0 samples the very TOP of the map box; the LAST row samples
+        // just above the bottom. Every row increases downward — a flip
+        // here mirrored the whole zoomed-out map N/S (fixed once).
+        assert!(merged_row_y(0, 2.0) < merged_row_y(1, 2.0));
+        assert!((merged_row_y(0, 2.0) - 1.0).abs() < 1e-4);
+        let last = merged_row_y(99, 2.0);
+        assert!(last <= 200.0 && last > 198.0);
+    }
+
+    #[test]
+    fn merged_map_world_north_is_map_top() {
+        // World N of the player (y greater) must land ABOVE the center of
+        // the map: mm-space y (down-positive) shrinks below mm/2, and the
+        // image row for that map y (merged_row_y) sits in the image's top
+        // half. With the old bottom-first row order this was inverted.
+        let player = (0.0_f32, 0.0);
+        let scale: f32 = MinimapZoom::World.pixel_scale();
+        let mm = 200.0_f32;
+        let (map_x, map_y) =
+            idlecore_core::minimap::world_to_map_pixel((0.0, 200.0), player, scale, mm / 2.0, 0.0);
+        assert_eq!(map_x, mm / 2.0, "straight north stays on the centerline");
+        assert!(map_y < mm / 2.0, "north paints above center: {map_y}");
+        // The bitmap row that paints map_y: row = map_y / step - 0.5.
+        let row = (map_y - 0.5) / 2.0;
+        assert!(row < mm / 2.0 / 2.0, "north row sits in the image top half");
+    }
 
     #[test]
     fn near_zooms_keep_tiles_far_zooms_go_bitmap() {
