@@ -4,13 +4,13 @@
 //! at 1:100 scale: world bounds, compact cell data, and deterministic
 //! generation from a world seed + hex coordinate.
 
-use crate::hex::HexCoord;
+use crate::grid::TileCoord;
 use crate::terrain::TerrainType;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 // ============================================================================
-// 6. Hex Cell Data (companion to HexCoord)
+// 6. Hex Cell Data (companion to TileCoord)
 // ============================================================================
 
 /// Water classification for a hex cell.
@@ -40,12 +40,12 @@ impl WaterClass {
 /// This is the primary data structure for the world grid. It is designed
 /// to be cheaply stored and transmitted. Terrain details, biome info,
 /// and other attributes are generated deterministically from `WorldSeed`
-/// + `HexCoord` so that most cells never need to exist in memory.
+/// + `TileCoord` so that most cells never need to exist in memory.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct HexCell {
-    pub coord: HexCoord,
-    pub q: i32,
-    pub r: i32,
+pub struct WorldCell {
+    pub coord: TileCoord,
+    pub x: i32,
+    pub y: i32,
     pub elevation: f32,
     pub terrain: TerrainType,
     pub water: WaterClass,
@@ -56,7 +56,7 @@ pub struct HexCell {
     pub seed: u64,
 }
 
-impl HexCell {
+impl WorldCell {
     /// Generate the compact `hex_id` for a coordinate pair (without offset).
     pub fn id_of(q: i32, r: i32) -> u64 {
         let q_u32 = q as u32;
@@ -110,27 +110,32 @@ impl Default for WorldGenConfig {
 }
 
 impl WorldGenConfig {
-    /// Hex radius in world units. Aligned with the server hex radius (10 u),
-    /// so client and server share a single world scale.
+    /// Legacy hex radius in world units — kept for the 1:100 Earth raster
+    /// scale baseline; the gameplay grid uses [`Self::TILE_SIZE`].
     pub const HEX_SIZE: f32 = 10.0;
 
-    /// The chunk size in hexes.
+    /// Square tile edge length in world units (the old hex footprint:
+    /// √3 · HEX_SIZE ≈ 17.32), so every old "one hex step" measures
+    /// "one tile edge" now.
+    pub const TILE_SIZE: f32 = 17.320508075688772;
+
+    /// The chunk size in tiles.
     pub const CHUNK_SIZE: i32 = 32;
 
     /// Generate a single hex cell deterministically from seed + coordinate.
     ///
     /// This is the core function of the world generator. Given the same
     /// `WorldGenConfig` and `hex_coord`, it will always produce the same
-    /// `HexCell`.
-    pub fn generate_hex(&self, q: i32, r: i32) -> HexCell {
-        let coord = HexCoord::new(q, r);
+    /// `WorldCell`.
+    pub fn generate_cell(&self, q: i32, r: i32) -> WorldCell {
+        let coord = TileCoord::new(q, r);
         let seed = self.local_seed(q, r);
 
         // --- Real-Earth replica (1:100) ---
         // Inside the mapped planet bounds the actual Earth data overrides
         // procedural generation entirely; outside them (shouldn't happen in
         // play) the seeded generator still produces a valid cell.
-        let (wx, wy) = crate::hex_grid::HexGrid::axial_to_world(q, r, Self::HEX_SIZE);
+        let (wx, wy) = crate::grid::WorldGrid::tile_center(q, r, Self::TILE_SIZE);
         if let Some(biome) = crate::earth::biome_at(wx, wy) {
             return self.earth_cell(coord, q, r, biome, seed);
         }
@@ -151,10 +156,10 @@ impl WorldGenConfig {
         // --- Flags ---
         let flags = self.flags(terrain, elevation, moisture);
 
-        HexCell {
+        WorldCell {
             coord,
-            q,
-            r,
+            x: q,
+            y: r,
             elevation,
             terrain,
             water,
@@ -167,17 +172,17 @@ impl WorldGenConfig {
     }
 
     /// Build a cell directly from Earth replica data (see [`crate::earth`]).
-    fn earth_cell(&self, coord: HexCoord, q: i32, r: i32, biome: crate::earth::Biome, seed: u64) -> HexCell {
+    fn earth_cell(&self, coord: TileCoord, q: i32, r: i32, biome: crate::earth::Biome, seed: u64) -> WorldCell {
         let terrain = biome.terrain();
         let water = biome.water_class();
         let elevation = biome.elevation();
         let moisture = biome.moisture();
-        let (wx, wy) = crate::hex_grid::HexGrid::axial_to_world(q, r, Self::HEX_SIZE);
+        let (wx, wy) = crate::grid::WorldGrid::tile_center(q, r, Self::TILE_SIZE);
         let temperature = crate::earth::temperature_at(wx, wy);
-        HexCell {
+        WorldCell {
             coord,
-            q,
-            r,
+            x: q,
+            y: r,
             elevation,
             terrain,
             water,
@@ -289,10 +294,10 @@ impl WorldGenConfig {
     fn flags(&self, terrain: TerrainType, elevation: f32, moisture: f32) -> u8 {
         let mut f = 0u8;
         if terrain == TerrainType::Mountain && elevation > 0.85 {
-            f |= HexCell::FLAG_RESOURCE;
+            f |= WorldCell::FLAG_RESOURCE;
         }
         if terrain == TerrainType::Desert && moisture < 0.1 {
-            f |= HexCell::FLAG_RESOURCE;
+            f |= WorldCell::FLAG_RESOURCE;
         }
         f
     }
@@ -394,18 +399,18 @@ impl WorldBounds {
     }
 
     /// Check if a coordinate is within the world bounds.
-    pub fn contains(&self, coord: HexCoord) -> bool {
-        coord.q >= self.min_q
-            && coord.q <= self.max_q
-            && coord.r >= self.min_r
-            && coord.r <= self.max_r
+    pub fn contains(&self, coord: TileCoord) -> bool {
+        coord.x >= self.min_q
+            && coord.x <= self.max_q
+            && coord.y >= self.min_r
+            && coord.y <= self.max_r
     }
 
     /// Clamp a coordinate to within the world bounds.
-    pub fn clamp_coord(&self, q: i32, r: i32) -> HexCoord {
+    pub fn clamp_coord(&self, q: i32, r: i32) -> TileCoord {
         let q = q.clamp(self.min_q, self.max_q);
         let r = r.clamp(self.min_r, self.max_r);
-        HexCoord::new(q, r)
+        TileCoord::new(q, r)
     }
 
     /// Width in hexes along q axis.
@@ -422,7 +427,7 @@ impl WorldBounds {
     pub fn center(&self, hex_radius: f32) -> (f32, f32) {
         let cq = (self.min_q + self.max_q) / 2;
         let cr = (self.min_r + self.max_r) / 2;
-        HexCoord::new(cq, cr).to_pixel(hex_radius)
+        TileCoord::new(cq, cr).to_pixel(hex_radius)
     }
 }
 
@@ -447,7 +452,7 @@ pub enum ChunkState {
 pub struct Chunk {
     pub coord: (i32, i32),
     pub state: ChunkState,
-    pub cells: Vec<HexCell>,
+    pub cells: Vec<WorldCell>,
 }
 
 /// A player-centered chunk cache that only materializes nearby areas.
@@ -534,7 +539,7 @@ impl ChunkManager {
                 cells: Vec::new(),
             };
             for hex in chunk_hexes(cq, cr, self.chunk_size) {
-                chunk.cells.push(config.generate_hex(hex.q, hex.r));
+                chunk.cells.push(config.generate_cell(hex.x, hex.y));
             }
             chunk.state = ChunkState::Active;
             self.chunks.insert((cq, cr), chunk);
@@ -548,7 +553,7 @@ impl ChunkManager {
     }
 
     /// Get a cell by hex coordinate from the cache, if loaded.
-    pub fn get_cell(&self, q: i32, r: i32) -> Option<&HexCell> {
+    pub fn get_cell(&self, q: i32, r: i32) -> Option<&WorldCell> {
         let (cq, cr) = hex_to_chunk_coord(q, r, self.chunk_size);
         let chunk = self.chunks.get(&(cq, cr))?;
         let start_q = cq * self.chunk_size;
@@ -612,7 +617,7 @@ impl Segment {
                     for dq in (0..WorldGenConfig::CHUNK_SIZE).step_by(step) {
                         let q = cq * WorldGenConfig::CHUNK_SIZE + dq;
                         let r = cr * WorldGenConfig::CHUNK_SIZE + dr;
-                        let cell = config.generate_hex(q, r);
+                        let cell = config.generate_cell(q, r);
                         sum_elev += cell.elevation as f64;
                         min_elev = min_elev.min(cell.elevation);
                         max_elev = max_elev.max(cell.elevation);
@@ -639,7 +644,7 @@ impl Segment {
             chunks_per_side,
             dominant_biome,
             average_elevation: if total > 0 { (sum_elev / total as f64) as f32 } else { 0.0 },
-            min_elevation: if water > 0 { min_elev.min(WorldGenConfig::HEX_SIZE * 0.4) } else { min_elev },
+            min_elevation: if water > 0 { min_elev.min(WorldGenConfig::TILE_SIZE * 0.4) } else { min_elev },
             max_elevation: max_elev,
             water_percentage: if total > 0 { water as f32 / total as f32 } else { 0.0 },
             generation_seed: config.seed,
@@ -680,7 +685,7 @@ pub fn terrain_movement_cost(terrain: TerrainType) -> f32 {
 }
 
 /// Whether a cell is traverseable at all.
-pub fn is_traverseable(cell: &HexCell) -> bool {
+pub fn is_traverseable(cell: &WorldCell) -> bool {
     if cell.water.is_water() {
         return false;
     }
@@ -688,7 +693,7 @@ pub fn is_traverseable(cell: &HexCell) -> bool {
 }
 
 /// Compute the movement cost between two adjacent cells.
-pub fn movement_cost_between(a: &HexCell, b: &HexCell) -> f32 {
+pub fn movement_cost_between(a: &WorldCell, b: &WorldCell) -> f32 {
     let ca = terrain_movement_cost(a.terrain);
     let cb = terrain_movement_cost(b.terrain);
     if ca.is_infinite() || cb.is_infinite() {
@@ -716,8 +721,8 @@ where
 
     #[derive(PartialEq)]
     struct Node {
-        q: i32,
-        r: i32,
+        x: i32,
+        y: i32,
         f: f32,
         g: f32,
     }
@@ -750,8 +755,8 @@ where
 
 g_scores.insert(from, 0.0);
     open.push(Node {
-        q: from.0,
-        r: from.1,
+        x: from.0,
+        y: from.1,
         f: heuristic(from.0, from.1),
         g: 0.0,
     });
@@ -761,13 +766,13 @@ g_scores.insert(from, 0.0);
     ];
 
     while let Some(current) = open.pop() {
-        if closed.contains(&(current.q, current.r)) {
+        if closed.contains(&(current.x, current.y)) {
             continue;
         }
-        if (current.q, current.r) == to {
+        if (current.x, current.y) == to {
             // Reconstruct
             let mut path = Vec::new();
-            let mut cur = (current.q, current.r);
+            let mut cur = (current.x, current.y);
             path.push(cur);
             while let Some(&prev) = came_from.get(&cur) {
                 path.push(prev);
@@ -776,16 +781,16 @@ g_scores.insert(from, 0.0);
             path.reverse();
             return Some(HexPath { cells: path, cost: current.g });
         }
-        closed.insert((current.q, current.r));
+        closed.insert((current.x, current.y));
 
         for (dq, dr) in dirs {
-            let nq = current.q + dq;
-            let nr = current.r + dr;
+            let nq = current.x + dq;
+            let nr = current.y + dr;
             let n = (nq, nr);
             if closed.contains(&n) {
                 continue;
             }
-            let step_cost = cost_fn((current.q, current.r), n);
+            let step_cost = cost_fn((current.x, current.y), n);
             if step_cost.is_infinite() {
                 continue;
             }
@@ -793,10 +798,10 @@ g_scores.insert(from, 0.0);
             let entry = g_scores.entry(n).or_insert(f32::INFINITY);
             if tentative < *entry {
                 *entry = tentative;
-                came_from.insert(n, (current.q, current.r));
+                came_from.insert(n, (current.x, current.y));
                 open.push(Node {
-                    q: nq,
-                    r: nr,
+                    x: nq,
+                    y: nr,
                     f: tentative + (nq - to.0).abs() as f32 + (nr - to.1).abs() as f32,
                     g: tentative,
                 });
@@ -850,14 +855,14 @@ impl HierarchicalGen {
 
     /// Generate a hex cell, combining hierarchical layers (§22):
     /// continents → climate → ocean/land → elevation → biome.
-    pub fn generate(&self, q: i32, r: i32) -> HexCell {
+    pub fn generate(&self, q: i32, r: i32) -> WorldCell {
         // Layer 1: continental shape
         let continent = self.continental_mask(q, r);
         // Layer 2: climate
         let climate = self.climate_band(q, r);
         // Layer 3+: delegate to the deterministic generator, injecting the
         // continental bias so coastlines are smooth across chunk boundaries.
-        let mut cell = self.config.generate_hex(q, r);
+        let mut cell = self.config.generate_cell(q, r);
         let water_threshold = 0.35;
         if continent < water_threshold {
             cell.water = WaterClass::Ocean;
@@ -872,7 +877,7 @@ impl HierarchicalGen {
             let temp = cell.temperature * 0.7 + (climate - 0.5) * 0.6;
             let (terrain, water, biome_id) = self.config.terrain_and_biome(
                 cell.elevation,
-                latitude_for(cell.r, self.config.world_radius),
+                latitude_for(cell.y, self.config.world_radius),
                 temp,
                 cell.moisture,
                 q,
@@ -903,7 +908,7 @@ pub fn hex_to_chunk_coord(q: i32, r: i32, chunk_size: i32) -> (i32, i32) {
 }
 
 /// Get all hex coordinates in a chunk.
-pub fn chunk_hexes(cq: i32, cr: i32, chunk_size: i32) -> Vec<HexCoord> {
+pub fn chunk_hexes(cq: i32, cr: i32, chunk_size: i32) -> Vec<TileCoord> {
     let mut result = Vec::new();
     let start_q = cq * chunk_size;
     let start_r = cr * chunk_size;
@@ -916,7 +921,7 @@ pub fn chunk_hexes(cq: i32, cr: i32, chunk_size: i32) -> Vec<HexCoord> {
                 && r.unsigned_abs() <= i32::MAX as u32
                 && s.unsigned_abs() <= i32::MAX as u32
             {
-                result.push(HexCoord::new(q, r));
+                result.push(TileCoord::new(q, r));
             }
         }
     }
@@ -934,17 +939,18 @@ mod tests {
     #[test]
     fn test_world_bounds_contains() {
         let bounds = WorldBounds::centered(100);
-        assert!(bounds.contains(HexCoord::new(0, 0)));
-        assert!(bounds.contains(HexCoord::new(100, 100)));
-        assert!(!bounds.contains(HexCoord::new(101, 0)));
+        assert!(bounds.contains(TileCoord::new(0, 0)));
+        assert!(bounds.contains(TileCoord::new(100, 100)));
+        assert!(!bounds.contains(TileCoord::new(101, 0)));
     }
 
     #[test]
     fn test_world_bounds_center() {
         let bounds = WorldBounds::centered(100);
         let (x, y) = bounds.center(100.0);
-        assert!((x - 0.0).abs() < 0.01);
-        assert!((y - 0.0).abs() < 0.01);
+        // Square lattice: tile (0, 0) center is at half tile size.
+        assert!((x - 50.0).abs() < 0.01);
+        assert!((y - 50.0).abs() < 0.01);
     }
 
     #[test]
@@ -980,33 +986,33 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_hex_deterministic() {
+    fn test_generate_cell_deterministic() {
         let config = WorldGenConfig::default();
-        let cell1 = config.generate_hex(3, -7);
-        let cell2 = config.generate_hex(3, -7);
+        let cell1 = config.generate_cell(3, -7);
+        let cell2 = config.generate_cell(3, -7);
         assert_eq!(cell1.elevation, cell2.elevation);
         assert_eq!(cell1.terrain, cell2.terrain);
         assert_eq!(cell1.water, cell2.water);
     }
 
     #[test]
-    fn test_generate_hex_different_coords() {
+    fn test_generate_cell_different_coords() {
         let config = WorldGenConfig::default();
         // Different real-Earth biomes must produce different cells: the
         // spawn forest vs mid-Pacific ocean.
         let (sx, sy) =
             crate::earth::lonlat_to_world(crate::earth::SPAWN_LON, crate::earth::SPAWN_LAT);
-        let (sq, sr) = crate::hex_grid::HexGrid::world_to_axial(sx, sy, WorldGenConfig::HEX_SIZE);
+        let (sq, sr) = crate::grid::WorldGrid::world_to_tile(sx, sy, WorldGenConfig::TILE_SIZE);
         let (ox, oy) = crate::earth::lonlat_to_world(-140.0, 0.0);
-        let (oq, orr) = crate::hex_grid::HexGrid::world_to_axial(ox, oy, WorldGenConfig::HEX_SIZE);
-        let cell1 = config.generate_hex(sq, sr);
-        let cell2 = config.generate_hex(oq, orr);
+        let (oq, orr) = crate::grid::WorldGrid::world_to_tile(ox, oy, WorldGenConfig::TILE_SIZE);
+        let cell1 = config.generate_cell(sq, sr);
+        let cell2 = config.generate_cell(oq, orr);
         assert_ne!(cell1.elevation, cell2.elevation);
         assert_ne!(cell1.terrain, cell2.terrain);
     }
 
     #[test]
-    fn test_generate_hex_ocean_at_edge() {
+    fn test_generate_cell_ocean_at_edge() {
         let config = WorldGenConfig {
             seed: 42,
             world_radius: 10,
@@ -1014,8 +1020,8 @@ mod tests {
         };
         // Mid-Pacific is deep ocean on the real Earth replica too.
         let (x, y) = crate::earth::lonlat_to_world(-140.0, 0.0);
-        let (q, r) = crate::hex_grid::HexGrid::world_to_axial(x, y, WorldGenConfig::HEX_SIZE);
-        let cell = config.generate_hex(q, r);
+        let (q, r) = crate::grid::WorldGrid::world_to_tile(x, y, WorldGenConfig::TILE_SIZE);
+        let cell = config.generate_cell(q, r);
         assert_eq!(cell.terrain, TerrainType::Water);
         assert_eq!(cell.water, WaterClass::Ocean);
         assert_eq!(cell.biome_id, 100 + crate::earth::Biome::Water.index() as u16);
@@ -1095,9 +1101,9 @@ mod tests {
 
     #[test]
     fn test_hex_cell_id_packing() {
-        assert_eq!(HexCell::id_of(0, 0), 0);
-        assert_eq!(HexCell::id_of(1, 0), (1u64) << 32);
-        assert_eq!(HexCell::id_of(-1, 0), (u32::MAX as u64) << 32);
+        assert_eq!(WorldCell::id_of(0, 0), 0);
+        assert_eq!(WorldCell::id_of(1, 0), (1u64) << 32);
+        assert_eq!(WorldCell::id_of(-1, 0), (u32::MAX as u64) << 32);
     }
 
     #[test]
@@ -1111,8 +1117,8 @@ mod tests {
         let hexes = chunk_hexes(1, 0, 8);
         assert_eq!(hexes.len(), 64);
         // First hex should be (8, 0)
-        assert_eq!(hexes[0].q, 8);
-        assert_eq!(hexes[0].r, 0);
+        assert_eq!(hexes[0].x, 8);
+        assert_eq!(hexes[0].y, 0);
     }
 
     #[test]
@@ -1145,8 +1151,8 @@ mod tests {
         let mut manager = ChunkManager::new(8, 2, 2);
         manager.stream_around(&config, 0, 0);
         let cell = manager.get_cell(0, 0).expect("origin cell loaded");
-        assert_eq!(cell.q, 0);
-        assert_eq!(cell.r, 0);
+        assert_eq!(cell.x, 0);
+        assert_eq!(cell.y, 0);
         assert!(manager.get_cell(5000, 5000).is_none());
     }
 
@@ -1222,11 +1228,11 @@ mod tests {
         };
         // Force an all-water lookup by checking against a field
         let path = find_path((0, 0), (3, 3), |_, _| {
-            let cell = config.generate_hex(0, 0);
+            let cell = config.generate_cell(0, 0);
             if cell.water.is_water() { f32::INFINITY } else { 1.0 }
         });
         // If the sampled cell is land, path is Some; otherwise None. Just assert deterministic.
-        let cell = config.generate_hex(0, 0);
+        let cell = config.generate_cell(0, 0);
         let expects_blocked = cell.water.is_water();
         let blocked = path.is_none();
         assert_eq!(blocked, expects_blocked);

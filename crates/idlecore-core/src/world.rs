@@ -5,7 +5,7 @@
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use std::collections::HashMap;
-use crate::hex::HexCoord;
+use crate::grid::TileCoord;
 use crate::terrain::TerrainType;
 
 /// Hex world size constant (10x original 10-unit hexes = 100 units)
@@ -14,7 +14,7 @@ pub const HEX_SIZE: f32 = 150.0;
 /// A single tile in the world.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WorldTile {
-    pub coord: HexCoord,
+    pub coord: TileCoord,
     pub hex_id: u64,
     pub center_x: f32,
     pub center_y: f32,
@@ -26,12 +26,8 @@ pub struct WorldTile {
 
 impl WorldTile {
     /// Create a new world tile.
-    pub fn new(coord: HexCoord, hex_id: u64, terrain: TerrainType, elevation: f32, vegetation: Vegetation) -> Self {
-        let q = coord.q as f32;
-        let r = coord.r as f32;
-        let sqrt3 = f32::sqrt(3.0);
-        let x = HEX_SIZE * sqrt3 * (q + r / 2.0);
-        let y = HEX_SIZE * 1.5 * r;
+    pub fn new(coord: TileCoord, hex_id: u64, terrain: TerrainType, elevation: f32, vegetation: Vegetation) -> Self {
+        let (x, y) = crate::grid::WorldGrid::tile_center(coord.x, coord.y, crate::world_gen::WorldGenConfig::TILE_SIZE);
 
         Self {
             coord,
@@ -100,7 +96,7 @@ impl EarthWorld {
                     let vegetation = Self::determine_vegetation(&mut rng, terrain, elevation);
 
                     let tile = WorldTile::new(
-                        HexCoord::new(q, r),
+                        TileCoord::new(q, r),
                         hex_id,
                         terrain,
                         elevation,
@@ -122,8 +118,8 @@ impl EarthWorld {
     fn build_chunks(&mut self) {
         self.all_chunks.clear();
         for tile in self.tiles.values() {
-            let cq = tile.coord.q / self.chunk_size;
-            let cr = tile.coord.r / self.chunk_size;
+            let cq = tile.coord.x.div_euclid(self.chunk_size);
+            let cr = tile.coord.y.div_euclid(self.chunk_size);
             self.all_chunks
                 .entry((cq, cr))
                 .or_default()
@@ -353,8 +349,8 @@ mod tests {
     fn test_hex_coordinates() {
         let world = EarthWorld::generate(42, 50);
         let tile = world.get_tile(0, 0).unwrap();
-        assert_eq!(tile.coord.q, 0);
-        assert_eq!(tile.coord.r, 0);
+        assert_eq!(tile.coord.x, 0);
+        assert_eq!(tile.coord.y, 0);
     }
 
     #[test]

@@ -7,7 +7,8 @@
 //! persists it. Heartbeat refreshes `last_seen` (Spec 021 FR6).
 
 use spacetimedb::{ReducerContext, Table};
-use crate::types::{hex_id_of, now_secs, player};
+use idlecore_core::world_gen::WorldGenConfig;
+use crate::types::{tile_id_of, now_secs, player};
 use crate::player::update_hex;
 
 /// Base walking speed in world units/sec (Spec 003 FR3: 10 m/s × vehicle).
@@ -86,12 +87,12 @@ pub fn move_player(
     let x = x.clamp(-half_w, half_w);
     let y = y.clamp(-half_h, half_h);
 
-    let (q, r) = hex_at(x, y);
+    let (q, r) = tile_at(x, y);
     let corrected = (q, r) != (p.hex_q, p.hex_r);
     if corrected {
         // Spec 018 T4.x: occupancy conflict — the hex belongs to whoever is
         // closer to its center; ties go to the earlier connection (login).
-        let (cx, cy) = idlecore_core::hex_grid::HexGrid::axial_to_world(q, r, 10.0);
+        let (cx, cy) = idlecore_core::grid::WorldGrid::tile_center(q, r, WorldGenConfig::TILE_SIZE);
         let my_d2 = (x - cx).powi(2) + (y - cy).powi(2);
         let mut occupant: Option<(f32, u64)> = None;
         for other in ctx.db.player().iter() {
@@ -119,7 +120,7 @@ pub fn move_player(
     }
     update_hex(ctx, &p.address, q, r, x, y, now);
 
-    Ok((x, y, hex_id_of(q, r), corrected))
+    Ok((x, y, tile_id_of(q, r), corrected))
 }
 
 /// Pure occupancy rule (Spec 018 T4.1-4.3): does `mine` win the contested
@@ -142,8 +143,8 @@ fn occupancy_resolution(
 
 /// Flat-top axial hex containing a world position (PROPOSAL 9.1).
 /// Delegates to the shared, cube-round-tested core implementation.
-pub fn hex_at(x: f32, y: f32) -> (i32, i32) {
-    idlecore_core::hex_grid::HexGrid::world_to_axial(x, y, 10.0)
+pub fn tile_at(x: f32, y: f32) -> (i32, i32) {
+    idlecore_core::grid::WorldGrid::world_to_tile(x, y, WorldGenConfig::TILE_SIZE)
 }
 
 /// Heartbeat (Spec 021 FR6): refresh last_seen so idle gains and occupancy
@@ -212,7 +213,7 @@ mod perf_tests {
         for i in 0..100_000u32 {
             let x = (i as f32 % 1000.0) - 500.0;
             let y = (i as f32 / 1000.0) % 500.0 - 250.0;
-            let (q, r) = hex_at(x, y);
+            let (q, r) = tile_at(x, y);
             acc = acc.wrapping_add(q as u32).wrapping_add(r as u32);
         }
         let elapsed = start.elapsed();
@@ -227,20 +228,20 @@ mod perf_tests {
 #[cfg(test)]
 mod spawn_location_tests {
     use super::*;
-    use idlecore_core::hex_grid::HexGrid;
+    use idlecore_core::grid::WorldGrid;
 
     /// Spawn = (0,0) hex at world origin; moving 1.5·size along +r places the
     /// player exactly one hex to the +r neighbor (flat-top layout).
     #[test]
     fn spawn_then_move_lands_in_expected_hex() {
-        assert_eq!(hex_at(0.0, 0.0), (0, 0));
-        let size = 10.0;
-        let (sx, sz) = HexGrid::axial_to_world(0, 1, size);
-        assert_eq!(hex_at(sx, sz), (0, 1));
-        let (sx, sz) = HexGrid::axial_to_world(1, 0, size);
-        assert_eq!(hex_at(sx, sz), (1, 0));
-        let (sx, sz) = HexGrid::axial_to_world(-2, 3, size);
-        assert_eq!(hex_at(sx, sz), (-2, 3));
+        assert_eq!(tile_at(0.0, 0.0), (0, 0));
+        let size = WorldGenConfig::TILE_SIZE;
+        let (sx, sz) = WorldGrid::tile_center(0, 1, size);
+        assert_eq!(tile_at(sx, sz), (0, 1));
+        let (sx, sz) = WorldGrid::tile_center(1, 0, size);
+        assert_eq!(tile_at(sx, sz), (1, 0));
+        let (sx, sz) = WorldGrid::tile_center(-2, 3, size);
+        assert_eq!(tile_at(sx, sz), (-2, 3));
     }
 
     /// Integration smoke: a moved player's world position always reports back
@@ -248,15 +249,15 @@ mod spawn_location_tests {
     /// displacement never jumps farther than the frame budget allows.
     #[test]
     fn long_travel_round_trip_never_drifts() {
-        let size = 10.0;
+        let size = WorldGenConfig::TILE_SIZE;
         let mut acc = 0u32;
         for i in 0..5_000u32 {
-            let hex = (i as i32 % 200 - 100, i as i32 / 200 % 100 - 50);
-            let (x, z) = HexGrid::axial_to_world(hex.0, hex.1, size);
-            let moved = x + (i as f32 % 7.0) - 3.0; // arbitrary in-hex movement
-            let (q, r) = hex_at(moved, z);
-            let (bx, bz) = HexGrid::axial_to_world(q, r, size);
-            assert_eq!(hex_at(bx, bz), (q, r), "drift at hex {hex:?}");
+            let tile = (i as i32 % 200 - 100, i as i32 / 200 % 100 - 50);
+            let (x, z) = WorldGrid::tile_center(tile.0, tile.1, size);
+            let moved = x + (i as f32 % 10.0) - 5.0; // arbitrary in-tile movement
+            let (q, r) = tile_at(moved, z);
+            let (bx, bz) = WorldGrid::tile_center(q, r, size);
+            assert_eq!(tile_at(bx, bz), (q, r), "drift at tile {tile:?}");
             acc = acc.wrapping_add(q as u32).wrapping_add(r as u32);
         }
         assert_ne!(acc, 0);
@@ -268,8 +269,8 @@ mod spawn_location_tests {
     fn far_spawn_coordinates_are_valid() {
         // i32::MAX/4096 keeps world coords < 2^23 so f32 round-trips stay exact.
         for &(q, r) in &[(0, 0), (1_000, -500), (-777, 333), (i32::MAX / 4096, i32::MIN / 4096)] {
-            let (x, z) = HexGrid::axial_to_world(q, r, 10.0);
-            assert_eq!(hex_at(x, z), (q, r), "spawn at {q},{r} invalid");
+            let (x, z) = WorldGrid::tile_center(q, r, WorldGenConfig::TILE_SIZE);
+            assert_eq!(tile_at(x, z), (q, r), "spawn at {q},{r} invalid");
         }
     }
 }

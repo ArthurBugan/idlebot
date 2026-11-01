@@ -555,11 +555,11 @@ fn hud_buttons(
                 }
                 match action {
                     HudAction::Harvest => {
-                        let hex = idlecore_core::hex::HexCoord::new(action_target.q, action_target.r).to_id();
+                        let hex = idlecore_core::grid::TileCoord::new(action_target.x, action_target.y).to_id();
                         send_reducer(&mut net, |r| r.harvest_then(hex, reducer_report("harvest", tx.clone(), hex)));
                     }
                     HudAction::Clean => {
-                        let hex = idlecore_core::hex::HexCoord::new(action_target.q, action_target.r).to_id();
+                        let hex = idlecore_core::grid::TileCoord::new(action_target.x, action_target.y).to_id();
                         send_reducer(&mut net, |r| r.clean_then(hex, reducer_report("clean", tx.clone(), hex)));
                     }
                     HudAction::PlantTree => {
@@ -575,7 +575,7 @@ fn hud_buttons(
                             ));
                             continue;
                         }
-                        let hex = idlecore_core::hex::HexCoord::new(action_target.q, action_target.r).to_id();
+                        let hex = idlecore_core::grid::TileCoord::new(action_target.x, action_target.y).to_id();
                         let (slot_x, slot_y) = (action_target.slot_x, action_target.slot_y);
                         send_reducer(&mut net, |r| {
                             r.plant_tree_then(hex, slot_x, slot_y, reducer_report("plant_tree", tx.clone(), hex))

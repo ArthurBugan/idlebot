@@ -8,12 +8,12 @@
 use spacetimedb::{ReducerContext, Table};
 use std::collections::{HashMap, HashSet};
 use idlecore_core::defense_config as cfg;
-use idlecore_core::hex::HexCoord;
+use idlecore_core::grid::TileCoord;
 
 use crate::capital::destroy_capital;
 use crate::objects::add_item;
 use crate::types::{
-    capital, defense_structure, hex_center, hex_coords_of, hex_distance, hex_id_of,
+    capital, defense_structure, tile_center, hex_coords_of, tile_distance, tile_id_of,
     hex_tile, mob, now_secs, raid_wave, territory, Capital, DefenseStructure, Mob, RaidWave,
 };
 
@@ -35,7 +35,7 @@ fn border_hexes(ctx: &ReducerContext, capital: &Capital) -> Vec<(i32, i32)> {
         .filter(&capital.owner)
         .map(|t| t.hex_id)
         .collect();
-    frontier_hexes(&owned, |hex_id| {
+    frontier_tiles(&owned, |hex_id| {
         ctx.db
             .hex_tile()
             .hex_id()
@@ -49,7 +49,7 @@ fn border_hexes(ctx: &ReducerContext, capital: &Capital) -> Vec<(i32, i32)> {
 /// sorted order. `terrain_of` returns `Some(true)` for water (excluded),
 /// `Some(false)` for walkable land, and `None` for unmaterialized hexes
 /// (they exist only where players have walked — skipped entirely).
-pub fn frontier_hexes(
+pub fn frontier_tiles(
     owned: &HashSet<u64>,
     terrain_of: impl Fn(u64) -> Option<bool>,
 ) -> Vec<(i32, i32)> {
@@ -57,8 +57,8 @@ pub fn frontier_hexes(
     let mut seen: HashSet<u64> = HashSet::new();
     for &hex_id in owned {
         let (q, r) = hex_coords_of(hex_id);
-        for (nq, nr) in HexCoord::new(q, r).neighbors() {
-            let nid = hex_id_of(nq, nr);
+        for (nq, nr) in TileCoord::new(q, r).neighbors() {
+            let nid = tile_id_of(nq, nr);
             if owned.contains(&nid) || !seen.insert(nid) {
                 continue;
             }
@@ -83,21 +83,21 @@ const MIN_MARCH_HEXES: i32 = 3;
 fn walk_out(ctx: &ReducerContext, capital: &Capital, mut q: i32, mut r: i32) -> (i32, i32) {
     let (cq, cr) = hex_coords_of(capital.hex_id);
     for _ in 0..16 {
-        if hex_distance(q, r, cq, cr) >= MIN_MARCH_HEXES {
+        if tile_distance(q, r, cq, cr) >= MIN_MARCH_HEXES {
             break;
         }
-        let best = HexCoord::new(q, r)
+        let best = TileCoord::new(q, r)
             .neighbors()
             .into_iter()
             .filter(|&(nq, nr)| {
                 ctx.db
                     .hex_tile()
                     .hex_id()
-                    .find(hex_id_of(nq, nr))
+                    .find(tile_id_of(nq, nr))
                     .map(|t| t.terrain != "Water")
                     .unwrap_or(true)
             })
-            .max_by_key(|&(nq, nr)| hex_distance(nq, nr, cq, cr));
+            .max_by_key(|&(nq, nr)| tile_distance(nq, nr, cq, cr));
         match best {
             Some((nq, nr)) => {
                 q = nq;
@@ -141,7 +141,7 @@ fn spawn_wave(ctx: &ReducerContext, capital: &Capital, now: u64) -> bool {
         .territory_by_owner()
         .filter(&capital.owner)
         .map(|t| hex_coords_of(t.hex_id))
-        .filter(|&(q, r)| hex_distance(q, r, cq0, cr0) <= 2)
+        .filter(|&(q, r)| tile_distance(q, r, cq0, cr0) <= 2)
         .collect();
     inner_spots.sort_unstable();
     let mut inner_iter = inner_spots.into_iter();
@@ -173,13 +173,13 @@ fn spawn_wave(ctx: &ReducerContext, capital: &Capital, now: u64) -> bool {
         } else {
             points[i % points.len()]
         };
-        let (sx, sy) = hex_center(sq, sr);
+        let (sx, sy) = tile_center(sq, sr);
         ctx.db.mob().insert(Mob {
             mob_id: 0,
             capital_id: capital.capital_id,
             wave_id: wave.wave_id,
             kind: kind.name.to_string(),
-            hex_id: hex_id_of(sq, sr),
+            hex_id: tile_id_of(sq, sr),
             hex_q: sq,
             hex_r: sr,
             position_x: sx,
@@ -382,8 +382,8 @@ pub fn tick(ctx: &ReducerContext) {
             .mob()
             .iter()
             .filter(|m| m.hp > mob_damage.get(&m.mob_id).copied().unwrap_or(0))
-            .filter(|m| hex_distance(m.hex_q, m.hex_r, tq, tr) <= kind.range_hexes as i32)
-            .min_by_key(|m| (hex_distance(m.hex_q, m.hex_r, tq, tr), m.mob_id));
+            .filter(|m| tile_distance(m.hex_q, m.hex_r, tq, tr) <= kind.range_hexes as i32)
+            .min_by_key(|m| (tile_distance(m.hex_q, m.hex_r, tq, tr), m.mob_id));
         if let Some(target) = target {
             *mob_damage.entry(target.mob_id).or_insert(0) += dps;
         }
@@ -436,11 +436,11 @@ pub fn tick(ctx: &ReducerContext) {
             continue;
         }
         let (cq, cr) = hex_coords_of(capital.hex_id);
-        let capital_dist = hex_distance(mob.hex_q, mob.hex_r, cq, cr);
+        let capital_dist = tile_distance(mob.hex_q, mob.hex_r, cq, cr);
 
         let nearby: Vec<(u64, i32)> = tower_hexes
             .iter()
-            .map(|(sid, (hq, hr, _))| (*sid, hex_distance(mob.hex_q, mob.hex_r, *hq, *hr)))
+            .map(|(sid, (hq, hr, _))| (*sid, tile_distance(mob.hex_q, mob.hex_r, *hq, *hr)))
             .collect();
         let (target_structure, attacking_capital) =
             engagement_target(&nearby, capital_dist, kind.range_hexes);
@@ -604,10 +604,10 @@ fn march(ctx: &ReducerContext, mob: &Mob, interval: u32, target_q: i32, target_r
         return;
     }
     let next = step_toward_hex(mob.hex_q, mob.hex_r, target_q, target_r);
-    let (x, y) = hex_center(next.0, next.1);
+    let (x, y) = tile_center(next.0, next.1);
     row.hex_q = next.0;
     row.hex_r = next.1;
-    row.hex_id = hex_id_of(next.0, next.1);
+    row.hex_id = tile_id_of(next.0, next.1);
     row.position_x = x;
     row.position_y = y;
     row.step_accum_secs = 0;
@@ -617,10 +617,10 @@ fn march(ctx: &ReducerContext, mob: &Mob, interval: u32, target_q: i32, target_r
 /// Pure one-hex greedy step toward a target (unit-tested: distance must
 /// strictly decrease; this is how raiders close on the capital).
 pub fn step_toward_hex(q: i32, r: i32, target_q: i32, target_r: i32) -> (i32, i32) {
-    HexCoord::new(q, r)
+    TileCoord::new(q, r)
         .neighbors()
         .into_iter()
-        .min_by_key(|&(nq, nr)| hex_distance(nq, nr, target_q, target_r))
+        .min_by_key(|&(nq, nr)| tile_distance(nq, nr, target_q, target_r))
         .unwrap_or((q, r))
 }
 
@@ -720,12 +720,12 @@ mod tests {
         // stall — this is the "mobs walk closer" guarantee).
         let mut q = 5;
         let mut r = 0;
-        let dist0 = hex_distance(q, r, 0, 0);
+        let dist0 = tile_distance(q, r, 0, 0);
         for _ in 0..dist0 {
-            let before = hex_distance(q, r, 0, 0);
+            let before = tile_distance(q, r, 0, 0);
             let (nq, nr) = step_toward_hex(q, r, 0, 0);
             assert!(
-                hex_distance(nq, nr, 0, 0) < before,
+                tile_distance(nq, nr, 0, 0) < before,
                 "step ({q},{r}) -> ({nq},{nr}) must close the gap"
             );
             q = nq;
@@ -734,7 +734,7 @@ mod tests {
         assert_eq!((q, r), (0, 0), "march reaches the capital");
         // Diagonal approach from another direction also closes.
         let (mq, mr) = step_toward_hex(-3, 4, 0, 0);
-        assert!(hex_distance(mq, mr, 0, 0) < hex_distance(-3, 4, 0, 0));
+        assert!(tile_distance(mq, mr, 0, 0) < tile_distance(-3, 4, 0, 0));
     }
 
     // -- T3.2: scheduler invariants ----------------------------------------
@@ -799,37 +799,40 @@ mod tests {
     }
 
     #[test]
-    fn frontier_hexes_skip_water_unowned_unmaterialized_and_duplicates() {
+    fn frontier_tiles_skip_water_unowned_unmaterialized_and_duplicates() {
         use std::collections::HashSet;
-        let owned: HashSet<u64> = [hex_id_of(0, 0), hex_id_of(1, 0)]
+        let owned: HashSet<u64> = [tile_id_of(0, 0), tile_id_of(1, 0)]
             .into_iter()
             .collect();
         // Frontier candidates around the two owned hexes: (1,-1) / (2,-1) /
         // (2,0) / (0,-1) / (-1,0) / (-1,1) land, (0,1) water, (1,1)
         // unmaterialized (None → skipped).
         let terrain = |id: u64| -> Option<bool> {
-            let c = HexCoord::from_id(id);
-            if (c.q, c.r) == (0, 1) {
+            let c = TileCoord::from_id(id);
+            if (c.x, c.y) == (0, 1) {
                 return Some(true);
             }
-            if (c.q, c.r) == (1, 1) {
+            if (c.x, c.y) == (1, 1) {
                 return None;
             }
             Some(false)
         };
-        let borders = frontier_hexes(&owned, terrain);
+        let borders = frontier_tiles(&owned, terrain);
+        let frontier_expected = vec![
+            (-1, -1), (-1, 0), (-1, 1), (0, -1), (1, -1), (2, -1), (2, 0), (2, 1),
+        ];
         assert_eq!(
             borders,
-            vec![(-1, 0), (-1, 1), (0, -1), (1, -1), (2, -1), (2, 0)],
+            frontier_expected,
             "sorted, water and unmaterialized skipped, shared frontier deduped"
         );
         // Every border is unowned and truly adjacent to an owned hex.
         for &(q, r) in &borders {
-            assert!(!owned.contains(&hex_id_of(q, r)), "border ({q},{r}) must be unowned");
-            let is_adjacent = HexCoord::new(q, r)
+            assert!(!owned.contains(&tile_id_of(q, r)), "border ({q},{r}) must be unowned");
+            let is_adjacent = TileCoord::new(q, r)
                 .neighbors()
                 .iter()
-                .any(|&(nq, nr)| owned.contains(&hex_id_of(nq, nr)));
+                .any(|&(nq, nr)| owned.contains(&tile_id_of(nq, nr)));
             assert!(is_adjacent, "border ({q},{r}) not adjacent to owned land");
         }
     }

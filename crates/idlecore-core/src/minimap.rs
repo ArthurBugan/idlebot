@@ -2,7 +2,7 @@
 //!
 //! Shows player position, nearby hexes, and objects. Supports zoom levels.
 
-use crate::hex::HexCoord;
+use crate::grid::TileCoord;
 use crate::terrain::TerrainType;
 use serde::{Deserialize, Serialize};
 
@@ -67,7 +67,7 @@ impl ZoomLevel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MinimapChunk {
     /// Chunk center coordinates.
-    pub center: HexCoord,
+    pub center: TileCoord,
     /// Generated texture data (if available).
     pub texture: Option<MinimapTexture>,
     /// Whether the chunk has been generated.
@@ -91,7 +91,7 @@ pub struct MinimapTexture {
 
 impl MinimapChunk {
     /// Create a new empty chunk.
-    pub fn new(center: HexCoord) -> Self {
+    pub fn new(center: TileCoord) -> Self {
         Self {
             center,
             texture: None,
@@ -102,7 +102,7 @@ impl MinimapChunk {
     }
 
     /// Create a new chunk with tiles.
-    pub fn new_with_tiles(center: HexCoord, tiles: Vec<crate::world::WorldTile>) -> Self {
+    pub fn new_with_tiles(center: TileCoord, tiles: Vec<crate::world::WorldTile>) -> Self {
         Self {
             center,
             texture: None,
@@ -170,7 +170,7 @@ impl MinimapChunk {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObjectMarker {
     /// Hex coordinates of the object.
-    pub hex: HexCoord,
+    pub hex: TileCoord,
     /// Type of object for rendering.
     pub object_type: ObjectType,
     /// Display label (optional).
@@ -212,16 +212,16 @@ pub struct Minimap {
     /// Current zoom level.
     pub zoom: ZoomLevel,
     /// Center hex (usually player position).
-    pub center: HexCoord,
+    pub center: TileCoord,
     /// Viewport hexes (within zoom radius).
-    pub viewport_hexes: Vec<HexCoord>,
+    pub viewport_hexes: Vec<TileCoord>,
     /// Object markers on the minimap.
     pub objects: Vec<ObjectMarker>,
 }
 
 impl Minimap {
     /// Create a new minimap centered on the given hex.
-    pub fn new(center: HexCoord) -> Self {
+    pub fn new(center: TileCoord) -> Self {
         let viewport = Self::generate_viewport(&center, ZoomLevel::Local.radius());
         Self {
             zoom: ZoomLevel::Local,
@@ -232,11 +232,11 @@ impl Minimap {
     }
 
     /// Generate hexes within the viewport for the given center and radius.
-    fn generate_viewport(center: &HexCoord, radius: i32) -> Vec<HexCoord> {
+    fn generate_viewport(center: &TileCoord, radius: i32) -> Vec<TileCoord> {
         let mut hexes = Vec::new();
         for dq in -radius..=radius {
             for dr in -radius..=radius {
-                let hex = HexCoord::new(center.q + dq, center.r + dr);
+                let hex = TileCoord::new(center.x + dq, center.y + dr);
                 if hex.distance(center) <= radius {
                     hexes.push(hex);
                 }
@@ -267,7 +267,7 @@ impl Minimap {
     }
 
     /// Remove an object marker by hex.
-    pub fn remove_object(&mut self, hex: &HexCoord) -> bool {
+    pub fn remove_object(&mut self, hex: &TileCoord) -> bool {
         let len_before = self.objects.len();
         self.objects.retain(|m| &m.hex != hex);
         self.objects.len() < len_before
@@ -287,9 +287,9 @@ impl Minimap {
 // ---------------------------------------------------------------------------
 
 /// Convert hex coordinates to pixel position for minimap rendering.
-pub fn hex_to_minimap_pixel(hex: &HexCoord, scale: f32, offset_x: f32, offset_y: f32) -> (f32, f32) {
-    let q = hex.q as f32;
-    let r = hex.r as f32;
+pub fn hex_to_minimap_pixel(hex: &TileCoord, scale: f32, offset_x: f32, offset_y: f32) -> (f32, f32) {
+    let q = hex.x as f32;
+    let r = hex.y as f32;
     let sqrt3 = 1.7320508075688772_f32; // sqrt(3)
     let x = scale * (q * 1.5) + offset_x;
     let y = scale * (r * sqrt3 * 1.5) + offset_y;
@@ -297,7 +297,7 @@ pub fn hex_to_minimap_pixel(hex: &HexCoord, scale: f32, offset_x: f32, offset_y:
 }
 
 /// Draw a hex outline on a canvas (simplified — returns the hex center for rendering).
-pub fn draw_hex_outline(hex: &HexCoord, scale: f32, offset_x: f32, offset_y: f32) -> (f32, f32) {
+pub fn draw_hex_outline(hex: &TileCoord, scale: f32, offset_x: f32, offset_y: f32) -> (f32, f32) {
     hex_to_minimap_pixel(hex, scale, offset_x, offset_y)
 }
 
@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn test_minimap_new() {
-        let center = HexCoord::new(0, 0);
+        let center = TileCoord::new(0, 0);
         let minimap = Minimap::new(center);
         assert_eq!(minimap.zoom, ZoomLevel::Local);
         assert_eq!(minimap.center, center);
@@ -341,14 +341,14 @@ mod tests {
 
     #[test]
     fn test_minimap_zoom_in() {
-        let mut minimap = Minimap::new(HexCoord::new(0, 0));
+        let mut minimap = Minimap::new(TileCoord::new(0, 0));
         minimap.zoom_in();
         assert_eq!(minimap.zoom, ZoomLevel::Mid);
     }
 
     #[test]
     fn test_minimap_zoom_out() {
-        let mut minimap = Minimap::new(HexCoord::new(0, 0));
+        let mut minimap = Minimap::new(TileCoord::new(0, 0));
         minimap.zoom_in(); // Go to Mid
         minimap.zoom_out(); // Back to Local
         assert_eq!(minimap.zoom, ZoomLevel::Local);
@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_hex_to_minimap_pixel() {
-        let hex = HexCoord::new(1, 0);
+        let hex = TileCoord::new(1, 0);
         let (x, y) = hex_to_minimap_pixel(&hex, 1.0, 0.0, 0.0);
         // x = 1.5, y = 0 (r=0)
         assert!((x - 1.5).abs() < 0.001);
@@ -378,32 +378,32 @@ mod tests {
 
     #[test]
     fn test_minimap_add_remove_object() {
-        let mut minimap = Minimap::new(HexCoord::new(0, 0));
+        let mut minimap = Minimap::new(TileCoord::new(0, 0));
         let marker = ObjectMarker {
-            hex: HexCoord::new(1, 0),
+            hex: TileCoord::new(1, 0),
             object_type: ObjectType::Player,
             label: None,
         };
         minimap.add_object(marker);
         assert_eq!(minimap.objects.len(), 1);
-        minimap.remove_object(&HexCoord::new(1, 0));
+        minimap.remove_object(&TileCoord::new(1, 0));
         assert_eq!(minimap.objects.len(), 0);
     }
 
     #[test]
     fn test_minimap_viewport_objects() {
-        let mut minimap = Minimap::new(HexCoord::new(0, 0));
-        minimap.add_object(ObjectMarker { hex: HexCoord::new(1, 0), object_type: ObjectType::Player, label: None });
-        minimap.add_object(ObjectMarker { hex: HexCoord::new(100, 100), object_type: ObjectType::Player, label: None }); // Out of viewport
+        let mut minimap = Minimap::new(TileCoord::new(0, 0));
+        minimap.add_object(ObjectMarker { hex: TileCoord::new(1, 0), object_type: ObjectType::Player, label: None });
+        minimap.add_object(ObjectMarker { hex: TileCoord::new(100, 100), object_type: ObjectType::Player, label: None }); // Out of viewport
         let viewport_objs = minimap.viewport_objects();
         assert_eq!(viewport_objs.len(), 1);
     }
 
     #[test]
     fn test_minimap_chunk_generation() {
-        use crate::hex::HexCoord as HC;
+        use crate::grid::TileCoord as HC;
         use crate::terrain::TerrainType;
-        let center = HexCoord::new(0, 0);
+        let center = TileCoord::new(0, 0);
         let mut chunk = MinimapChunk::new(center);
         assert!(!chunk.generated);
         assert!(chunk.texture.is_none());
@@ -551,7 +551,7 @@ impl RotationMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MinimapWaypoint {
     /// Hex coordinate of the waypoint.
-    pub hex: HexCoord,
+    pub hex: TileCoord,
     /// World position (x, y) of the waypoint.
     pub position: (f32, f32),
     /// Optional label for the waypoint.
@@ -561,10 +561,10 @@ pub struct MinimapWaypoint {
 impl MinimapWaypoint {
     /// Create a new waypoint at the given world position.
     pub fn new(world_pos: (f32, f32)) -> Self {
-        use crate::hex::world_pos_to_hex;
+        use crate::grid::world_pos_to_tile;
         use crate::world::HEX_SIZE;
-        let (q, r) = world_pos_to_hex(world_pos.0, world_pos.1, HEX_SIZE);
-        let hex = HexCoord::new(q, r);
+        let (q, r) = world_pos_to_tile(world_pos.0, world_pos.1, HEX_SIZE);
+        let hex = TileCoord::new(q, r);
         Self {
             hex,
             position: world_pos,
@@ -840,7 +840,7 @@ mod fov_tests {
     fn map_pixel_world_roundtrip() {
         let world = (123.5, -45.25);
         let panel = (320.0, 240.0);
-        for rot in [0.0, 0.7, -1.2, 3.14159] {
+        for rot in [0.0, 0.7, -1.2, std::f32::consts::PI] {
             for zoom in [1.0, 2.5, 10.0] {
                 let px = world_to_map_pixel(world, panel, zoom, 200.0, rot);
                 let back = map_pixel_to_world(px, panel, zoom, 200.0, rot);

@@ -10,7 +10,7 @@ use crate::capital::find_capital;
 use crate::economy::find_player;
 use crate::objects::{add_item, count_item, remove_item};
 use crate::types::{
-    territory, defense_structure, world_object, hex_coords_of, hex_distance, hex_tile,
+    territory, defense_structure, world_object, hex_coords_of, tile_distance, hex_tile,
     now_secs, player, DefenseStructure, MAX_OBJECTS_PER_HEX,
 };
 use crate::world::ensure_hex;
@@ -79,16 +79,16 @@ pub fn build_defense(
     if !owns {
         return Err("Build only on your territory — claim the land first".to_string());
     }
-    if hex_distance(p.hex_q, p.hex_r, hq, hr) > 1 {
+    if tile_distance(p.hex_q, p.hex_r, hq, hr) > 1 {
         return Err("Out of range (1 hex)".to_string());
     }
 
     // The slot cell must belong to this hex and be free (of nodes and
     // of other structures — the world slot budget is shared).
-    if idlecore_core::slots::slot_hex(slot_x, slot_y) != (hq, hr) {
+    if idlecore_core::slots::slot_tile(slot_x, slot_y) != (hq, hr) {
         return Err("Slot is outside the selected hex".to_string());
     }
-    let (hx, hy) = hex_center_of(hq, hr);
+    let (hx, hy) = tile_center_of(hq, hr);
     let (cx, cy) = idlecore_core::slots::slot_center(slot_x, slot_y);
     let (ox, oy) = (cx - hx, cy - hy);
     for o in ctx.db.world_object().object_by_hex().filter(hex_id) {
@@ -171,8 +171,8 @@ pub fn remove_defense(ctx: &ReducerContext, address: &str, structure_id: u64) ->
     Ok(())
 }
 
-fn hex_center_of(q: i32, r: i32) -> (f32, f32) {
-    crate::types::hex_center(q, r)
+fn tile_center_of(q: i32, r: i32) -> (f32, f32) {
+    crate::types::tile_center(q, r)
 }
 
 #[cfg(test)]

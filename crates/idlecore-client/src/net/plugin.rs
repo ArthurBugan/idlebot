@@ -14,7 +14,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use crate::player::ClientPlayer;
-use idlecore_core::hex::{world_pos_to_hex, HexCoord};
+use idlecore_core::grid::{world_pos_to_tile, TileCoord};
 use idlecore_core::world_gen::WorldGenConfig;
 
 use super::gen::*;
@@ -393,8 +393,8 @@ impl Net {
 
     /// The hex id (server encoding) at a world position.
     pub fn hex_id_at(x: f32, z: f32) -> u64 {
-        let (q, r) = world_pos_to_hex(x, z, WorldGenConfig::HEX_SIZE);
-        HexCoord::new(q, r).to_id()
+        let (q, r) = world_pos_to_tile(x, z, WorldGenConfig::TILE_SIZE);
+        TileCoord::new(q, r).to_id()
     }
 }
 
@@ -728,17 +728,17 @@ fn interact_key_press(
         return;
     }
     // Ground actions aim at the Stardew-style targeting box, not the feet.
-    let hex_id = idlecore_core::hex::HexCoord::new(target.q, target.r).to_id();
+    let hex_id = idlecore_core::grid::TileCoord::new(target.x, target.y).to_id();
     if let Some(_p) = player.as_ref().and_then(|q| q.single().ok()) {
         let tx = net.sender();
         let now = now_unix_secs();
 
         // Every replicated node on the hex, ranked by distance to the
         // targeted slot (Stardew-style aiming).
-        let (hex_cx, hex_cy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
-            target.q,
-            target.r,
-            idlecore_core::world_gen::WorldGenConfig::HEX_SIZE,
+        let (hex_cx, hex_cy) = idlecore_core::grid::WorldGrid::tile_center(
+            target.x,
+            target.y,
+            idlecore_core::world_gen::WorldGenConfig::TILE_SIZE,
         );
         let slot_dx = idlecore_core::slots::slot_center(target.slot_x, target.slot_y).0 - hex_cx;
         let slot_dy = idlecore_core::slots::slot_center(target.slot_x, target.slot_y).1 - hex_cy;
@@ -994,13 +994,13 @@ fn interact_key_press(
         let building = build_mode.kind.filter(|k| crate::net::td::BUILDABLES.contains(k));
         // --- Spec 023 claim preflight (§3.2): empty hand + full claim cost,
         // standing on an unowned land hex adjacent to our territory.
-        let claim_target_coord = idlecore_core::hex::HexCoord::new(target.q, target.r);
+        let claim_target_coord = idlecore_core::grid::TileCoord::new(target.x, target.y);
         let claim_adjacent_owned = net.address.as_deref().is_some_and(|address| {
             td.owners
                 .iter()
                 .any(|(&h, owner)| {
                     owner == address
-                        && idlecore_core::hex::HexCoord::from_id(h)
+                        && idlecore_core::grid::TileCoord::from_id(h)
                             .distance(&claim_target_coord)
                             == 1
                 })
@@ -1168,11 +1168,11 @@ fn net_drain(
     };
     for (q, r) in teleports {
         let (wx, wy) =
-            idlecore_core::hex_grid::HexGrid::axial_to_world(q, r, WorldGenConfig::HEX_SIZE);
+            idlecore_core::grid::WorldGrid::tile_center(q, r, WorldGenConfig::TILE_SIZE);
         // 2D world: x = east, y = north; z carries the draw order.
         transform.translation = Vec3::new(wx, wy, crate::world_floor::prop_depth(wy) + 50.0);
         player.position = Vec3::new(wx, wy, 0.0);
-        player.current_hex = Some(crate::player::CurrentHex { q, r });
+        player.current_hex = Some(crate::player::CurrentHex { x: q, y: r });
         player_transform.translation = transform.translation;
         burst.request(Vec3::new(wx, wy, 0.0));
         latency.resolve();
@@ -1297,20 +1297,20 @@ fn sync_remote_players(
     let own_hex: Option<(i32, i32)> = player
         .single()
         .ok()
-        .and_then(|p| p.current_hex.map(|h| (h.q, h.r)))
+        .and_then(|p| p.current_hex.map(|h| (h.x, h.y)))
         .or_else(|| {
             player.single().ok().map(|p| {
-                idlecore_core::hex::world_pos_to_hex(
+                idlecore_core::grid::world_pos_to_tile(
                     p.position.x,
                     p.position.y,
-                    WorldGenConfig::HEX_SIZE,
+                    WorldGenConfig::TILE_SIZE,
                 )
             })
         });
     let in_view = |row_hex_id: u64| -> bool {
         let Some((q, r)) = own_hex else { return true };
-        let rc = idlecore_core::hex::HexCoord::from_id(row_hex_id);
-        axial_hex_distance((q, r), (rc.q, rc.r)) <= 3
+        let rc = idlecore_core::grid::TileCoord::from_id(row_hex_id);
+        axial_tile_distance((q, r), (rc.x, rc.y)) <= 3
     };
 
     let rows: Vec<Player> = {
@@ -1349,8 +1349,8 @@ fn sync_remote_players(
                     }
                     p.position = Vec3::new(row.position_x, row.position_y, 0.0);
                     p.current_hex = Some(crate::player::CurrentHex {
-                        q: row.hex_q,
-                        r: row.hex_r,
+                        x: row.hex_q,
+                        y: row.hex_r,
                     });
                     player_transform.translation = p.position;
                     p.position_restored = true;
@@ -1475,7 +1475,7 @@ fn vehicle_from_str(s: &str) -> Option<idlecore_core::Vehicle> {
 }
 
 /// Axial hex-grid distance (max of the three cube coordinates).
-fn axial_hex_distance(a: (i32, i32), b: (i32, i32)) -> i32 {
+fn axial_tile_distance(a: (i32, i32), b: (i32, i32)) -> i32 {
     let dq = (a.0 - b.0).abs();
     let dr = (a.1 - b.1).abs();
     let ds = (a.0 + a.1 - b.0 - b.1).abs();
@@ -1607,20 +1607,20 @@ mod sync_tests {
     }
 
     #[test]
-    fn axial_hex_distance_matches_cube_math() {
+    fn axial_tile_distance_matches_cube_math() {
         // (0,0) to (3,0): 3 steps along +q.
-        assert_eq!(axial_hex_distance((0, 0), (3, 0)), 3);
+        assert_eq!(axial_tile_distance((0, 0), (3, 0)), 3);
         // (0,0) to (2,-2): cube s unchanged (0 vs 0) -> max(2,2,0) = 2.
-        assert_eq!(axial_hex_distance((0, 0), (2, -2)), 2);
-        assert_eq!(axial_hex_distance((5, 3), (5, 3)), 0);
+        assert_eq!(axial_tile_distance((0, 0), (2, -2)), 2);
+        assert_eq!(axial_tile_distance((5, 3), (5, 3)), 0);
         // Symmetric.
         assert_eq!(
-            axial_hex_distance((2, -2), (0, 0)),
-            axial_hex_distance((0, 0), (2, -2))
+            axial_tile_distance((2, -2), (0, 0)),
+            axial_tile_distance((0, 0), (2, -2))
         );
         // Adjacent hexes.
-        assert_eq!(axial_hex_distance((0, 0), (1, 0)), 1);
-        assert_eq!(axial_hex_distance((0, 0), (1, -1)), 1);
+        assert_eq!(axial_tile_distance((0, 0), (1, 0)), 1);
+        assert_eq!(axial_tile_distance((0, 0), (1, -1)), 1);
     }
 
     #[test]

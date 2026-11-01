@@ -58,7 +58,7 @@ impl CorePlayer {
     /// Create a new player at the given spawn position.
     /// Sets vehicle to None and level to 1 with starter gold.
     pub fn new(address: String, spawn_position: Position) -> Self {
-        let hex_id = spawn_position.to_hex(10.0);
+        let hex_id = spawn_position.to_tile_id(17.320508);
         Self {
             address,
             position: spawn_position,
@@ -132,11 +132,11 @@ mod tests {
 
     #[test]
     fn player_new_spawn_position() {
-        // Use a position that maps to a non-zero hex
-        let p = CorePlayer::new("0x5678".into(), Position::new(17.32, 15.0));
-        assert_eq!(p.position.x, 17.32);
-        assert_eq!(p.position.y, 15.0);
-        assert!(p.hex_id > 0, "hex_id should be non-zero for offset position");
+        // Use a position that maps to a non-zero tile (in square (1, 1)).
+        let p = CorePlayer::new("0x5678".into(), Position::new(25.0, 20.0));
+        assert_eq!(p.position.x, 25.0);
+        assert_eq!(p.position.y, 20.0);
+        assert!(p.hex_id > 0, "tile id should be non-zero for offset position");
     }
 
     #[test]

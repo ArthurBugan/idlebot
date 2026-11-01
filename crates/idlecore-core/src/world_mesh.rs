@@ -5,8 +5,8 @@
 //! than one object per hex. Mesh data here is engine-agnostic: a list of
 //! vertices, triangles, and UV coordinates that the client renders.
 
-use crate::hex::HexCoord;
-use crate::world_gen::HexCell;
+use crate::grid::TileCoord;
+use crate::world_gen::WorldCell;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -114,7 +114,7 @@ impl Default for MeshGenOptions {
 }
 
 /// Return the six corner offsets for a pointy-top hex centered at (cx, cz),
-/// matching `HexCoord::to_pixel` (Red Blob pointy-top grid). Corners start at
+/// matching `TileCoord::to_pixel` (Red Blob pointy-top grid). Corners start at
 /// 30° so tessellated hexes share edges without gaps or overlaps.
 fn hex_corners(cx: f32, cz: f32, hex_radius: f32) -> [(f32, f32); 6] {
     let mut corners = [(0.0, 0.0); 6];
@@ -131,7 +131,7 @@ fn hex_corners(cx: f32, cz: f32, hex_radius: f32) -> [(f32, f32); 6] {
 /// The 6 corner indices of the center hex plus neighbor centers for shared
 /// corner generation. For a flat-top grid, we generate a triangulated fan per hex.
 fn hex_to_world(q: i32, r: i32, hex_radius: f32) -> (f32, f32) {
-    HexCoord::new(q, r).to_pixel(hex_radius)
+    TileCoord::new(q, r).to_pixel(hex_radius)
 }
 
 /// Generate a terrain mesh for a list of hex cells (a chunk).
@@ -141,7 +141,7 @@ fn hex_to_world(q: i32, r: i32, hex_radius: f32) -> (f32, f32) {
 /// sampling so adjacent chunk meshes can share edges. The `elevation` of the
 /// cell raises its center and corners.
 pub fn generate_chunk_terrain_mesh(
-    cells: &[HexCell],
+    cells: &[WorldCell],
     options: &MeshGenOptions,
 ) -> ChunkMesh {
     let hr = options.hex_radius;
@@ -149,13 +149,13 @@ pub fn generate_chunk_terrain_mesh(
     let mut vertex_index: HashMap<(i32, i32, i32), u32> = HashMap::new(); // corner id → index
 
     for cell in cells {
-        let (cx, cz) = hex_to_world(cell.q, cell.r, hr);
+        let (cx, cz) = hex_to_world(cell.x, cell.y, hr);
         let elev = cell.elevation * options.elevation_scale;
 
         let color = cell.terrain.minimap_color();
 
         // Center vertex
-        let center_key = (cell.q, cell.r, 0);
+        let center_key = (cell.x, cell.y, 0);
         let center_idx = *vertex_index.entry(center_key).or_insert_with(|| {
             let i = mesh.vertices.len() as u32;
             mesh.vertices.push(MeshVertex { x: cx, y: elev, z: cz, u: 0.5, v: 0.5 });
@@ -169,7 +169,7 @@ pub fn generate_chunk_terrain_mesh(
         let mut corner_indices = [0u32; 6];
         for (i, (cx2, cz2)) in corners.iter().enumerate() {
             // approximation: neighboring hex shares the corner at (q',r')
-            let key = (cell.q, cell.r, (i + 1) as i32);
+            let key = (cell.x, cell.y, (i + 1) as i32);
             corner_indices[i] = *vertex_index.entry(key).or_insert_with(|| {
                 let idx = mesh.vertices.len() as u32;
                 let u = 0.5 + 0.5 * (cx2 - cx) / hr;
@@ -195,14 +195,14 @@ pub fn generate_chunk_terrain_mesh(
 }
 
 /// Determine if a hex is water by its cell classification.
-pub fn cell_is_water(cell: &HexCell) -> bool {
+pub fn cell_is_water(cell: &WorldCell) -> bool {
     cell.water.is_water()
 }
 
 /// Generate a flat water mesh for the water cells in a chunk.
 /// Water spans the same hex geometry at a fixed low elevation.
 pub fn generate_chunk_water_mesh(
-    cells: &[HexCell],
+    cells: &[WorldCell],
     options: &MeshGenOptions,
 ) -> ChunkMesh {
     let hr = options.hex_radius;
@@ -212,7 +212,7 @@ pub fn generate_chunk_water_mesh(
         if !cell_is_water(cell) {
             continue;
         }
-        let (cx, cz) = hex_to_world(cell.q, cell.r, hr);
+        let (cx, cz) = hex_to_world(cell.x, cell.y, hr);
         let center = mesh.vertices.len() as u32;
         mesh.vertices.push(MeshVertex { x: cx, y: sea_level, z: cz, u: 0.5, v: 0.5 });
         mesh.colors.push(cell.terrain.minimap_color());
@@ -237,7 +237,7 @@ pub fn generate_chunk_water_mesh(
 
 /// Group porous cells into a water mask summary for a chunk.
 /// Returns fraction of chunk hexes that are water.
-pub fn water_fraction(cells: &[HexCell]) -> f32 {
+pub fn water_fraction(cells: &[WorldCell]) -> f32 {
     if cells.is_empty() {
         return 0.0;
     }
@@ -247,7 +247,7 @@ pub fn water_fraction(cells: &[HexCell]) -> f32 {
 /// Total byte estimate of logical cell data (for memory budgeting).
 pub fn estimate_chunk_cell_bytes(chunk_size: i32) -> usize {
     let hexes = chunk_size * chunk_size;
-    hexes as usize * std::mem::size_of::<HexCell>()
+    hexes as usize * std::mem::size_of::<WorldCell>()
 }
 
 #[cfg(test)]
@@ -255,11 +255,11 @@ mod tests {
     use super::*;
     use crate::world_gen::WorldGenConfig;
 
-    fn sample_cells() -> Vec<HexCell> {
+    fn sample_cells() -> Vec<WorldCell> {
         let config = WorldGenConfig::default();
         crate::world_gen::chunk_hexes(0, 0, 4)
             .iter()
-            .map(|h| config.generate_hex(h.q, h.r))
+            .map(|h| config.generate_cell(h.x, h.y))
             .collect()
     }
     use sample_cells as gen_cells;

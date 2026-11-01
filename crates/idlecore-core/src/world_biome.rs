@@ -1,6 +1,6 @@
 //! Biome definitions and weighted/interpolated biome influence (§9, §10, FR-02).
 //!
-//! Biomes are thin definitions referenced by id from [`HexCell`](crate::world_gen::HexCell).
+//! Biomes are thin definitions referenced by id from [`WorldCell`](crate::world_gen::WorldCell).
 //! Rendering and gameplay look up biome behavior here. Biome boundaries are
 //! never hard; `biome_influences` returns fractional weights across nearby
 //! biomes so renderers can produce natural transitions.

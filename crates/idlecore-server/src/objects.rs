@@ -31,8 +31,6 @@ fn obj_hash(hex_id: u64, slot: u8) -> u64 {
 }
 
 /// Axial neighbor offsets (pointy-top hex grid).
-const AXIAL_NEIGHBORS: [(i32, i32); 6] =
-    [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)];
 
 /// Spacing radius (in axial hex distance) between natural resource nodes:
 /// a hex only spawns when its priority hash beats every hex within this
@@ -46,19 +44,20 @@ const SPACING_RADIUS: i32 = 3;
 /// Water/city hexes compete too — they just never spawn — which only
 /// thins coastlines further.
 fn hex_wins_spacing(hex_id: u64) -> bool {
-    let coord = idlecore_core::hex::HexCoord::from_id(hex_id);
+    let coord = idlecore_core::grid::TileCoord::from_id(hex_id);
     let my = obj_hash(hex_id, 0);
     for dq in -SPACING_RADIUS..=SPACING_RADIUS {
         for dr in -SPACING_RADIUS..=SPACING_RADIUS {
             if dq == 0 && dr == 0 {
                 continue;
             }
-            // Axial distance from the center hex to this offset.
-            let dist = dq.abs().max(dr.abs()).max((dq + dr).abs());
+            // Chebyshev distance from the center tile to this offset
+            // (8-way square neighborhood).
+            let dist = dq.abs().max(dr.abs());
             if dist > SPACING_RADIUS {
                 continue;
             }
-            let n = idlecore_core::hex::HexCoord::new(coord.q + dq, coord.r + dr);
+            let n = idlecore_core::grid::TileCoord::new(coord.x + dq, coord.y + dr);
             if obj_hash(n.to_id(), 0) >= my {
                 return false;
             }
@@ -176,18 +175,18 @@ pub fn ensure_objects(ctx: &ReducerContext, hex_id: u64, terrain: TerrainType) -
 
     // Ground-slot cells owned by this hex, plus the cells already visually
     // occupied by existing rows (planted trees snap to slot centers too).
-    use idlecore_core::hex_grid::HexGrid;
-    use idlecore_core::slots::{slot_center, slot_hex, world_pos_to_slot, SLOT_SIZE};
+    use idlecore_core::grid::WorldGrid;
+    use idlecore_core::slots::{slot_center, slot_tile, world_pos_to_slot, SLOT_SIZE};
     use idlecore_core::world_gen::WorldGenConfig;
     let (hq, hr) = crate::types::hex_coords_of(hex_id);
-    let (hx, hy) = HexGrid::axial_to_world(hq, hr, WorldGenConfig::HEX_SIZE);
-    let span = 2.0 * WorldGenConfig::HEX_SIZE;
+    let (hx, hy) = WorldGrid::tile_center(hq, hr, WorldGenConfig::TILE_SIZE);
+    let span = 2.0 * WorldGenConfig::TILE_SIZE;
     let (sx0, sy0) = world_pos_to_slot(hx - span, hy - span);
     let (sx1, sy1) = world_pos_to_slot(hx + span, hy + span);
     let mut cells: Vec<(i32, i32)> = Vec::new();
     for sx in sx0..=sx1 {
         for sy in sy0..=sy1 {
-            if slot_hex(sx, sy) == (hq, hr) {
+            if slot_tile(sx, sy) == (hq, hr) {
                 cells.push((sx, sy));
             }
         }
@@ -351,7 +350,7 @@ pub fn gather_object(
     address: &str,
     object_id: u64,
 ) -> Result<(), String> {
-    use crate::types::{hex_distance, now_secs};
+    use crate::types::{tile_distance, now_secs};
     let now = now_secs(ctx);
     let mut p = find_player(ctx, &address.to_lowercase())
         .ok_or_else(|| "Player not found".to_string())?;
@@ -364,7 +363,7 @@ pub fn gather_object(
         .find(object_id)
         .ok_or_else(|| "Object not found".to_string())?;
     let (hq, hr) = crate::types::hex_coords_of(obj.hex_id);
-    let dist = hex_distance(p.hex_q, p.hex_r, hq, hr);
+    let dist = tile_distance(p.hex_q, p.hex_r, hq, hr);
     if dist > 1 {
         return Err("Out of range (1 hex)".to_string());
     }
@@ -461,13 +460,13 @@ fn require_empty_cell(
     slot_y: i32,
 ) -> Result<(f32, f32), String> {
     // No placing across hex borders by aiming at a shared edge slot.
-    if idlecore_core::slots::slot_hex(slot_x, slot_y) != (hq, hr) {
+    if idlecore_core::slots::slot_tile(slot_x, slot_y) != (hq, hr) {
         return Err("Slot is outside the selected hex".to_string());
     }
-    let (hx, hy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
+    let (hx, hy) = idlecore_core::grid::WorldGrid::tile_center(
         hq,
         hr,
-        idlecore_core::world_gen::WorldGenConfig::HEX_SIZE,
+        idlecore_core::world_gen::WorldGenConfig::TILE_SIZE,
     );
     let (cx, cy) = idlecore_core::slots::slot_center(slot_x, slot_y);
     let offset = (cx - hx, cy - hy);
@@ -506,7 +505,7 @@ pub fn plant_tree(
     slot_x: i32,
     slot_y: i32,
 ) -> Result<(), String> {
-    use crate::types::{hex_coords_of, hex_distance, hex_tile, now_secs};
+    use crate::types::{hex_coords_of, tile_distance, hex_tile, now_secs};
     let now = now_secs(ctx);
     let mut p = find_player(ctx, &address.to_lowercase())
         .ok_or_else(|| "Player not found".to_string())?;
@@ -520,7 +519,7 @@ pub fn plant_tree(
         .hex_id()
         .find(hex_id)
         .ok_or_else(|| "Hex not found".to_string())?;
-    if hex_distance(p.hex_q, p.hex_r, hq, hr) > 1 {
+    if tile_distance(p.hex_q, p.hex_r, hq, hr) > 1 {
         return Err("Out of range (1 hex)".to_string());
     }
     // Trees grow everywhere natural except shores, cities and mountains.
@@ -566,7 +565,7 @@ pub fn plant_grass(
     slot_x: i32,
     slot_y: i32,
 ) -> Result<(), String> {
-    use crate::types::{hex_coords_of, hex_distance, hex_tile, now_secs};
+    use crate::types::{hex_coords_of, tile_distance, hex_tile, now_secs};
     let now = now_secs(ctx);
     let mut p = find_player(ctx, &address.to_lowercase())
         .ok_or_else(|| "Player not found".to_string())?;
@@ -580,7 +579,7 @@ pub fn plant_grass(
         .hex_id()
         .find(hex_id)
         .ok_or_else(|| "Hex not found".to_string())?;
-    if hex_distance(p.hex_q, p.hex_r, hq, hr) > 1 {
+    if tile_distance(p.hex_q, p.hex_r, hq, hr) > 1 {
         return Err("Out of range (1 hex)".to_string());
     }
     // Grass grows wherever trees do — every natural land terrain.
@@ -626,7 +625,7 @@ pub fn place_craft_bench(
     slot_x: i32,
     slot_y: i32,
 ) -> Result<(), String> {
-    use crate::types::{hex_coords_of, hex_distance, hex_tile, now_secs};
+    use crate::types::{hex_coords_of, tile_distance, hex_tile, now_secs};
     let now = now_secs(ctx);
     let mut p = find_player(ctx, &address.to_lowercase())
         .ok_or_else(|| "Player not found".to_string())?;
@@ -640,7 +639,7 @@ pub fn place_craft_bench(
         .hex_id()
         .find(hex_id)
         .ok_or_else(|| "Hex not found".to_string())?;
-    if hex_distance(p.hex_q, p.hex_r, hq, hr) > 1 {
+    if tile_distance(p.hex_q, p.hex_r, hq, hr) > 1 {
         return Err("Out of range (1 hex)".to_string());
     }
     // A workbench on water would be optimistic; anywhere else on land works.
@@ -690,24 +689,24 @@ pub fn craft(
     slot_y: i32,
     ingredients: Vec<String>,
 ) -> Result<(), String> {
-    use crate::types::{hex_coords_of, hex_distance, now_secs, CRAFT_INGREDIENTS};
+    use crate::types::{hex_coords_of, tile_distance, now_secs, CRAFT_INGREDIENTS};
     let now = now_secs(ctx);
     let mut p = find_player(ctx, &address.to_lowercase())
         .ok_or_else(|| "Player not found".to_string())?;
     cooldown_left(&p, now)?;
 
     let (hq, hr) = hex_coords_of(hex_id);
-    if hex_distance(p.hex_q, p.hex_r, hq, hr) > 1 {
+    if tile_distance(p.hex_q, p.hex_r, hq, hr) > 1 {
         return Err("Out of range (1 hex)".to_string());
     }
     // The target plot must hold the bench: exact cell, exact kind.
-    if idlecore_core::slots::slot_hex(slot_x, slot_y) != (hq, hr) {
+    if idlecore_core::slots::slot_tile(slot_x, slot_y) != (hq, hr) {
         return Err("Slot is outside the selected hex".to_string());
     }
-    let (hx, hy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
+    let (hx, hy) = idlecore_core::grid::WorldGrid::tile_center(
         hq,
         hr,
-        idlecore_core::world_gen::WorldGenConfig::HEX_SIZE,
+        idlecore_core::world_gen::WorldGenConfig::TILE_SIZE,
     );
     let (cx, cy) = idlecore_core::slots::slot_center(slot_x, slot_y);
     let (ox, oy) = (cx - hx, cy - hy);
@@ -880,20 +879,20 @@ mod tests {
         // The roller only places nodes on cells owned by the hex; every
         // owned cell's center must lie within the hex circumradius, so
         // snapped offsets can never escape the hex.
-        use idlecore_core::slots::{slot_center, slot_hex, world_pos_to_slot};
+        use idlecore_core::slots::{slot_center, slot_tile, world_pos_to_slot};
         use idlecore_core::world_gen::WorldGenConfig;
         for hex_id in [0u64, 12345, u64::from(u32::MAX)] {
             let (hq, hr) = crate::types::hex_coords_of(hex_id);
-            let (hx, hy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
+            let (hx, hy) = idlecore_core::grid::WorldGrid::tile_center(
                 hq,
                 hr,
-                WorldGenConfig::HEX_SIZE,
+                WorldGenConfig::TILE_SIZE,
             );
             let (sq, sr) = world_pos_to_slot(hx, hy);
             let mut owned = 0;
             for sx in sq - 5..=sq + 5 {
                 for sy in sr - 5..=sr + 5 {
-                    if slot_hex(sx, sy) != (hq, hr) {
+                    if slot_tile(sx, sy) != (hq, hr) {
                         continue;
                     }
                     owned += 1;
@@ -926,32 +925,32 @@ mod tests {
 
     #[test]
     fn natural_nodes_keep_distance_from_each_other() {
-        use idlecore_core::hex::HexCoord;
+        use idlecore_core::grid::TileCoord;
 
         // Over a patch of hexes, no two hexes within SPACING_RADIUS of each
         // other may both win the spacing gate — every node keeps a wide,
         // guaranteed gap to the next resource.
         let wins: std::collections::HashSet<u64> = (-40..=40)
             .flat_map(|q| (-40..=40).map(move |r| (q, r)))
-            .map(|(q, r)| HexCoord::new(q, r).to_id())
+            .map(|(q, r)| TileCoord::new(q, r).to_id())
             .filter(|&id| hex_wins_spacing(id))
             .collect();
 
         let mut winners = 0usize;
         for q in -40..=40 {
             for r in -40..=40 {
-                let id = HexCoord::new(q, r).to_id();
+                let id = TileCoord::new(q, r).to_id();
                 if !wins.contains(&id) {
                     continue;
                 }
                 winners += 1;
                 for dq in -SPACING_RADIUS..=SPACING_RADIUS {
                     for dr in -SPACING_RADIUS..=SPACING_RADIUS {
-                        let dist = dq.abs().max(dr.abs()).max((dq + dr).abs());
+                        let dist = dq.abs().max(dr.abs());
                         if dist == 0 || dist > SPACING_RADIUS {
                             continue;
                         }
-                        let neighbor = HexCoord::new(q + dq, r + dr).to_id();
+                        let neighbor = TileCoord::new(q + dq, r + dr).to_id();
                         assert!(
                             !wins.contains(&neighbor),
                             "hexes ({q},{r}) and ({},{}) are {dist} apart but both host nodes",
@@ -969,11 +968,11 @@ mod tests {
 
     #[test]
     fn spacing_gate_is_pure_and_stable() {
-        use idlecore_core::hex::HexCoord;
+        use idlecore_core::grid::TileCoord;
 
         let ids: Vec<u64> = [(-13, 7), (0, 0), (512, -1024), (i32::MAX, i32::MIN)]
             .iter()
-            .map(|&(q, r)| HexCoord::new(q, r).to_id())
+            .map(|&(q, r)| TileCoord::new(q, r).to_id())
             .collect();
         for id in ids {
             assert_eq!(hex_wins_spacing(id), hex_wins_spacing(id));

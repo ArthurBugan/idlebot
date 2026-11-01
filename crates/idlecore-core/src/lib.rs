@@ -7,9 +7,9 @@ use crate::cosmetic::CosmeticCategory;
 
 pub mod actions;
 pub mod economy;
-pub mod hex;
+pub mod grid;
 pub mod world;
-pub mod hex_grid;
+
 pub mod slots;
 pub mod hex_tile;
 pub mod marketplace;
@@ -83,8 +83,9 @@ impl Position {
     }
 
     /// Convert world 2D position to axial hex coordinates.
-    pub fn to_hex(&self, hex_radius: f32) -> u64 {
-        let (q, r) = hex::world_pos_to_hex(self.x, self.y, hex_radius);
+    /// Convert world 2D position to square tile id (packed (x, y) u64).
+    pub fn to_tile_id(&self, tile_size: f32) -> u64 {
+        let (q, r) = grid::world_pos_to_tile(self.x, self.y, tile_size);
         // Pack q and r into a u64: (q as u32) << 32 | (r as u32)
         ((q as u32 as u64) << 32) | (r as u32 as u64)
     }
@@ -212,7 +213,7 @@ impl Player {
         Self {
             address,
             position: spawn_position,
-            hex_id: spawn_position.to_hex(10.0),
+            hex_id: spawn_position.to_tile_id(17.320508),
             vehicle: Vehicle::None,
             xp: 0,
             gold: 100,
@@ -384,16 +385,16 @@ mod tests {
     #[test]
     fn position_to_hex_center() {
         let pos = Position::new(0.0, 0.0);
-        let hex = pos.to_hex(10.0);
+        let hex = pos.to_tile_id(17.320508);
         assert_eq!(hex, 0);
     }
 
     #[test]
     fn position_to_hex_asymmetric() {
-        // Use positions that map to different hexes
-        let a = Position::new(17.32, 0.0);   // Should map to q=1, r=0
-        let b = Position::new(0.0, 15.0);    // Should map to q=0, r=1
-        assert_ne!(a.to_hex(10.0), b.to_hex(10.0));
+        // Use positions that map to different tiles: (1, 0) vs (0, 1).
+        let a = Position::new(25.0, 1.0);   // tile (1, 0)
+        let b = Position::new(1.0, 25.0);   // tile (0, 1)
+        assert_ne!(a.to_tile_id(17.320508), b.to_tile_id(17.320508));
     }
 
     #[test]

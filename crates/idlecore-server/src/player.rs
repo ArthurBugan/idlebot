@@ -3,7 +3,7 @@
 
 use spacetimedb::{ReducerContext, Table};
 use crate::types::{
-    hex_center, hex_id_of, now_secs, player, Player, RAPID_LOGIN_BAN_SECS, RAPID_LOGIN_WINDOW_SECS,
+    tile_center, tile_id_of, now_secs, player, Player, RAPID_LOGIN_BAN_SECS, RAPID_LOGIN_WINDOW_SECS,
     STARTING_GOLD,
 };
 
@@ -54,8 +54,8 @@ pub fn resolve_login(
     // before the Earth replica, or coordinates outside the map): snap to the
     // resolved land spawn.
     if !idlecore_core::earth::is_land_at(player.position_x, player.position_y) {
-        let (sq, sr) = idlecore_core::earth::resolve_spawn_hex();
-        let (sx, sy) = hex_center(sq, sr);
+        let (sq, sr) = idlecore_core::earth::resolve_spawn_tile();
+        let (sx, sy) = tile_center(sq, sr);
         tracing::info!(
             "RELOCATE {lower}: was at sea ({:.0},{:.0}) -> spawn ({sq},{sr})",
             player.position_x,
@@ -63,7 +63,7 @@ pub fn resolve_login(
         );
         player.hex_q = sq;
         player.hex_r = sr;
-        player.hex_id = hex_id_of(sq, sr);
+        player.hex_id = tile_id_of(sq, sr);
         player.position_x = sx;
         player.position_y = sy;
     }
@@ -128,8 +128,8 @@ pub fn login(
 /// Create a brand-new player (Spec 014): starting gold 100, level 1, spawned
 /// on solid land (resolved Earth-replica spawn, never mid-ocean).
 fn new_player(address: &str, identity: &str, now: u64) -> Player {
-    let (sq, sr) = idlecore_core::earth::resolve_spawn_hex();
-    let (sx, sy) = hex_center(sq, sr);
+    let (sq, sr) = idlecore_core::earth::resolve_spawn_tile();
+    let (sx, sy) = tile_center(sq, sr);
     Player {
         address: address.to_string(),
         identity: identity.to_string(),
@@ -148,7 +148,7 @@ fn new_player(address: &str, identity: &str, now: u64) -> Player {
         position_y: sy,
         hex_q: sq,
         hex_r: sr,
-        hex_id: hex_id_of(sq, sr),
+        hex_id: tile_id_of(sq, sr),
         vehicle: "None".to_string(),
         cosmetics: "[]".to_string(),
         templates: "[]".to_string(),
@@ -249,7 +249,7 @@ pub fn update_hex(ctx: &ReducerContext, address: &str, q: i32, r: i32, x: f32, y
     };
     p.hex_q = q;
     p.hex_r = r;
-    p.hex_id = hex_id_of(q, r);
+    p.hex_id = tile_id_of(q, r);
     p.position_x = x;
     p.position_y = y;
     p.last_seen = now;

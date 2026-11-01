@@ -13,7 +13,7 @@ use idlecore_core::defense_config::{ITEM_CAPITAL_CORE, ITEM_STONE, ITEM_WOOD};
 use crate::economy::find_player;
 use crate::objects::{add_item, count_item, remove_item};
 use crate::types::{
-    capital, defense_structure, hex_distance, hex_id_of, now_secs, player, raid_wave, territory,
+    capital, defense_structure, tile_distance, tile_id_of, now_secs, player, raid_wave, territory,
     hex_tile, Capital, DefenseStructure, Territory, ACTION_COOLDOWN_SECS,
 };
 use crate::world::ensure_hex;
@@ -57,12 +57,24 @@ pub fn claim_error(
     }
     let adjacent = owned
         .iter()
-        .any(|&o| hex_distance(o.0, o.1, candidate.0, candidate.1) == 1);
+        .any(|&o| tile_distance(o.0, o.1, candidate.0, candidate.1) == 1);
     if !adjacent {
         return Some(ClaimError::NotAdjacent);
     }
     let radius = cfg::claim_radius(level);
-    if hex_distance(capital.0, capital.1, candidate.0, candidate.1) > radius {
+    // REV9: the claimable region is a SQUARE in world space (axis-aligned
+    // |dx|/|dy| gate) instead of a hex disc. Half-side = radius × the
+    // adjacent-hex world step (HEX_SIZE·√3), so the straight-line reach on
+    // each axis matches the old disc; the corners reach farther (area
+    // ×4/π ≈ 1.27).
+    let size = idlecore_core::world_gen::WorldGenConfig::TILE_SIZE;
+    // Square gate: half-side = radius tile edges (17.32 wu each), so the
+    // straight-line reach on each axis matches the radius count in steps.
+    let half_side = radius as f32 * size;
+    let (cwx, cwy) = idlecore_core::grid::WorldGrid::tile_center(capital.0, capital.1, size);
+    let (pwx, pwy) =
+        idlecore_core::grid::WorldGrid::tile_center(candidate.0, candidate.1, size);
+    if (pwx - cwx).abs() > half_side || (pwy - cwy).abs() > half_side {
         return Some(ClaimError::OutOfRadius);
     }
     None
@@ -73,7 +85,25 @@ pub fn claim_error(
 pub fn capital_spacing_ok(candidate: (i32, i32), live_capitals: &[(i32, i32)]) -> bool {
     live_capitals
         .iter()
-        .all(|&c| hex_distance(c.0, c.1, candidate.0, candidate.1) >= cfg::MIN_CAPITAL_SPACING)
+        .all(|&c| tile_distance(c.0, c.1, candidate.0, candidate.1) >= cfg::MIN_CAPITAL_SPACING)
+}
+
+/// Tiles of the farmer-starter square a fresh capital auto-owns for free:
+/// every tile within [`cfg::CAPITAL_STARTER_RADIUS`] Chebyshev steps of the
+/// capital, the capital itself excluded (it is owned separately). Pure —
+/// the placement reducer still re-checks water/ownership per tile.
+pub fn starter_square_tiles(capital: (i32, i32), radius: i32) -> Vec<(i32, i32)> {
+    let (cq, cr) = capital;
+    let mut tiles = Vec::new();
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            let (q, r) = (cq + dx, cr + dy);
+            if (q, r) != capital {
+                tiles.push((q, r));
+            }
+        }
+    }
+    tiles
 }
 
 // ---------------------------------------------------------------------------
@@ -215,13 +245,33 @@ pub fn place_capital(
             capital_id = Some(row.capital_id);
         }
     }
-    // The capital hex is owned outright (no claim cost).
-    ctx.db.territory().insert(Territory {
-        hex_id,
-        owner: p.address.clone(),
-        capital_id: capital_id.unwrap_or(0),
-        claimed_at: now,
-    });
+    // The capital hex is owned outright (no claim cost), and the
+    // starter square around it is granted free land: every land tile
+    // within cfg::CAPITAL_STARTER_RADIUS that nobody owns yet. Water
+    // tiles and tiles owned by anyone are left out.
+    for (q, r) in crate::capital::starter_square_tiles((hq, hr), cfg::CAPITAL_STARTER_RADIUS) {
+        let tile_id = tile_id_of(q, r);
+        if is_owned(ctx, tile_id) {
+            continue;
+        }
+        ensure_hex(ctx, q, r);
+        if ctx
+            .db
+            .hex_tile()
+            .hex_id()
+            .find(tile_id)
+            .map(|t| t.terrain == "Water")
+            .unwrap_or(true)
+        {
+            continue;
+        }
+        ctx.db.territory().insert(Territory {
+            hex_id: tile_id,
+            owner: p.address.clone(),
+            capital_id: capital_id.unwrap_or(0),
+            claimed_at: now,
+        });
+    }
     touch(ctx, &p.address, now);
     tracing::info!("PLACE-CAPITAL {address} @hex {hex_id}");
     Ok(())
@@ -254,7 +304,7 @@ pub fn claim_land(ctx: &ReducerContext, address: &str, hex_id: u64) -> Result<()
         .filter(&p.address)
         .map(|t| crate::types::hex_coords_of(t.hex_id))
         .collect();
-    if owned.iter().any(|&o| hex_id_of(o.0, o.1) == hex_id) {
+    if owned.iter().any(|&o| tile_id_of(o.0, o.1) == hex_id) {
         return Err("You already own that hex".to_string());
     }
     let (cq, cr) = crate::types::hex_coords_of(cap.hex_id);
@@ -360,10 +410,10 @@ pub fn capital_add_xp(ctx: &ReducerContext, cap: &Capital, xp: u64, _now: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use idlecore_core::hex::HexCoord;
+    use idlecore_core::grid::TileCoord;
 
     fn id(q: i32, r: i32) -> (i32, i32) {
-        (HexCoord::new(q, r).q, HexCoord::new(q, r).r)
+        (TileCoord::new(q, r).x, TileCoord::new(q, r).y)
     }
 
     #[test]
@@ -387,27 +437,40 @@ mod tests {
 
     #[test]
     fn claim_radius_gates_far_hexes() {
-        // REV8: L1 radius is 83, so the decisive far-hex sits past it: an
-        // ownership chain reaching distance 90 keeps the adjacency gate
-        // open, and (0,91) is beyond the L1 radius (90 in-reach at L1,
-        // 92+ rejected). L5 caps at 91.
-        let owned = vec![id(0, 0), id(0, 90)];
+        // REV10 square: half-side = radius tile edges (17.32 wu each).
+        // L1 radius 83 → half-side 1437.6 wu; L5 cap 91 → 1576.2 wu.
+        let owned = vec![id(0, 0), id(0, 100)];
+        // (0,101) is 1749 wu out on the z axis: beyond even the L5 cap
+        // square (1576.2 wu).
         assert_eq!(
-            claim_error(id(0, 91), false, &owned, id(0, 0), 1),
+            claim_error(id(0, 101), false, &owned, id(0, 0), 1),
+            Some(ClaimError::OutOfRadius)
+        );
+        assert_eq!(
+            claim_error(id(0, 101), false, &owned, id(0, 0), 5),
             Some(ClaimError::OutOfRadius),
-            "distance 91 > L1 radius 83"
+            "z 1749 wu > cap half-side 1576.2 wu"
         );
-        // L4 radius 89 still rejects 91; the capped L5 radius 91 admits it
-        // as part of the ring boundary.
+        // (0,88) is 1524 wu out: rejected at L1 (1437.6), inside at L5.
+        // Owned (0,89) keeps the adjacency gate open for it.
         assert_eq!(
-            claim_error(id(0, 91), false, &owned, id(0, 0), 5),
+            claim_error(id(0, 88), false, &vec![id(0, 0), id(0, 89)], id(0, 0), 1),
+            Some(ClaimError::OutOfRadius)
+        );
+        assert_eq!(claim_error(id(0, 88), false, &vec![id(0, 0), id(0, 89)], id(0, 0), 5), None);
+        // (0,82) is 1420.3 wu out: inside the L1 square.
+        assert_eq!(
+            claim_error(id(0, 82), false, &vec![id(0, 0), id(0, 83)], id(0, 0), 1),
             None
         );
-        // A distance-83 hex adjacent to an owned tail hex passes both gates.
+        // Same gate on the x axis: (84,0) is 1454.9 wu east at L1, inside
+        // the L5 square.
+        let row = vec![id(0, 0), id(83, 0)];
         assert_eq!(
-            claim_error(id(0, 83), false, &vec![id(0, 0), id(0, 82)], id(0, 0), 1),
-            None
+            claim_error(id(84, 0), false, &row, id(0, 0), 1),
+            Some(ClaimError::OutOfRadius)
         );
+        assert_eq!(claim_error(id(84, 0), false, &row, id(0, 0), 5), None);
         // Water is never claimable, whatever the radius.
         assert_eq!(
             claim_error(id(0, 1), true, &owned, id(0, 0), 5),
@@ -417,12 +480,11 @@ mod tests {
 
     #[test]
     fn claims_keep_minimum_distance_between_capitals() {
-        // REV8 spacing cap: 200 hexes between capitals (two full capped
-        // radius-91 discs + a walking gap).
+        // REV8 spacing: 200 tile steps Chebyshev between capitals (two
+        // full capped radius-91 squares + a walking gap).
         assert!(capital_spacing_ok(id(200, 0), &[id(0, 0)]));
-        assert!(capital_spacing_ok(id(100, 100), &[id(0, 0)]), "distance 200");
+        assert!(capital_spacing_ok(id(0, 200), &[id(0, 0)]), "axis-aligned");
         assert!(!capital_spacing_ok(id(199, 0), &[id(0, 0)]));
-        assert!(!capital_spacing_ok(id(99, 100), &[id(0, 0)]), "distance 199");
         // Empty world accepts anything.
         assert!(capital_spacing_ok(id(0, 0), &[]));
         // Several capitals each enforce the gap.
@@ -430,7 +492,7 @@ mod tests {
         assert!(!capital_spacing_ok(id(100, 0), &live));
         assert!(
             !capital_spacing_ok(id(390, 0), &live),
-            "10 hexes from (400,0)"
+            "10 tiles from (400,0)"
         );
         // (200,0): 200 from (0,0) and 200 from (400,0) — legal.
         assert!(capital_spacing_ok(id(200, 0), &live));
@@ -451,5 +513,34 @@ mod tests {
         // The capital hex itself is owned without paying; claims hang off it.
         let owned = vec![id(0, 0)];
         assert_eq!(claim_error(id(1, 0), false, &owned, id(0, 0), 1), None);
+    }
+
+    #[test]
+    fn starter_square_covers_radius_excluding_capital() {
+        use idlecore_core::defense_config::CAPITAL_STARTER_RADIUS;
+        let tiles = starter_square_tiles((0, 0), CAPITAL_STARTER_RADIUS);
+        // (2R+1)² minus the capital itself.
+        let w = 2 * CAPITAL_STARTER_RADIUS + 1;
+        assert_eq!(tiles.len() as i32, w * w - 1);
+        // The capital hex is never in the list.
+        assert!(!tiles.contains(&(0, 0)));
+        // Every corner of the square is present.
+        for corner in [
+            (-CAPITAL_STARTER_RADIUS, -CAPITAL_STARTER_RADIUS),
+            (CAPITAL_STARTER_RADIUS, -CAPITAL_STARTER_RADIUS),
+            (-CAPITAL_STARTER_RADIUS, CAPITAL_STARTER_RADIUS),
+            (CAPITAL_STARTER_RADIUS, CAPITAL_STARTER_RADIUS),
+        ] {
+            assert!(tiles.contains(&corner));
+        }
+        // Nothing extends past the square.
+        assert!(tiles.iter().all(|(q, r)| {
+            q.abs() <= CAPITAL_STARTER_RADIUS && r.abs() <= CAPITAL_STARTER_RADIUS
+        }));
+        // Anchored away from origin too.
+        let shifted = starter_square_tiles((7, -3), 2);
+        assert!(!shifted.contains(&(7, -3)));
+        assert!(shifted.contains(&(9, -5)));
+        assert!(!shifted.contains(&(10, -5)));
     }
 }

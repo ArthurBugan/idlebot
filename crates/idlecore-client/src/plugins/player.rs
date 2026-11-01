@@ -5,7 +5,7 @@
 //! the vehicle indicator (colored diamond + label) and the eco aura glow.
 
 use bevy::prelude::*;
-use idlecore_core::hex::world_pos_to_hex;
+use idlecore_core::grid::world_pos_to_tile;
 use idlecore_core::world_gen::{hex_to_chunk_coord, WorldGenConfig};
 use crate::player::{ClientPlayer, PlayerOrientation, PlayerTransform};
 use crate::plugins::world::StreamingWorldResource;
@@ -172,11 +172,11 @@ fn finish_movement(
 
 /// True if the hex at world `(x, y)` is known and walkable.
 fn walkable_at(world: &StreamingWorldResource, x: f32, y: f32) -> bool {
-    let (hq, hr) = world_pos_to_hex(x, y, WorldGenConfig::HEX_SIZE);
+    let (hq, hr) = world_pos_to_tile(x, y, WorldGenConfig::TILE_SIZE);
     let (cq, cr) = hex_to_chunk_coord(hq, hr, WorldGenConfig::CHUNK_SIZE);
     let Some(chunk) = world.chunks.chunks.get(&(cq, cr)) else { return true };
     for cell in &chunk.cells {
-        if cell.q == hq && cell.r == hr {
+        if cell.x == hq && cell.y == hr {
             return cell.terrain.is_walkable();
         }
     }

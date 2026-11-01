@@ -238,8 +238,8 @@ fn main() {
     // (idlecore-core) — the spawn area is guaranteed land, so no teleport
     // and no dependence on replicated hex_tile rows. The search rings widen
     // so repeated e2e runs still find a hex 8+ from every earlier capital.
-    let (sq, sr) = idlecore_core::earth::resolve_spawn_hex();
-    let player_hex = idlecore_core::hex::HexCoord::new(sq, sr);
+    let (sq, sr) = idlecore_core::earth::resolve_spawn_tile();
+    let player_hex = idlecore_core::grid::TileCoord::new(sq, sr);
     let mut cap_hex: Option<(i32, i32)> = None;
     let mut cap_err = String::new();
     // Probe land hexes ring by ring (deterministic Earth raster), skipping
@@ -247,14 +247,14 @@ fn main() {
     'outer: for ring in 1..=14 {
         for dq in -ring..=ring {
             for dr in -ring..=ring {
-                let coord = idlecore_core::hex::HexCoord::new(sq + dq, sr + dr);
+                let coord = idlecore_core::grid::TileCoord::new(sq + dq, sr + dr);
                 if player_hex.distance(&coord) != ring {
                     continue;
                 }
-                let (lx, ly) = idlecore_core::hex_grid::HexGrid::axial_to_world(
-                    coord.q,
-                    coord.r,
-                    idlecore_core::world_gen::WorldGenConfig::HEX_SIZE,
+                let (lx, ly) = idlecore_core::grid::WorldGrid::tile_center(
+                    coord.x,
+                    coord.y,
+                    idlecore_core::world_gen::WorldGenConfig::TILE_SIZE,
                 );
                 if !idlecore_core::earth::is_land_at(lx, ly) {
                     continue;
@@ -263,7 +263,7 @@ fn main() {
                     if c.destroyed {
                         return true;
                     }
-                    idlecore_core::hex::HexCoord::from_id(c.hex_id).distance(&coord) >= 8
+                    idlecore_core::grid::TileCoord::from_id(c.hex_id).distance(&coord) >= 8
                 }) {
                     continue;
                 }
@@ -293,7 +293,7 @@ fn main() {
                                 .any(|c| c.owner == wallet_a && !c.destroyed)
                         })
                     {
-                        cap_hex = Some((coord.q, coord.r));
+                        cap_hex = Some((coord.x, coord.y));
                     } else {
                         cap_err = msg;
                     }
@@ -308,7 +308,7 @@ fn main() {
     if let Some((q, r)) = cap_hex {
         println!("[11] PASS: capital placed at ({q},{r})");
         println!("[12] capital hex becomes territory");
-        let cap_id = idlecore_core::hex::HexCoord::new(q, r).to_id();
+        let cap_id = idlecore_core::grid::TileCoord::new(q, r).to_id();
         let terr = wait_until(&conn, TIMEOUT, || {
             conn.db
                 .territory()
@@ -535,12 +535,12 @@ fn economy_phases(
         // The nearest free farmable neighbor (hex distance ≤ 2) from the
         // replicated rows around the spawn area — not a fixed east line.
         let free_tile = {
-            let here = idlecore_core::hex::HexCoord::from_id(hex_id);
+            let here = idlecore_core::grid::TileCoord::from_id(hex_id);
             conn.db
                 .hex_tile()
                 .iter()
                 .find(|h| {
-                    let d = idlecore_core::hex::HexCoord::new(h.hex_q, h.hex_r).distance(&here);
+                    let d = idlecore_core::grid::TileCoord::new(h.hex_q, h.hex_r).distance(&here);
                     d > 0 && d <= 2 && !h.is_polluted
                         && (h.terrain == "Grass" || h.terrain == "Forest")
                         && h.plant.is_none()
@@ -581,10 +581,10 @@ fn economy_phases(
         if !free {
             // Walk one ring-step toward the free farmable neighbor.
             let Some((nq, nr)) = free_tile else { continue };
-            let (nx, ny) = idlecore_core::hex_grid::HexGrid::axial_to_world(
+            let (nx, ny) = idlecore_core::grid::WorldGrid::tile_center(
                 nq,
                 nr,
-                idlecore_core::world_gen::WorldGenConfig::HEX_SIZE,
+                idlecore_core::world_gen::WorldGenConfig::TILE_SIZE,
             );
             let (dx, dy) = (nx - pos.0, ny - pos.1);
             let dist = (dx * dx + dy * dy).sqrt().max(0.001);

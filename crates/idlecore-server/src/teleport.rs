@@ -4,7 +4,7 @@
 use spacetimedb::ReducerContext;
 use crate::economy::spend_gold;
 use crate::types::{
-    hex_center, now_secs, player, TELEPORT_BASE_COST, TELEPORT_COOLDOWN_SECS,
+    tile_center, now_secs, player, TELEPORT_BASE_COST, TELEPORT_COOLDOWN_SECS,
 };
 
 /// Teleport cost per Ecosystem spec 2.3: `floor(100 × √level)`.
@@ -43,11 +43,11 @@ pub fn teleport(
         return Err(e);
     }
 
-    let (x, y) = hex_center(target_q, target_r);
+    let (x, y) = tile_center(target_q, target_r);
     p.last_action_at = now;
     p.hex_q = target_q;
     p.hex_r = target_r;
-    p.hex_id = crate::types::hex_id_of(target_q, target_r);
+    p.hex_id = crate::types::tile_id_of(target_q, target_r);
     p.position_x = x;
     p.position_y = y;
     ctx.db.player().address().update(p);

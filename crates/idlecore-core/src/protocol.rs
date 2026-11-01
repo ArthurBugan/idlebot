@@ -3,7 +3,7 @@
 //! Defines InputMessage, ActionResult, ServerEvent enums with Borsh-like serialization.
 
 use serde::{Deserialize, Serialize};
-use crate::hex::HexCoord;
+use crate::grid::TileCoord;
 
 // ---------------------------------------------------------------------------
 // Protocol Version
@@ -57,7 +57,7 @@ pub enum InputMessage {
     /// Move input with target hex.
     MoveInput {
         sequence: u64,
-        target_hex: HexCoord,
+        target_hex: TileCoord,
     },
     /// Plant action on hex.
     PlantAction {
@@ -78,7 +78,7 @@ pub enum InputMessage {
     /// Teleport action.
     TeleportAction {
         sequence: u64,
-        target_hex: HexCoord,
+        target_hex: TileCoord,
     },
     /// List template action.
     ListTemplateAction {
@@ -149,7 +149,7 @@ pub enum ActionResult {
     /// Move confirmed.
     MoveConfirmed {
         sequence: u64,
-        new_hex: HexCoord,
+        new_hex: TileCoord,
     },
     /// Plant result.
     PlantResult {

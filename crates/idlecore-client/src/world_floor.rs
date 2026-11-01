@@ -13,8 +13,8 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use crate::time_ext::now_unix_secs;
 use spacetimedb_sdk::Table;
 use std::collections::HashMap;
-use idlecore_core::hex::world_pos_to_hex;
-use idlecore_core::slots::{slot_center, slot_hex, world_pos_to_slot, SLOT_SIZE};
+use idlecore_core::grid::world_pos_to_tile;
+use idlecore_core::slots::{slot_center, slot_tile, world_pos_to_slot, SLOT_SIZE};
 use idlecore_core::terrain::TerrainType;
 use idlecore_core::world_detail::{city_cell, floor_detail, CityCellKind};
 use idlecore_core::world_gen::{WaterClass, WorldGenConfig, hex_to_chunk_coord};
@@ -46,8 +46,8 @@ pub fn prop_depth(y: f32) -> f32 {
 /// the axial coords of the hex that owns the slot.
 #[derive(Resource, Default, Debug, Clone, Copy)]
 pub struct ActionTarget {
-    pub q: i32,
-    pub r: i32,
+    pub x: i32,
+    pub y: i32,
     pub slot_x: i32,
     pub slot_y: i32,
 }
@@ -143,11 +143,11 @@ pub fn update_action_box(
         }
     }
     let (sx, sy) = next;
-    let (q, r) = slot_hex(sx, sy);
+    let (q, r) = slot_tile(sx, sy);
     target.slot_x = sx;
     target.slot_y = sy;
-    target.q = q;
-    target.r = r;
+    target.x = q;
+    target.y = r;
 
     let (cx, cy) = slot_center(sx, sy);
     let new_translation = Vec3::new(cx, cy, crate::world_floor::prop_depth(cy) + 0.4);
@@ -160,12 +160,12 @@ pub fn update_action_box(
 
     // Green while the slot's hex is within the server's 1-hex interaction
     // range, dim otherwise.
-    let player_hex = world_pos_to_hex(
+    let player_hex = world_pos_to_tile(
         player_transform.translation.x,
         player_transform.translation.y,
-        WorldGenConfig::HEX_SIZE,
+        WorldGenConfig::TILE_SIZE,
     );
-    let in_range = idlecore_core::hex_grid::HexGrid::distance(q, r, player_hex.0, player_hex.1) <= 1;
+    let in_range = idlecore_core::grid::WorldGrid::distance(q, r, player_hex.0, player_hex.1) <= 1;
     let tint = if in_range { Color::srgba(0.6, 1.0, 0.5, 0.95) } else { Color::srgba(0.9, 0.9, 0.9, 0.35) };
     if sprite.color != tint {
         sprite.color = tint;
@@ -334,7 +334,40 @@ pub mod atlas {
     pub const FLOOR_SAND: &str = "floor_sand";
     pub const FLOOR_SNOW: &str = "floor_snow";
     pub const FLOOR_STONE: &str = "floor_stone";
+    // Living-ground variants: real per-season seamless 16×16 interiors so the
+    // floor mixes actual art instead of only tint shifts.
+    pub const FLOOR_GRASS_SUMMER2: &str = "floor_grass_summer2";
+    pub const FLOOR_GRASS_SPRING: &str = "floor_grass_spring";
+    pub const FLOOR_GRASS_SPRING2: &str = "floor_grass_spring2";
+    pub const FLOOR_GRASS_FALL: &str = "floor_grass_fall";
+    pub const FLOOR_GRASS_FALL2: &str = "floor_grass_fall2";
+    pub const FLOOR_SNOW2: &str = "floor_snow2";
+    pub const FLOOR_DIRT: &str = "floor_dirt";
     pub const WATER: &str = "water";
+    // Living-ground garnish: foliage/mushroom/pebble/water decal crops from
+    // the "ALL props seasons.png" prop sheet.
+    pub const GARNISH_SHEET: &str = "models/Tileset/ALL props seasons.png";
+    pub const G_TUFT: &str = "g_tuft";
+    pub const G_FLOWERS_PINK: &str = "g_flowers_pink";
+    pub const G_FLOWERS_PURPLE: &str = "g_flowers_purple";
+    pub const G_FLOWER_WHITE: &str = "g_flower_white";
+    pub const G_BLUE_BUSH: &str = "g_blue_bush";
+    pub const G_BUSH: &str = "g_bush";
+    pub const G_MUSH_TAN: &str = "g_mush_tan";
+    pub const G_MUSH_TAN2: &str = "g_mush_tan2";
+    pub const G_MUSH_BLUE: &str = "g_mush_blue";
+    pub const G_PEBBLES: &str = "g_pebbles";
+    pub const G_MUSH_BABY: &str = "g_mush_baby";
+    pub const G_MUSH_BABY2: &str = "g_mush_baby2";
+    pub const G_PEBBLES_STONE: &str = "g_pebbles_stone";
+    pub const G_PEBBLES_BURNT: &str = "g_pebbles_burnt";
+    pub const G_SPARKLE: &str = "g_sparkle";
+    pub const G_DROPLET: &str = "g_droplet";
+    pub const G_PLANKS: &str = "g_planks";
+    pub const G_LEAF_SPRAY: &str = "g_leaf_spray";
+    pub const G_REED: &str = "g_reed";
+    pub const G_DRIFTWOOD: &str = "g_driftwood";
+    pub const G_MOSS: &str = "g_moss";
     // Stardew plot tiles (tilled & watered soil) + crop growth frames
     pub const PLOT_TILLED: &str = "plot_tilled";
     pub const PLOT_WET: &str = "plot_wet";
@@ -563,6 +596,41 @@ pub fn enqueue_model_slices(
     r(atlas::FLOOR_SAND, "models/Tileset/Tileset Grass Summer.png", 144, 224, 16, 16);
     r(atlas::FLOOR_SNOW, "models/Tileset/Tileset Grass Winter.png", 144, 32, 16, 16);
     r(atlas::FLOOR_STONE, "models/Tileset/Dungeon tileset.png", 144, 128, 16, 16);
+    // Living-ground variants: the same seamless interior cell of the Spring
+    // and Fall sheets (light/dark per sheet) — real pixel textures, not tint
+    // approximations, so the ground mixes seasons instead of only shades.
+    r(atlas::FLOOR_GRASS_SUMMER2, "models/Tileset/Tileset Grass Summer.png", 336, 32, 16, 16);
+    r(atlas::FLOOR_GRASS_SPRING, "models/Tileset/Tileset Grass Spring.png", 144, 32, 16, 16);
+    r(atlas::FLOOR_GRASS_SPRING2, "models/Tileset/Tileset Grass Spring.png", 336, 32, 16, 16);
+    r(atlas::FLOOR_GRASS_FALL, "models/Tileset/Tileset Grass Fall.png", 144, 32, 16, 16);
+    r(atlas::FLOOR_GRASS_FALL2, "models/Tileset/Tileset Grass Fall.png", 336, 32, 16, 16);
+    r(atlas::FLOOR_SNOW2, "models/Tileset/Tileset Grass Winter.png", 336, 32, 16, 16);
+    // Dirt: plain tilled dry-earth cell (furrowed brown soil).
+    r(atlas::FLOOR_DIRT, "models/Tileset/Tilled Soil and wet soil.png", 64, 0, 16, 16);
+    // ---- Living-ground garnish (prop crops from ALL props seasons) ----
+    // Sheet bands verified on the sheet map: y64=flat garnish, y96=pebbles,
+    // y112=water sparkles, y128=planks/reeds, y144=driftwood/flowers row.
+    r(atlas::G_TUFT, atlas::GARNISH_SHEET, 17, 65, 5, 7);
+    r(atlas::G_FLOWERS_PINK, atlas::GARNISH_SHEET, 146, 65, 13, 15);
+    r(atlas::G_FLOWERS_PURPLE, atlas::GARNISH_SHEET, 208, 65, 16, 15);
+    r(atlas::G_FLOWER_WHITE, atlas::GARNISH_SHEET, 131, 72, 9, 4);
+    r(atlas::G_BLUE_BUSH, atlas::GARNISH_SHEET, 98, 66, 13, 12);
+    r(atlas::G_BUSH, atlas::GARNISH_SHEET, 65, 68, 13, 9);
+    r(atlas::G_MUSH_TAN, atlas::GARNISH_SHEET, 272, 65, 16, 15);
+    r(atlas::G_MUSH_TAN2, atlas::GARNISH_SHEET, 304, 65, 16, 15);
+    r(atlas::G_MUSH_BLUE, atlas::GARNISH_SHEET, 289, 82, 15, 13);
+    r(atlas::G_PEBBLES, atlas::GARNISH_SHEET, 113, 87, 14, 7);
+    r(atlas::G_MUSH_BABY, atlas::GARNISH_SHEET, 49, 103, 13, 8);
+    r(atlas::G_MUSH_BABY2, atlas::GARNISH_SHEET, 66, 97, 12, 8);
+    r(atlas::G_PEBBLES_STONE, atlas::GARNISH_SHEET, 128, 96, 16, 16);
+    r(atlas::G_PEBBLES_BURNT, atlas::GARNISH_SHEET, 304, 96, 16, 16);
+    r(atlas::G_SPARKLE, atlas::GARNISH_SHEET, 192, 112, 16, 16);
+    r(atlas::G_DROPLET, atlas::GARNISH_SHEET, 0, 112, 16, 16);
+    r(atlas::G_PLANKS, atlas::GARNISH_SHEET, 16, 128, 16, 16);
+    r(atlas::G_LEAF_SPRAY, atlas::GARNISH_SHEET, 176, 128, 12, 13);
+    r(atlas::G_REED, atlas::GARNISH_SHEET, 208, 128, 14, 15);
+    r(atlas::G_DRIFTWOOD, atlas::GARNISH_SHEET, 144, 144, 32, 16);
+    r(atlas::G_MOSS, atlas::GARNISH_SHEET, 0, 144, 32, 16);
     r(atlas::WATER, "models/Tileset/Water tile.png", 0, 0, 16, 16);
 
     // ---- Stardew plots (tilled/wet soil + wheat growth frames) ----
@@ -574,8 +642,7 @@ pub fn enqueue_model_slices(
 
     // ---- Ambient decoration plants (crop strips, one frame each) ----
     r(atlas::DECO_WHEAT, "models/Crops/Summer/Wheat.png", 0, 0, 16, 16);
-    r(atlas::DECO_WHEAT2, "models/Crops/Summer/Wheat.png", 48, 0, 16, 16);
-    r(atlas::DECO_CARROT, "models/Crops/Spring/Carrot.png", 64, 0, 16, 16);
+    r(atlas::DECO_WHEAT2, "models/Crops/Summer/Wheat.png", 48, 0, 16, 16);    r(atlas::DECO_CARROT, "models/Crops/Spring/Carrot.png", 64, 0, 16, 16);
     r(atlas::DECO_BROCCOLI, "models/Crops/Spring/Broccoli.png", 64, 0, 16, 16);
     r(atlas::DECO_POTATO, "models/Crops/Spring/Potato.png", 64, 0, 16, 16);
     r(atlas::DECO_ONION, "models/Crops/Spring/Onion.png", 112, 0, 16, 16);
@@ -829,10 +896,14 @@ pub fn init_prop_textures(
 // Ambient decorations — plants & critters from across the Tiny* packs
 // ============================================================================
 
-/// One decoration entry: sprite handle, on-screen height (world units).
+/// One decoration entry: sprite handle, on-screen height (world units),
+/// render tint, and crop aspect (width/height — Deco sprites are
+/// bottom-anchored, so non-square crops keep their proportions).
 pub struct Deco {
     pub image: Handle<Image>,
     pub height: f32,
+    pub tint: [f32; 3],
+    pub aspect: f32,
     /// Optional base key for animated deco (e.g., "fx_leaves_fall").
     /// If present, the spawned deco will get an AnimatedDeco component.
     pub anim_key: Option<String>,
@@ -971,6 +1042,14 @@ pub fn init_deco_textures(
         // Farm props
         atlas::PROP_HAY_BALES, atlas::PROP_SCARECROW, atlas::PROP_BIRDHOUSE,
         atlas::PROP_WELL, atlas::PROP_FEED_TROUGH,
+        // Living-ground garnish (ALL props seasons crops)
+        atlas::G_TUFT, atlas::G_FLOWERS_PINK, atlas::G_FLOWERS_PURPLE,
+        atlas::G_FLOWER_WHITE, atlas::G_BLUE_BUSH, atlas::G_BUSH,
+        atlas::G_MUSH_TAN, atlas::G_MUSH_TAN2, atlas::G_MUSH_BLUE,
+        atlas::G_PEBBLES, atlas::G_MUSH_BABY, atlas::G_MUSH_BABY2,
+        atlas::G_PEBBLES_STONE, atlas::G_PEBBLES_BURNT, atlas::G_SPARKLE, atlas::G_DROPLET,
+        atlas::G_PLANKS, atlas::G_LEAF_SPRAY, atlas::G_REED,
+        atlas::G_DRIFTWOOD, atlas::G_MOSS,
         // Fences & paths
         atlas::PROP_FENCE_WOOD, atlas::PROP_FENCE_WHITE, atlas::PROP_FENCE_STONE,
         atlas::PROP_PATH_TILE,
@@ -1000,19 +1079,47 @@ pub fn init_deco_textures(
         return;
     }
     let get = |k: &str| atlas.items.get(k).expect("checked").clone();
-    let to_deco = |k: &str, height: f32| Deco { image: get(k), height, anim_key: None };
-    let to_deco_anim = |k: &str, height: f32, anim_key: &str| Deco { image: get(k), height, anim_key: Some(anim_key.into()) };
+    let to_deco = |k: &str, height: f32| Deco {
+        image: get(k),
+        height,
+        tint: [1.0, 1.0, 1.0],
+        aspect: 1.0,
+        anim_key: None,
+    };
+    // Non-square garnish crops keep their proportions (bottom-anchored).
+    let to_garnish = |k: &str, height: f32, w: f32, h: f32, tint: [f32; 3]| Deco {
+        image: get(k),
+        height,
+        tint,
+        aspect: w / h,
+        anim_key: None,
+    };
+    let to_deco_anim = |k: &str, height: f32, anim_key: &str| Deco {
+        image: get(k),
+        height,
+        tint: [1.0, 1.0, 1.0],
+        aspect: 1.0,
+        anim_key: Some(anim_key.into()),
+    };
 
     let mut sets: HashMap<TerrainType, DecoSet> = HashMap::new();
     let mut add = |terrain: TerrainType, critter: bool, d: Deco| {
         let set = sets.entry(terrain).or_default();
         if critter { set.critters.push(d) } else { set.plants.push(d) }
     };
-    // Meadow: young wheat, strawberry, broccoli, fall crops — plus farm animals and props.
+    // Meadow: young wheat, strawberry, broccoli, fall crops — plus farm animals and props,
+    // and the prop-sheet garnish (flowers / tufts / blue bush / mushrooms).
     for k in [atlas::DECO_WHEAT2, atlas::DECO_STRAWBERRY, atlas::DECO_BROCCOLI,
               atlas::DECO_PUMPKIN, atlas::DECO_CORN, atlas::DECO_EGGPLANT] {
         add(TerrainType::Grass, false, to_deco(k, 1.0));
     }
+    add(TerrainType::Grass, false, to_garnish(atlas::G_FLOWERS_PINK, 0.9, 13.0, 15.0, [1.0, 1.0, 1.0]));
+    add(TerrainType::Grass, false, to_garnish(atlas::G_FLOWERS_PURPLE, 0.85, 16.0, 15.0, [1.0, 1.0, 1.0]));
+    add(TerrainType::Grass, false, to_garnish(atlas::G_FLOWER_WHITE, 0.5, 9.0, 4.0, [1.0, 1.0, 1.0]));
+    add(TerrainType::Grass, false, to_garnish(atlas::G_BLUE_BUSH, 0.9, 13.0, 12.0, [1.0, 1.05, 1.1]));
+    add(TerrainType::Grass, false, to_garnish(atlas::G_BUSH, 0.8, 13.0, 9.0, [1.0, 1.0, 1.0]));
+    add(TerrainType::Grass, false, to_garnish(atlas::G_MUSH_TAN, 0.8, 16.0, 15.0, [1.05, 1.0, 0.95]));
+    add(TerrainType::Grass, false, to_garnish(atlas::G_TUFT, 0.55, 5.0, 7.0, [1.0, 1.0, 1.0]));
     // Farm props on meadow
     for k in [atlas::PROP_HAY_BALES, atlas::PROP_SCARECROW, atlas::PROP_BIRDHOUSE,
               atlas::PROP_WELL, atlas::PROP_FEED_TROUGH] {
@@ -1030,9 +1137,12 @@ pub fn init_deco_textures(
     add(TerrainType::Grass, true, to_deco(atlas::CRIT_OSTRICH, 1.3));
     add(TerrainType::Grass, true, to_deco(atlas::CRIT_BEE, 0.5));
     add(TerrainType::Grass, true, to_deco(atlas::CRIT_CROW, 0.8));
-    // Plains: golden wheat, with cows, sheep, and farm animals.
+    // Plains: golden wheat, with cows, sheep, and farm animals + dry garnish.
     add(TerrainType::Grassland, false, to_deco(atlas::DECO_WHEAT, 1.1));
     add(TerrainType::Grassland, false, to_deco(atlas::DECO_PUMPKIN, 1.1));
+    add(TerrainType::Grassland, false, to_garnish(atlas::G_TUFT, 0.6, 5.0, 7.0, [1.2, 1.05, 0.72]));
+    add(TerrainType::Grassland, false, to_garnish(atlas::G_FLOWER_WHITE, 0.5, 9.0, 4.0, [1.15, 1.05, 0.8]));
+    add(TerrainType::Grassland, false, to_garnish(atlas::G_PEBBLES, 0.5, 14.0, 7.0, [1.05, 1.0, 0.95]));
     add(TerrainType::Grassland, true, to_deco(atlas::CRIT_SHEEP, 1.7));
     add(TerrainType::Grassland, true, to_deco(atlas::CRIT_COW, 1.5));
     add(TerrainType::Grassland, true, to_deco(atlas::CRIT_DUCK, 0.9));
@@ -1050,6 +1160,11 @@ pub fn init_deco_textures(
     add(TerrainType::Forest, false, to_deco(atlas::TREE_CHERRY, 2.5));
     add(TerrainType::Forest, false, to_deco(atlas::TREE_ORANGE, 2.5));
     add(TerrainType::Forest, false, to_deco(atlas::TREE_APPLE, 2.5));
+    add(TerrainType::Forest, false, to_garnish(atlas::G_BUSH, 0.85, 13.0, 9.0, [0.85, 1.0, 0.92]));
+    add(TerrainType::Forest, false, to_garnish(atlas::G_MUSH_TAN, 0.8, 16.0, 15.0, [0.92, 0.95, 1.0]));
+    add(TerrainType::Forest, false, to_garnish(atlas::G_MUSH_TAN2, 0.75, 16.0, 15.0, [0.9, 0.95, 1.0]));
+    add(TerrainType::Forest, false, to_garnish(atlas::G_LEAF_SPRAY, 0.9, 12.0, 13.0, [0.9, 1.0, 0.95]));
+    add(TerrainType::Forest, false, to_garnish(atlas::G_PEBBLES, 0.45, 14.0, 7.0, [0.8, 0.85, 0.9]));
     add(TerrainType::Forest, true, to_deco(atlas::CRIT_DEER, 1.4));
     add(TerrainType::Forest, true, to_deco(atlas::CRIT_FOX, 1.1));
     add(TerrainType::Forest, true, to_deco_anim(atlas::CRIT_MONARCH, 0.6, "crit_monarch"));
@@ -1066,14 +1181,22 @@ pub fn init_deco_textures(
     add(TerrainType::TropicalRainforest, true, to_deco(atlas::CRIT_FROG, 0.7));
     add(TerrainType::TropicalRainforest, true, to_deco(atlas::CRIT_TURTLE, 0.6));
     add(TerrainType::TropicalRainforest, false, to_deco_anim(atlas::PROP_WATER_EDGE, 0.8, "prop_water_edge"));
-    // Desert: scattered stones and rock breaks.
+    add(TerrainType::TropicalRainforest, false, to_garnish(atlas::G_BUSH, 0.9, 13.0, 9.0, [0.8, 1.15, 0.9]));
+    add(TerrainType::TropicalRainforest, false, to_garnish(atlas::G_LEAF_SPRAY, 0.95, 12.0, 13.0, [0.85, 1.1, 0.9]));
+    add(TerrainType::TropicalRainforest, false, to_garnish(atlas::G_MUSH_TAN2, 0.8, 16.0, 15.0, [0.85, 1.05, 0.95]));
+    // Desert: scattered stones and rock breaks, driftwood, dry tufts.
     add(TerrainType::Desert, false, to_deco(atlas::DECO_STONE, 0.9));
     add(TerrainType::Desert, false, to_deco(atlas::DECO_ROCK2, 1.1));
     add(TerrainType::Desert, false, to_deco(atlas::PROP_FENCE_STONE, 1.0));
-    // Tundra: frozen stones, penguins, snow FX.
+    add(TerrainType::Desert, false, to_garnish(atlas::G_PEBBLES_STONE, 1.1, 16.0, 16.0, [1.1, 1.0, 0.9]));
+    add(TerrainType::Desert, false, to_garnish(atlas::G_PEBBLES, 0.55, 14.0, 7.0, [1.05, 1.0, 0.95]));
+    add(TerrainType::Desert, false, to_garnish(atlas::G_DRIFTWOOD, 0.8, 32.0, 16.0, [1.1, 1.05, 0.95]));
+    // Tundra: frozen stones, penguins, snow FX + frost garnish.
     add(TerrainType::Tundra, false, to_deco(atlas::DECO_ROCK2, 1.0));
     add(TerrainType::Tundra, false, to_deco_anim(atlas::FX_SNOW, 1.5, "fx_snow"));
     add(TerrainType::Tundra, true, to_deco(atlas::CRIT_PENGUIN, 1.0));
+    add(TerrainType::Tundra, false, to_garnish(atlas::G_SPARKLE, 0.5, 16.0, 16.0, [1.0, 1.0, 1.15]));
+    add(TerrainType::Tundra, false, to_garnish(atlas::G_PEBBLES, 0.5, 13.0, 8.0, [1.05, 1.2, 1.3]));
     // Taiga: dead trees (old-tree variants), foxes, rabbits, snow FX, fruit trees.
     add(TerrainType::Taiga, false, to_deco(atlas::DECO_TREE2, 1.8));
     add(TerrainType::Taiga, false, to_deco(atlas::DECO_STONE, 0.9));
@@ -1083,11 +1206,23 @@ pub fn init_deco_textures(
     add(TerrainType::Taiga, true, to_deco(atlas::CRIT_FOX, 1.2));
     add(TerrainType::Taiga, true, to_deco(atlas::CRIT_RABBIT, 0.9));
     add(TerrainType::Taiga, true, to_deco(atlas::CRIT_CROW, 0.8));
-    // Highlands: stones, bonfire, clouds.
+    add(TerrainType::Taiga, false, to_garnish(atlas::G_MUSH_BLUE, 0.8, 15.0, 13.0, [1.0, 1.05, 1.1]));
+    add(TerrainType::Taiga, false, to_garnish(atlas::G_SPARKLE, 0.55, 16.0, 16.0, [0.95, 1.0, 1.1]));
+    add(TerrainType::Taiga, false, to_garnish(atlas::G_MUSH_BABY2, 0.75, 12.0, 8.0, [0.95, 1.05, 1.15]));
+    // Highlands: stones + violet pebbles, bonfire, clouds.
     add(TerrainType::Mountain, false, to_deco(atlas::DECO_STONE, 1.0));
     add(TerrainType::Mountain, false, to_deco(atlas::DECO_ROCK2, 1.2));
     add(TerrainType::Mountain, false, to_deco_anim(atlas::FX_BONFIRE, 1.5, "fx_bonfire"));
     add(TerrainType::Mountain, false, to_deco_anim(atlas::FX_CLOUDS, 2.0, "fx_clouds"));
+    add(TerrainType::Mountain, false, to_garnish(atlas::G_PEBBLES_STONE, 1.2, 16.0, 16.0, [1.0, 1.0, 1.05]));
+    add(TerrainType::Mountain, false, to_garnish(atlas::G_MUSH_BABY, 0.55, 13.0, 8.0, [1.0, 1.0, 1.05]));
+    // Polluted: scorched/charred ground garnish, toxic splash.
+    add(TerrainType::Polluted, false, to_garnish(atlas::G_PEBBLES_BURNT, 0.9, 16.0, 16.0, [0.75, 1.0, 0.8]));
+    add(TerrainType::Polluted, false, to_garnish(atlas::G_PEBBLES, 0.6, 13.0, 8.0, [0.72, 0.95, 0.78]));
+    add(TerrainType::Polluted, false, to_garnish(atlas::G_DROPLET, 0.6, 16.0, 16.0, [0.6, 1.1, 0.7]));
+    // Water: sparkle + droplet decals (tinted blue), so rivers/sea foam.
+    add(TerrainType::Water, false, to_garnish(atlas::G_SPARKLE, 0.45, 16.0, 16.0, [0.95, 1.0, 1.1]));
+    add(TerrainType::Water, false, to_garnish(atlas::G_DROPLET, 0.55, 16.0, 16.0, [1.15, 1.1, 1.0]));
     // City: paths, benches, wells.
     add(TerrainType::City, false, to_deco(atlas::PROP_PATH_TILE, 1.0));
     add(TerrainType::City, false, to_deco(atlas::BENCH, 1.2));
@@ -1133,8 +1268,13 @@ pub fn init_solid_floor_textures(
     if *done || !solid.by_terrain.is_empty() {
         return;
     }
-    // Land tiles all come from four atlas crops that must all be ready.
-    let keys = [atlas::FLOOR_GRASS, atlas::FLOOR_SAND, atlas::FLOOR_SNOW, atlas::FLOOR_STONE];
+    // Land tiles all come from the atlas crops that must all be ready.
+    let keys = [
+        atlas::FLOOR_GRASS, atlas::FLOOR_GRASS_SUMMER2, atlas::FLOOR_GRASS_SPRING,
+        atlas::FLOOR_GRASS_SPRING2, atlas::FLOOR_GRASS_FALL, atlas::FLOOR_GRASS_FALL2,
+        atlas::FLOOR_SAND, atlas::FLOOR_SNOW, atlas::FLOOR_SNOW2, atlas::FLOOR_STONE,
+        atlas::FLOOR_DIRT,
+    ];
     if keys.iter().any(|k| !atlas.items.contains_key(*k)) {
         return;
     }
@@ -1173,39 +1313,49 @@ fn terrains_iter() -> impl Iterator<Item = TerrainType> {
 /// flat enough to tile without banding.
 fn floor_tiles_for(terrain: TerrainType) -> &'static [(&'static str, [f32; 3])] {
     match terrain {
-        // Meadow grass: plain green from the Summer tileset.
+        // Meadow: dark summer base + bright spring tiles mixed by hash —
+        // real art from both sheets, tinted near-neutral.
         TerrainType::Grass => &[
             (atlas::FLOOR_GRASS, [1.0, 1.0, 1.0]),
+            (atlas::FLOOR_GRASS_SPRING, [0.95, 1.0, 0.92]),
+            (atlas::FLOOR_GRASS_SUMMER2, [0.97, 1.0, 0.93]),
+            (atlas::FLOOR_GRASS_SPRING2, [0.9, 1.0, 0.88]),
         ],
-        // Dry plain: warm-tinted grass.
+        // Dry plain: warm summer greens + the fall sheet's straw-green.
         TerrainType::Grassland => &[
             (atlas::FLOOR_GRASS, [1.05, 1.02, 0.87]),
-            (atlas::FLOOR_GRASS, [1.0, 1.0, 0.93]),
+            (atlas::FLOOR_GRASS_FALL, [1.12, 1.0, 0.82]),
+            (atlas::FLOOR_GRASS_FALL2, [1.08, 0.98, 0.84]),
+            (atlas::FLOOR_DIRT, [1.0, 1.0, 0.95]),
         ],
-        // Deep woods: the same grass, cooler and darker.
+        // Deep woods: cooler, darker — spring dark cell + summer.
         TerrainType::Forest => &[
             (atlas::FLOOR_GRASS, [0.68, 0.84, 0.64]),
-            (atlas::FLOOR_GRASS, [0.62, 0.8, 0.6]),
+            (atlas::FLOOR_GRASS_SPRING2, [0.6, 0.82, 0.62]),
+            (atlas::FLOOR_GRASS_SPRING, [0.64, 0.8, 0.58]),
         ],
-        // Jungle: lush saturated grass.
+        // Jungle: lush saturated greens.
         TerrainType::TropicalRainforest => &[
-            (atlas::FLOOR_GRASS, [0.88, 1.08, 0.82]),
+            (atlas::FLOOR_GRASS_SPRING, [0.88, 1.08, 0.82]),
+            (atlas::FLOOR_GRASS_SPRING2, [0.82, 1.12, 0.78]),
             (atlas::FLOOR_GRASS, [0.95, 1.12, 0.88]),
         ],
-        // Dunes: seamless sand from the Summer tileset.
+        // Dunes: seamless sand + pale dirt mixes.
         TerrainType::Desert => &[
             (atlas::FLOOR_SAND, [1.0, 1.0, 1.0]),
+            (atlas::FLOOR_DIRT, [1.05, 0.96, 0.9]),
             (atlas::FLOOR_SAND, [1.07, 0.97, 0.86]),
-            (atlas::FLOOR_SAND, [0.95, 0.9, 1.02]),
         ],
-        // Snow: white from the Winter tileset.
+        // Snow: white + icy shaded sheet mixes.
         TerrainType::Tundra => &[
             (atlas::FLOOR_SNOW, [1.0, 1.0, 1.0]),
+            (atlas::FLOOR_SNOW2, [0.95, 0.98, 1.05]),
         ],
         // Boreal snow: colder blue tint.
         TerrainType::Taiga => &[
             (atlas::FLOOR_SNOW, [0.82, 0.9, 1.08]),
-            (atlas::FLOOR_SNOW, [0.78, 0.88, 1.1]),
+            (atlas::FLOOR_SNOW2, [0.78, 0.88, 1.1]),
+            (atlas::FLOOR_SNOW, [0.86, 0.94, 1.12]),
         ],
         // Rocky highlands: warm stone from the Dungeon tileset, greyed so it
         // reads as bare rock.
@@ -1216,10 +1366,11 @@ fn floor_tiles_for(terrain: TerrainType) -> &'static [(&'static str, [f32; 3])] 
         ],
         // City streets/procedural: filled by init_city_textures, not here.
         TerrainType::City => &[],
-        // Blighted ground: stone with a sickly green tint.
+        // Blighted ground: scorched dirt with a sickly green tint.
         TerrainType::Polluted => &[
+            (atlas::FLOOR_DIRT, [0.7, 0.85, 0.7]),
             (atlas::FLOOR_STONE, [0.85, 1.0, 0.85]),
-            (atlas::FLOOR_STONE, [0.75, 0.9, 0.75]),
+            (atlas::FLOOR_DIRT, [0.62, 0.78, 0.65]),
         ],
         TerrainType::Water => &[(atlas::WATER, [1.0, 1.0, 1.0])],
     }
@@ -1300,7 +1451,7 @@ pub fn update_world_object_visuals(
     *last_py = py;
     let conn_guard = net.conn.lock().unwrap();
     let Some(conn) = conn_guard.as_ref() else { return };
-    let max_dist = (RENDER_RADIUS_HEXES + 2.0 * WorldGenConfig::HEX_SIZE)
+    let max_dist = (RENDER_RADIUS_HEXES + 2.0 * WorldGenConfig::TILE_SIZE)
         .max((extent.half_diagonal * 1.1).min(230.0));
 
     let now = now_unix_secs();
@@ -1310,8 +1461,8 @@ pub fn update_world_object_visuals(
     // burst of replication can't create hundreds of sprites in one frame.
     let mut pending: Vec<(f32, u64)> = Vec::new();
     for row in crate::net::gen::WorldObjectTableAccess::world_object(&conn.db).iter() {
-        let coord = idlecore_core::hex::HexCoord::from_id(row.hex_id);
-        let (hx, hy) = row_world_center(coord.q, coord.r);
+        let coord = idlecore_core::grid::TileCoord::from_id(row.hex_id);
+        let (hx, hy) = row_world_center(coord.x, coord.y);
         let wx = hx + row.offset_x;
         let wy = hy + row.offset_y;
         if (wx - px).powi(2) + (wy - py).powi(2) > max_dist * max_dist {
@@ -1348,8 +1499,8 @@ pub fn update_world_object_visuals(
         else {
             continue;
         };
-        let coord = idlecore_core::hex::HexCoord::from_id(row.hex_id);
-        let (hx, hy) = row_world_center(coord.q, coord.r);
+        let coord = idlecore_core::grid::TileCoord::from_id(row.hex_id);
+        let (hx, hy) = row_world_center(coord.x, coord.y);
         let wx = hx + row.offset_x;
         let wy = hy + row.offset_y;
         let mature = row.mature_at == 0 || now >= row.mature_at;
@@ -1636,7 +1787,7 @@ pub const FLOOR_MAX_RADIUS_UNITS: f32 = 260.0;
 const FLOOR_SPAWNS_PER_PASS: usize = 512;
 
 /// World-space radius around the player to show world-object/plant sprites.
-const RENDER_RADIUS_HEXES: f32 = 12.0 * WorldGenConfig::HEX_SIZE;
+const RENDER_RADIUS_HEXES: f32 = 12.0 * WorldGenConfig::TILE_SIZE;
 
 /// Max world-object sprites created per 150 ms scan; spreads replication
 /// bursts across frames instead of hitching once.
@@ -1684,7 +1835,7 @@ pub fn update_world_floor(
 
     // Terrain per hex for the nearby chunks — one map built per pass, so the
     // per-slot lookups below are O(1).
-    let (hq, hr) = world_pos_to_hex(px, py, WorldGenConfig::HEX_SIZE);
+    let (hq, hr) = world_pos_to_tile(px, py, WorldGenConfig::TILE_SIZE);
     let (ccq, ccr) = hex_to_chunk_coord(hq, hr, WorldGenConfig::CHUNK_SIZE);
     // A chunk spans 32 hexes (~554 units); ±2 chunks always covers the
     // spawn radius with margin.
@@ -1693,9 +1844,22 @@ pub fn update_world_floor(
         for cr in (ccr - 2)..=(ccr + 2) {
             let Some(chunk) = streaming_world.chunks.chunks.get(&(cq, cr)) else { continue };
             for cell in &chunk.cells {
-                let id = idlecore_core::hex::HexCoord::new(cell.q, cell.r).to_id();
+                let id = idlecore_core::grid::TileCoord::new(cell.x, cell.y).to_id();
                 terrain_of.insert(id, (cell.terrain, cell.water));
             }
+        }
+    }
+
+    // Shallow-band map: every tile within one step (8-way) of land. Water
+    // slots on these tiles render lighter — the sea reads near shore.
+    let mut shallow: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    for (&id, &(t, _)) in &terrain_of {
+        if t == TerrainType::Water {
+            continue;
+        }
+        let tile = idlecore_core::grid::TileCoord::from_id(id);
+        for (nx, ny) in tile.neighbors() {
+            shallow.insert(idlecore_core::grid::TileCoord::new(nx, ny).to_id());
         }
     }
 
@@ -1711,9 +1875,9 @@ pub fn update_world_floor(
             if d2 > spawn_r2 {
                 continue;
             }
-            let (hq, hr) = slot_hex(sx, sy);
+            let (hq, hr) = slot_tile(sx, sy);
             let Some(&(terrain, wat)) =
-                terrain_of.get(&idlecore_core::hex::HexCoord::new(hq, hr).to_id())
+                terrain_of.get(&idlecore_core::grid::TileCoord::new(hq, hr).to_id())
             else {
                 continue; // chunk not streamed yet — picked up on a later pass
             };
@@ -1736,12 +1900,25 @@ pub fn update_world_floor(
         let (cx, cy) = slot_center(*sx, *sy);
         let (image, tint) = if *terrain == TerrainType::Water {
             let Some(white) = water.white.clone() else { continue };
-            let tint = water
+            let base = water
                 .by_class
                 .get(&wat)
                 .or_else(|| water.by_class.values().next())
                 .copied()
                 .unwrap_or([0.15, 0.36, 0.58]);
+            // Living-water: slots on land-neighboring tiles (shallow) render
+            // lighter; open water splits into three shimmer tones.
+            let tile = slot_tile(*sx, *sy);
+            let tint = if shallow.contains(&idlecore_core::grid::TileCoord::new(tile.0, tile.1).to_id()) {
+                [base[0] * 1.5, base[1] * 1.35, base[2] * 1.2]
+            } else {
+                let h = slot_hash(*sx, *sy, 0x5E17_A17D);
+                match h % 3 {
+                    0 => [base[0] * 0.92, base[1] * 0.95, base[2] * 0.98],
+                    1 => base,
+                    _ => [base[0] * 1.06, base[1] * 1.05, base[2] * 1.04],
+                }
+            };
             (white, tint)
         } else if *terrain == TerrainType::City {
             // Procedural urban floor: roads / plazas / building bases.
@@ -1812,7 +1989,13 @@ pub fn update_world_floor(
                         Name::new("deco"),
                         Sprite {
                             image: d.image.clone(),
-                            custom_size: Some(Vec2::splat(d.height * scale)),
+                            // Non-square crops keep proportions; tint drives
+                            // the palette per terrain (dry/frost/toxic).
+                            custom_size: Some(Vec2::new(
+                                d.height * scale * d.aspect,
+                                d.height * scale,
+                            )),
+                            color: Color::srgb(d.tint[0], d.tint[1], d.tint[2]),
                             ..default()
                         },
                         bevy::sprite::Anchor::BOTTOM_CENTER,
@@ -2012,7 +2195,7 @@ pub fn update_plot_visuals(
     let now = now_unix_secs();
     let conn_guard = net.conn.lock().unwrap();
     let Some(conn) = conn_guard.as_ref() else { return };
-    let (hq, hr) = world_pos_to_hex(px, py, WorldGenConfig::HEX_SIZE);
+    let (hq, hr) = world_pos_to_tile(px, py, WorldGenConfig::TILE_SIZE);
     const MAX_DIST: f32 = 8.0;
 
     // Every plot slot still in range this pass (for stale cleanup).
@@ -2250,7 +2433,7 @@ pub fn update_plant_visuals(
     let conn_guard = net.conn.lock().unwrap();
     let Some(conn) = conn_guard.as_ref() else { return };
 
-    let (hq, hr) = world_pos_to_hex(px, py, WorldGenConfig::HEX_SIZE);
+    let (hq, hr) = world_pos_to_tile(px, py, WorldGenConfig::TILE_SIZE);
     // Plant/pollution discs are small; only build them for hexes close to
     // the player (8 hexes ≈ 140 units) so far replicated rows stay data-only.
     let max_dist = 8.0f32;
@@ -2408,7 +2591,7 @@ pub fn update_plant_visuals(
 }
 
 fn row_world_center(q: i32, r: i32) -> (f32, f32) {
-    idlecore_core::hex_grid::HexGrid::axial_to_world(q, r, WorldGenConfig::HEX_SIZE)
+    idlecore_core::grid::WorldGrid::tile_center(q, r, WorldGenConfig::TILE_SIZE)
 }
 
 #[cfg(test)]
@@ -2439,9 +2622,16 @@ mod tests_floor_variants {
                     matches!(
                         *key,
                         atlas::FLOOR_GRASS
+                            | atlas::FLOOR_GRASS_SUMMER2
+                            | atlas::FLOOR_GRASS_SPRING
+                            | atlas::FLOOR_GRASS_SPRING2
+                            | atlas::FLOOR_GRASS_FALL
+                            | atlas::FLOOR_GRASS_FALL2
                             | atlas::FLOOR_SAND
                             | atlas::FLOOR_SNOW
+                            | atlas::FLOOR_SNOW2
                             | atlas::FLOOR_STONE
+                            | atlas::FLOOR_DIRT
                             | atlas::WATER
                     ),
                     "{terrain:?} unknown floor key {key}"

@@ -126,3 +126,143 @@ so higher capitals field deeper recolor waves.
 - Goblin Merchant as an NPC trader (needs a trade UI — later spec).
 - New tower categories to counter ranged mobs (Spec 026 candidate).
 - Wildlife/farm life — next spec (026), as decided.
+
+---
+
+# REV3 — Sieges you can see (playtest feedback)
+
+## 8. Problem (playtest)
+
+Playtest 2026-11: *"I don't see it attacking the capital, the life just
+starts decreasing."* The server sim is honest, but the client shows none of
+its causes:
+
+1. **Ranged kinds are invisible shooters.** Archer/Myconid/Venom stop 2–3
+   tiles out (`range_hexes`) and deal dps on the tick — no projectile, no
+   muzzle puff, nothing. Damage appears on the capital out of nowhere.
+2. **Melee kinds have no attack pose.** A slime parked on the capital tile
+   renders its idle frame forever; the kill is silent.
+3. **Structures and capital give no hit feedback** beyond the HP number:
+   no flash, no shake, no toast. A wave that walked past the camera reads
+   as "solar decay".
+4. **Walls don't do anything anymore.** Walls are just higher-HP targets —
+   march pathing ignores them, so a wall line neither blocks nor funnels,
+   and the sapper mechanic (its whole reason to exist) rarely fires.
+
+## 9. Goal
+
+Every capital HP point lost must have a visible cause in the same second:
+a mob standing/posing where it hurt you, a projectile, or a boom. Second
+goal: make walls *matter* (funnel + chew), which is what makes enemy
+composition fun — swarm slimes get funneled, sappers are the key, the bomb
+goblin is the threat you must catch.
+
+Keep every constraint: **server-authoritative, 1s ticks, integer math** —
+all new visuals are client-derivative of existing table rows plus the new
+event table (no client-side combat decisions).
+
+## 10. Server: combat events (new table)
+
+`combat_event` — thin, fire-and-forget rows a single tick can hold:
+
+| field | type | note |
+|---|---|---|
+| event_id | u64 identity | monotonic |
+| tick_at | u64 | server now, seconds |
+| wave_id | u64 | ties fx to the wave banner |
+| kind | string | `"shot" \| "melee" \| "bomb" \| "spore" \| "splash" \| "struct_fell" \| "capital_hit"` |
+| attacker_mob | u64 | mob row |
+| target_hex / target_slot | u64 / (i32,i32) | where the fx lands (slots for structures, center for the capital) |
+
+Rules:
+
+- Written inside `tick` **only for visible acts** (an attack or a kill).
+  Marching/tower-fire use the same event kinds (`"shot"` covers tower fire
+  too — the client distinguishes by attacker's presence in the mob table).
+- `struct_fell` replaces the bare `tracing::info!` for the client rubble.
+- Scrub: scheduled every 30 s deletes rows with `tick_at < now - 30`.
+- Size cap: ≥ one event per acting attacker per tick; a 60-mob wave writes
+  ≤ 60 rows/s — fine for the subscription.
+
+## 11. Server: walls block (the funnel)
+
+- `march` gains a passability filter: a step onto a hex with a
+  **standing wall** (`is_wall` structure) is rejected like water.
+- If every greedy step is blocked, the mob attacks the wall: the
+  engagement target becomes that wall (sapper bonus now has real utility).
+- One breach solves the line: once any wall in the path is destroyed the
+  queue moves again (walls rebuild as rubble at half level — unchanged).
+- Determinism: among equal-distance passable steps keep the existing
+  tie-break order; among blocked steps pick the nearest wall by
+  `(distance, structure_id)` — integer math, no randomness.
+
+## 12. Server: encircle (melee crowd legibility)
+
+- A melee mob in range of its target still *melees*, but if it is **on the
+  target's tile** (only the capital/structure center tile is at distance 0)
+  it has one marquee job: stop, pose, hit. Unchanged rule, verified.
+- Crowd ring: when ≥ 3 melee mobs jostle the same target tile, each keeps
+  the deterministic ring spot (sorted by mob id around the tie-break) so a
+  swarm reads as *surrounding* the capital, not stacking into one pixel.
+
+## 13. Client: fx per event kind
+
+All fx are **client-only reactions to `combat_event` rows** (plus existing
+HP-row diffs). 1 fx budget rule: every kind owned by its source file
+`net/td.rs`; new atlas crops are allowed (32×32), no new systems.
+
+| event | fx |
+|---|---|
+| `"shot"` | arrow/spore tracer: 0.3 s glide shooter → target hex (color by kind: arrows white, spores violet) |
+| `"melee"` | attacker's 2-frame strike pose (or 0.12 s white-blink fallback until real frames ship) + small impact star at the target |
+| `"bomb"` | 0.5 s lob arc then an orange AoE ring + smoke poof on the target ring |
+| `"spore"` | green/violet puff decal, 0.4 s |
+| `"splash"` | half-alpha echo of the bomb ring on each splash target |
+| `"struct_fell"` | 0.5 s rubble crumble: structure sprite → alpha 0 + dust puff |
+| `"capital_hit"` | capital sprite red flash 0.2 s + 3 px shake; HUD toast **"Capital under attack!"** on the first capital_hit of a wave; minimap ping already exists |
+
+- **Attack pose wiring** replaces "standing on the top":
+  `TdMarker` gains a 3-state animation cursor — `walk` (gliding), `idle`
+  (no target), `attacking` (mob has a `"melee"`/`"shot"` event *this* tick).
+  Ranged mobs hold the skeleton of a draw-pose while their tracer flies.
+- **HP bar pulse** on `"capital_hit"`: capital HP bar dims gold for 1 s.
+
+## 14. Wave design — hand-tuned patterns, not pure noise
+
+`wave_composition` keeps cycling the level-eligible roster, but gains
+**named threat patterns** per wave index (deterministic, integer):
+
+| pattern | cadence | content | design purpose |
+|---|---|---|---|
+| **Scout Line** | fresh capital's 1st wave of a level tier | 4–6 slimes, one column | teach the target/tower loop |
+| **Swarm** | every 3rd wave | slimes ×8 (dense 2-column) | farm fodder, focus-fire practice |
+| **Sap Team** | every 4th wave ≥ L2 | spear goblins ×3–4 + 2 slurp shields | makes your wall line matter |
+| **Volley** | every 5th wave ≥ L2 | archers ×3 + 2 spore tanks | anti-stationary pressure, tower spread |
+| **Demolition** | every 7th wave ≥ L3 | bomb goblins ×2 + spear shield ×2 | punish passive walls; big AoE risk |
+| **Boss** | unchanged §4 cadence | Big Slime leading a slime squad | siege breaker, first-wave danger block |
+
+- Patterns escalate *within* a siege: a wave chain rolls
+  `Scout → Swarm → Sap → Volley → …` cycling, capital-level-gated, so a
+  level-3 capital fights a varied ladder every raid.
+- The pattern name is player-visible ("Wave 3: Sap Team") in the raid
+  banner — a preview: what you build against between waves.
+
+## 15. Player threat (stretch — needs its own decision)
+
+Mobs adjacent to the **player character** (not structures) deal their dps
+to the player, with an HP meter, grace rules and a capital respawn —
+genuinely makes towers + walls *for* you. Defer to the user decision
+during review; it touches `Player` schema (`player_hp`, respawn rules)
+which is the only place 025 becomes a schema-accrual task.
+
+## 16. Tests
+
+- Core: pattern table integrity (monotone wave gating, every roster kind
+  appears in ≥ 1 pattern, boss cadence unchanged).
+- Server: wall block changes step selection (`march_blocked_by_wall`);
+  breach resumes march; encircle ring picks; combat_event written per
+  hit; event scrub age rule. Integer-only assertions.
+- Client: event-kind fx mapping covers every `kind` string the server
+  writes (exhaustive test on the match); attack-pose cursor transitions;
+  cap toast gating (first capital_hit of wave only).
+

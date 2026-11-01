@@ -1,10 +1,10 @@
 //! Teleport system — instant travel between hex grid locations.
 //!
-//! Uses axial hex coordinates (HexCoord). Cooldown: 60s, cost: 100G + level scaling.
+//! Uses axial hex coordinates (TileCoord). Cooldown: 60s, cost: 100G + level scaling.
 //! Server-authoritative: cooldown & gold are validated on both client and server.
 
 use crate::economy;
-use crate::hex::HexCoord;
+use crate::grid::TileCoord;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -60,7 +60,7 @@ impl std::fmt::Display for TeleportError {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct TeleportTarget {
     /// Axial hex coordinates (q, r) where s = -q-r.
-    pub hex: HexCoord,
+    pub hex: TileCoord,
     /// Unique hex identifier.
     pub hex_id: u64,
     /// Distance in hex steps.
@@ -112,21 +112,21 @@ impl Default for TeleportState {
 // ---------------------------------------------------------------------------
 
 /// Hex distance between two axial hexes. O(1).
-pub fn hex_distance(a: &HexCoord, b: &HexCoord) -> i32 {
+pub fn tile_distance(a: &TileCoord, b: &TileCoord) -> i32 {
     a.distance(b)
 }
 
 /// Generate nearby teleport-eligible hexes (within range, excluding self).
 /// ponytail: O(range²) brute-force — fine for max 8 hex range.
-pub fn generate_nearby_hexes(current: &HexCoord, range: i32) -> Vec<TeleportTarget> {
+pub fn generate_nearby_hexes(current: &TileCoord, range: i32) -> Vec<TeleportTarget> {
     let mut targets = Vec::new();
     for dq in -range..=range {
         for dr in -range..=range {
             if dq == 0 && dr == 0 { continue; }
-            let target = HexCoord::new(current.q + dq, current.r + dr);
-            let dist = hex_distance(&current, &target);
+            let target = TileCoord::new(current.x + dq, current.y + dr);
+            let dist = tile_distance(&current, &target);
             if dist <= range {
-                let terrain_label = terrain_label_for(current.q + dq, current.r + dr);
+                let terrain_label = terrain_label_for(current.x + dq, current.y + dr);
                 targets.push(TeleportTarget {
                     hex: target,
                     hex_id: target.to_id(),
@@ -195,8 +195,8 @@ pub fn get_teleport_options(
 pub fn execute_teleport(
     state: &mut economy::LocalGameState,
     teleport: &mut TeleportState,
-    target: &HexCoord,
-) -> Result<(HexCoord, u64), TeleportError> {
+    target: &TileCoord,
+) -> Result<(TileCoord, u64), TeleportError> {
     // Check cooldown
     if !teleport.can_teleport() {
         return Err(TeleportError::OnCooldown {
@@ -205,8 +205,8 @@ pub fn execute_teleport(
     }
 
     // Check range
-    let current = HexCoord::from_id(state.current_hex_id);
-    let dist = hex_distance(&current, target);
+    let current = TileCoord::from_id(state.current_hex_id);
+    let dist = tile_distance(&current, target);
     if dist > TELEPORT_RANGE_HEXES {
         return Err(TeleportError::OutOfRange {
             distance: dist,
@@ -263,7 +263,7 @@ pub fn cooldown_remaining(state: &TeleportState) -> f32 {
 pub fn server_teleport(
     gs: &mut economy::LocalGameState,
     teleport: &mut TeleportState,
-    target: &HexCoord,
+    target: &TileCoord,
     _cost: u64,
 ) -> Result<TeleportEvent, TeleportError> {
     if !teleport.can_teleport() {
@@ -272,8 +272,8 @@ pub fn server_teleport(
         });
     }
 
-    let current = HexCoord::from_id(gs.current_hex_id);
-    let dist = hex_distance(&current, target);
+    let current = TileCoord::from_id(gs.current_hex_id);
+    let dist = tile_distance(&current, target);
     if dist > TELEPORT_RANGE_HEXES {
         return Err(TeleportError::OutOfRange {
             distance: dist,
@@ -408,50 +408,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_hex_distance_symmetric() {
-        let a = HexCoord::new(3, 1);
-        let b = HexCoord::new(1, 3);
-        assert_eq!(hex_distance(&a, &b), hex_distance(&b, &a));
+    fn test_tile_distance_symmetric() {
+        let a = TileCoord::new(3, 1);
+        let b = TileCoord::new(1, 3);
+        assert_eq!(tile_distance(&a, &b), tile_distance(&b, &a));
     }
 
     #[test]
-    fn test_hex_distance_self_zero() {
-        let h = HexCoord::new(5, -3);
-        assert_eq!(hex_distance(&h, &h), 0);
+    fn test_tile_distance_self_zero() {
+        let h = TileCoord::new(5, -3);
+        assert_eq!(tile_distance(&h, &h), 0);
     }
 
     #[test]
-    fn test_hex_distance_adjacent() {
-        let a = HexCoord::new(0, 0);
-        let b = HexCoord::new(1, 0);
-        assert_eq!(hex_distance(&a, &b), 1);
+    fn test_tile_distance_adjacent() {
+        let a = TileCoord::new(0, 0);
+        let b = TileCoord::new(1, 0);
+        assert_eq!(tile_distance(&a, &b), 1);
     }
 
     #[test]
     fn test_generate_nearby_hexes_excludes_self() {
-        let center = HexCoord::new(0, 0);
+        let center = TileCoord::new(0, 0);
         let targets = generate_nearby_hexes(&center, 2);
         // No target should be at distance 0 (self excluded)
         for t in &targets {
             assert!(t.distance > 0, "Target at distance 0 should not be included");
         }
-        // No target should be at the center hex
+        // No target should be at the center tile
         for t in &targets {
             assert_ne!(t.hex, center);
         }
-        // 2-hex range: 1 + 6 + 12 = 19 targets (including self), but self is excluded
-        // So we expect 18 targets (19 - 1 for self)
-        assert_eq!(targets.len(), 18);
+        // 2-tile square range: 5×5 = 25 tiles including self, minus self
+        assert_eq!(targets.len(), 24);
     }
 
     #[test]
     fn test_generate_nearby_hexes_8_range() {
-        let center = HexCoord::new(0, 0);
+        let center = TileCoord::new(0, 0);
         let targets = generate_nearby_hexes(&center, 8);
-        // 8 hexes: 1 + 6*1 + 6*2 + ... + 6*8 = 1 + 6*(8*9/2) = 1 + 216 = 217
-        // Note: actual count may vary by 1 due to integer rounding in distance calculation
-        assert!(targets.len() >= 216 && targets.len() <= 218, "Expected ~217, got {}", targets.len());
-        // Max distance should be 8
+        // Square range: (2·8+1)² = 289 tiles including self, minus self.
+        assert_eq!(targets.len(), 288, "square minus center");
+        // Max Chebyshev distance should be 8
         assert!(targets.iter().all(|t| t.distance <= 8));
     }
 
@@ -490,7 +488,7 @@ mod tests {
         // force 0 gold in economy
         gs.economy.gold = 0;
         let mut teleport = TeleportState::new();
-        let target = HexCoord::new(1, 0);
+        let target = TileCoord::new(1, 0);
 
         let result = execute_teleport(&mut gs, &mut teleport, &target);
         assert!(result.is_err());
@@ -508,7 +506,7 @@ mod tests {
         let mut gs = economy::LocalGameState::new("0x0");
         gs.economy.gold = 10_000; // enough gold
         let mut teleport = TeleportState::new();
-        let far = HexCoord::new(100, 100); // way out of range
+        let far = TileCoord::new(100, 100); // way out of range
 
         let result = execute_teleport(&mut gs, &mut teleport, &far);
         assert!(result.is_err());
@@ -527,7 +525,7 @@ mod tests {
         gs.level = 1;
         gs.economy.gold = 10_000;
         let mut teleport = TeleportState::new();
-        let target = HexCoord::new(3, -2);
+        let target = TileCoord::new(3, -2);
 
         let result = execute_teleport(&mut gs, &mut teleport, &target);
         assert!(result.is_ok());
@@ -544,7 +542,7 @@ mod tests {
         gs.level = 1;
         gs.economy.gold = 10_000;
         let mut teleport = TeleportState::new();
-        let target = HexCoord::new(2, 1);
+        let target = TileCoord::new(2, 1);
 
         let result = server_teleport(&mut gs, &mut teleport, &target, 100);
         assert!(result.is_ok());
@@ -593,13 +591,14 @@ mod tests {
 
     #[test]
     fn test_hex_id_roundtrip_with_positions() {
-        let h = HexCoord::new(5, -3);
+        let h = TileCoord::new(5, -3);
         let id = h.to_id();
-        let h2 = HexCoord::from_id(id);
+        let h2 = TileCoord::from_id(id);
         assert_eq!(h, h2);
         let (px, py) = h.to_pixel(10.0);
-        // x = 10 * sqrt(3) * (5 + (-3)/2) = 17.32 * 3.5 = 60.62
-        assert!((px - 60.62_f32).abs() < 0.01);
+        // Square tiles: x = (5 + 0.5)·10 = 55, y = (−3 + 0.5)·10 = −25.
+        assert!((px - 55.0_f32).abs() < 0.01);
+        assert!((py - (-25.0_f32)).abs() < 0.01);
     }
 
     #[test]
@@ -657,7 +656,7 @@ mod tests {
 
     #[test]
     fn test_terrain_labels() {
-        let targets = generate_nearby_hexes(&HexCoord::new(0, 0), 3);
+        let targets = generate_nearby_hexes(&TileCoord::new(0, 0), 3);
         // Should have variety of terrain labels
         let labels: Vec<&str> = targets.iter().map(|t| t.terrain_label.as_str()).collect();
         assert!(labels.contains(&"Grass"));

@@ -6,12 +6,13 @@
 //! immutable terrain snapshots; plants/pollution mutate on top later.
 
 use spacetimedb::{ReducerContext, Table};
-use crate::types::{hex_id_of, hex_tile, HexTile};
+use crate::types::{tile_id_of, hex_tile, HexTile};
 use idlecore_core::earth;
-use idlecore_core::hex_grid::HexGrid;
+use idlecore_core::grid::WorldGrid;
 
-/// Hex circumradius in world units — matches the client and core grid math.
-const HEX_R: f32 = 10.0;
+/// Square tile edge in world units — the footprint every tile covers, so
+/// a tile (q, r) spans exactly the Earth points inside its own edge.
+const TILE_W: f32 = idlecore_core::world_gen::WorldGenConfig::TILE_SIZE;
 
 /// Radius (in hexes) of tiles materialized around a player position. Covers
 /// interaction range (1) plus the HUD/eco lookups for the visible ring.
@@ -22,7 +23,7 @@ pub const ENSURE_RADIUS: i32 = 3;
 /// (grass/rocks — never trees). Returns true if a tile row was inserted.
 pub fn ensure_hex(ctx: &ReducerContext, q: i32, r: i32) -> bool {
     let Some(biome) = biome_for_hex(q, r) else { return false };
-    let hex_id = hex_id_of(q, r);
+    let hex_id = tile_id_of(q, r);
     let inserted = if ctx.db.hex_tile().hex_id().find(hex_id).is_some() {
         false
     } else {
@@ -64,9 +65,14 @@ pub fn ensure_tiles_around(ctx: &ReducerContext, q: i32, r: i32) -> usize {
     count
 }
 
-/// Earth biome under a hex center (`None` outside the mapped planet).
+/// Earth biome under a tile center (`None` outside the mapped planet).
+///
+/// The sampling point MUST be the TILE_SIZE-scaled tile center — the same
+/// point `world_gen::generate_cell` streams to the client. Sampling at the
+/// old 10.0-unit hex basis put server rows on the wrong Earth point (a
+/// visible-land tile materialized as "Water", blocking capital placement).
 fn biome_for_hex(q: i32, r: i32) -> Option<idlecore_core::earth::Biome> {
-    let (wx, wy) = HexGrid::axial_to_world(q, r, HEX_R);
+    let (wx, wy) = WorldGrid::tile_center(q, r, TILE_W);
     earth::biome_at(wx, wy)
 }
 
@@ -101,5 +107,40 @@ mod tests {
             earth::terrain_at(x, y),
             Some(TerrainType::Forest) | Some(TerrainType::Grass)
         ));
+    }
+
+    #[test]
+    fn biome_for_hex_matches_the_streamed_tile_scale() {
+        // Server materialization and client streaming must read the same
+        // Earth point: the TILE_SIZE-scaled tile center. Near coasts roughly
+        // a third of tiles flip between land and water when sampled at any
+        // other basis, so agreement over a coastal window pins the scale.
+        let cell_q = idlecore_core::earth::spawn_tile().0;
+        let cell_r = idlecore_core::earth::spawn_tile().1;
+        // Sanity: at the stale 10.0-unit basis the same window disagrees —
+        // otherwise this test could pass with a still-wrong scale.
+        let mut stale_mismatches = 0;
+        let mut squashed = false;
+        let mut matched = 0;
+        for dq in -256i32..=256 {
+            for dr in [-3i32, 0, 3] {
+                let (q, r) = (cell_q + dq, cell_r + dr);
+                let want = {
+                    let (wx, wy) = WorldGrid::tile_center(q, r, TILE_W);
+                    earth::biome_at(wx, wy).map(|b| earth::terrain_name(b.terrain()))
+                };
+                match biome_for_hex(q, r) {
+                    Some(b) if Some(earth::terrain_name(b.terrain())) == want => matched += 1,
+                    _ => squashed = true,
+                }
+                let (hx, hy) = WorldGrid::tile_center(q, r, 10.0);
+                if earth::biome_at(hx, hy).map(|b| earth::terrain_name(b.terrain())) != want {
+                    stale_mismatches += 1;
+                }
+            }
+        }
+        assert!(!squashed, "server biome diverged from the streamed cell scale");
+        assert!(stale_mismatches > 0, "sampling scale polarity unclear");
+        assert!(matched > 1000, "window did not exercise enough tiles");
     }
 }

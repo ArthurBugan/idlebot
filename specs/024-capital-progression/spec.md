@@ -22,9 +22,11 @@ your realm, both at the capital and per structure.
 
 ### 2.1 Capital levels → grown soil
 
-- **Radius formula (live, rev8):** `claim_radius(level) = min(83 + 2·(level-1), 91)` —
+- **Radius formula (live, rev9):** `claim_radius(level) = min(83 + 2·(level-1), 91)` —
   rev8 raised the initial claimable AREA ×10 (radius 26/2107 hexes became
-  83/20 917 hexes; cap 34/3571 became 91/25 117).
+  83/20 917 hexes); rev9 reshaped the claimable region into a **world-axis
+  SQUARE** with half-side = radius · HEX_SIZE·√3 wu (L1: 1437.6 wu) instead
+  of a hex disc, restoring the disc's lost corners (area ×4/π ≈ 1.27).
   L1 disc = **20 917 hexes** (rev8: 9.92× the rev7 2107; the original
   radius-8 disc was 217), L5+ cap = 25 117.
 - **Radius growth grants reach, not land:** territory still spreads

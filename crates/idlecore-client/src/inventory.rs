@@ -771,15 +771,15 @@ fn update_chest_near(
     let mut next = None;
     if let (Some(addr), Ok(p)) = (&net.address, player.single()) {
         if let Some(cur) = &p.current_hex {
-            let token = (cur.q, cur.r);
+            let token = (cur.x, cur.y);
             let guard = net.conn.lock().unwrap();
             if let Some(conn) = guard.as_ref() {
                 for s in conn.db.defense_structure().iter() {
                     if s.kind != "StorageChest" || s.owner != **addr {
                         continue;
                     }
-                    let c = idlecore_core::hex::HexCoord::from_id(s.hex_id);
-                    if (c.q, c.r) == token {
+                    let c = idlecore_core::grid::TileCoord::from_id(s.hex_id);
+                    if (c.x, c.y) == token {
                         next = Some(s.structure_id);
                         break;
                     }
@@ -1275,7 +1275,7 @@ fn handle_inv_craft_clicks(
             ));
             continue;
         }
-        let hex_id = idlecore_core::hex::HexCoord::new(target.q, target.r).to_id();
+        let hex_id = idlecore_core::grid::TileCoord::new(target.x, target.y).to_id();
         let (slot_x, slot_y) = (target.slot_x, target.slot_y);
         let tx = net.sender();
         send_reducer(&mut net, |r| {
@@ -1448,7 +1448,7 @@ fn handle_slot_clicks(
 /// item if present, else 4 Logs on the server). Shared by the inventory
 /// Workbench click and the crafting result slot.
 fn try_place_bench(net: &mut ResMut<crate::net::plugin::Net>, target: &ActionTarget) {
-    let hex_id = idlecore_core::hex::HexCoord::new(target.q, target.r).to_id();
+    let hex_id = idlecore_core::grid::TileCoord::new(target.x, target.y).to_id();
     let (slot_x, slot_y) = (target.slot_x, target.slot_y);
     let tx = net.sender();
     send_reducer(net, |r| {
@@ -1537,11 +1537,11 @@ fn handle_world_click(
         return;
     }
 
-    let hex_id = idlecore_core::hex::HexCoord::new(target.q, target.r).to_id();
-    let (hex_cx, hex_cy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
-        target.q,
-        target.r,
-        idlecore_core::world_gen::WorldGenConfig::HEX_SIZE,
+    let hex_id = idlecore_core::grid::TileCoord::new(target.x, target.y).to_id();
+    let (hex_cx, hex_cy) = idlecore_core::grid::WorldGrid::tile_center(
+        target.x,
+        target.y,
+        idlecore_core::world_gen::WorldGenConfig::TILE_SIZE,
     );
     let slot_dx = idlecore_core::slots::slot_center(target.slot_x, target.slot_y).0 - hex_cx;
     let slot_dy = idlecore_core::slots::slot_center(target.slot_x, target.slot_y).1 - hex_cy;

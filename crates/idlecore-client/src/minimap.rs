@@ -16,10 +16,10 @@ use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::math::Rot2;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::ui::widget::ImageNode;
-use idlecore_core::hex::{world_pos_to_hex, HexCoord};
-use idlecore_core::hex_grid::HexGrid;
+use idlecore_core::grid::{world_pos_to_tile, TileCoord};
+use idlecore_core::grid::WorldGrid;
 use idlecore_core::minimap::{map_pixel_to_world, world_to_map_pixel, RotationMode};
-use idlecore_core::world_gen::{HexCell, WorldGenConfig};
+use idlecore_core::world_gen::{WorldCell, WorldGenConfig};
 use std::collections::{HashMap, HashSet};
 
 use crate::plugins::world::StreamingWorldResource;
@@ -36,7 +36,7 @@ use crate::net::plugin::Net;
 const COMPACT_SIZE: f32 = 200.0;
 const EXPANDED_SIZE: f32 = 400.0;
 const MINIMAP_PADDING: f32 = 10.0;
-const HEX_SIZE: f32 = WorldGenConfig::HEX_SIZE;
+const HEX_SIZE: f32 = WorldGenConfig::TILE_SIZE;
 
 // ============================================================================
 // Zoom
@@ -168,19 +168,20 @@ pub struct MergedMapImage {
 #[derive(Component)]
 pub struct MergedMapNode;
 
-/// Above this hex count a zoom level uses the merged bitmap instead of
-/// per-hex UI tiles. Local ≈ 4.0k, Close ≈ 1.2k, Max ≈ 0.3k stay nodes;
-/// Area ≈ 16k and World ≈ 64k flip to the bitmap.
-const FAR_TILES_BUDGET: usize = 5200;
+/// Above this tile count a zoom level uses the merged bitmap instead of
+/// per-tile UI nodes. Local ≈ 5.9k tiles < budget; Area and the expanded
+/// (M) Local ≈ 23.5k flip to the bitmap; Close ≈ 1.5k and Max ≈ 1.0k stay
+/// nodes. (REV10 square grid: cells are 17.32 wu on a side, ~3.5× denser
+/// than the old hex pitch, so the budget scaled with the cell count.)
+const FAR_TILES_BUDGET: usize = 12_000;
 
 /// Estimated explored-hex count the visible minimap box would need as
 /// per-hex UI tiles. Pure so the budget split is unit-testable.
-fn estimated_hex_count(mm_size: f32, pixel_scale: f32) -> usize {
+fn estimated_tile_count(mm_size: f32, pixel_scale: f32) -> usize {
     let half_w = mm_size * 0.5 / pixel_scale; // world units (split across)
     let half_h = mm_size * 0.5 / pixel_scale;
-    let hex_w = SQRT_3 * WorldGenConfig::HEX_SIZE;
-    let hex_h = 2.0 * WorldGenConfig::HEX_SIZE;
-    (std::f32::consts::PI * (half_w / hex_w) * (half_h / hex_h)) as usize
+    let tile = WorldGenConfig::TILE_SIZE;
+    ((2.0 * half_w / tile) * (2.0 * half_h / tile)) as usize
 }
 
 /// Image row → the map-space y it samples. Bevy `Image` row 0 paints the
@@ -232,11 +233,11 @@ fn render_merged_map(
                 rotation,
             );
             let (q, r) =
-                idlecore_core::hex::world_pos_to_hex(world_x, world_y, WorldGenConfig::HEX_SIZE);
+                idlecore_core::grid::world_pos_to_tile(world_x, world_y, WorldGenConfig::TILE_SIZE);
             let Some(cell) = streaming_world.chunks.get_cell(q, r) else {
                 continue;
             };
-            let hex_id = HexCoord::new(q, r).to_id();
+            let hex_id = TileCoord::new(q, r).to_id();
             // Fog: visited hexes paint full terrain; streamed-but-unexplored
             // stays a dim silhouette.
             let visited = explored.explored.contains_key(&hex_id);
@@ -577,7 +578,7 @@ fn terrain_color(terrain: &idlecore_core::terrain::TerrainType) -> Color {
 
 /// Create a filled hexagon texture with a ±2px transparent padding, so
 /// adjacent hex tiles on the minimap fit edge-to-edge with no gaps.
-fn create_hexagon_image(width: u32, height: u32, color: Color) -> Image {
+fn create_square_tile_image(width: u32, height: u32, color: Color) -> Image {
     let pad = 2u32;
     let cw = width + pad * 2;
     let ch = height + pad * 2;
@@ -588,25 +589,12 @@ fn create_hexagon_image(width: u32, height: u32, color: Color) -> Image {
     let pz = (srgba.blue * 255.0) as u8;
     let alpha = (srgba.alpha * 255.0) as u8;
 
-    let cx = cw as f32 / 2.0;
-    let cy = ch as f32 / 2.0;
-    let rpx = height as f32 / 2.0;
-    let kx = width as f32 / (SQRT_3 * rpx);
-
-    // Pointy-top hexagon corners, matching the world mesh corner angles.
-    let mut corners = [(0.0, 0.0); 6];
-    for i in 0..6 {
-        let angle = std::f32::consts::FRAC_PI_6 + std::f32::consts::FRAC_PI_3 * i as f32;
-        corners[i] = (
-            cx + rpx * angle.cos() * kx,
-            cy + rpx * angle.sin(),
-        );
-    }
-
+    // Square tile: the full interior rect, alpha only in the padding ring.
     for y in 0..ch {
         for x in 0..cw {
             let idx = ((y * cw + x) * 4) as usize;
-            if point_in_polygon(x as f32, y as f32, &corners) {
+            let inside = x >= pad && x < cw - pad && y >= pad && y < ch - pad;
+            if inside {
                 pixels[idx] = px;
                 pixels[idx + 1] = py;
                 pixels[idx + 2] = pz;
@@ -624,24 +612,7 @@ fn create_hexagon_image(width: u32, height: u32, color: Color) -> Image {
     )
 }
 
-/// Ray-cast point-in-polygon test for convex hexagon corners.
-fn point_in_polygon(tx: f32, ty: f32, corners: &[(f32, f32); 6]) -> bool {
-    let mut inside = false;
-    let mut j = 5;
-    for i in 0..6 {
-        let (xi, yi) = corners[i];
-        let (xj, yj) = corners[j];
-        if (yi > ty) != (yj > ty)
-            && tx < (xj - xi) * (ty - yi) / (yj - yi) + xi
-        {
-            inside = !inside;
-        }
-        j = i;
-    }
-    inside
-}
-
-/// Get (or create) a hexagon tile texture matching the current zoom, so tile
+/// Get (or create) a square tile texture matching the current zoom, so tile
 /// node sizes and textures stay consistent when the minimap zooms.
 fn hex_tile_handle(
     minimap_assets: &mut MinimapAssets,
@@ -654,7 +625,7 @@ fn hex_tile_handle(
     if let Some(handle) = minimap_assets.hex_tiles.get(&key) {
         return handle.clone();
     }
-    let handle = images.add(create_hexagon_image(width, height, terrain_color(&terrain)));
+    let handle = images.add(create_square_tile_image(width, height, terrain_color(&terrain)));
     minimap_assets.hex_tiles.insert(key, handle.clone());
     handle
 }
@@ -878,7 +849,7 @@ pub fn load_nearby_chunks(
 ) {
     let Some(player_pos) = minimap_state.player_pos else { return };
 
-    let (q, r) = world_pos_to_hex(player_pos.x, player_pos.y, HEX_SIZE);
+    let (q, r) = world_pos_to_tile(player_pos.x, player_pos.y, HEX_SIZE);
     let chunk_size = WorldGenConfig::CHUNK_SIZE;
 
     // Perf: re-stream once the player has moved half a chunk (16 hexes) from
@@ -1030,7 +1001,7 @@ pub fn handle_input(
                 mm_center,
                 rotation,
             );
-            let (q, r) = world_pos_to_hex(wx, wz, WorldGenConfig::HEX_SIZE);
+            let (q, r) = world_pos_to_tile(wx, wz, WorldGenConfig::TILE_SIZE);
             minimap_state.selected_hex = Some((q, r));
             minimap_state.selected_px = Some(mm_pos);
             selected = true;
@@ -1045,7 +1016,7 @@ pub fn handle_input(
             if !over_widget {
                 if let Ok((camera, cam_transform)) = cameras.single() {
                     if let Ok(world) = camera.viewport_to_world_2d(cam_transform, cursor) {
-                        let (q, r) = world_pos_to_hex(world.x, world.y, WorldGenConfig::HEX_SIZE);
+                        let (q, r) = world_pos_to_tile(world.x, world.y, WorldGenConfig::TILE_SIZE);
                         minimap_state.selected_hex = Some((q, r));
                         // Keep the selection ring on the minimap in sync.
                         if let Some(player_pos) = minimap_state.player_pos {
@@ -1145,10 +1116,10 @@ td_view: Res<crate::net::td::TdView>,
     let rotation = minimap_state.rotation.map_rotation(minimap_state.facing_angle);
     let render_radius_world = minimap_state.render_radius_px() / pixel_scale;
 
-    // Pointy-top hexagon bounding box (corners at 30° + 60°·i):
-    // width = √3·R, height = 2R in world units, scaled to pixels.
-    let tile_w = (SQRT_3 * HEX_SIZE * pixel_scale).ceil().max(3.0);
-    let tile_h = (2.0 * HEX_SIZE * pixel_scale).ceil().max(3.0);
+    // Square tile bounding box: TILE_SIZE per side in world units, scaled
+    // to pixels.
+    let tile_w = (WorldGenConfig::TILE_SIZE * pixel_scale).ceil().max(3.0);
+    let tile_h = tile_w;
 
     // Perf: skip the whole pass when the view is unchanged since last frame
     // (standing still → zero work; any movement/zoom/rotation/discovery
@@ -1173,7 +1144,7 @@ td_view: Res<crate::net::td::TdView>,
     // Spec 025 fix: the per-hex tile grid can't paint far zooms (thousands
     // of 3px nodes; hexes sub-pixel) — those levels render one merged
     // terrain bitmap instead. Near zooms keep the crisp tile nodes.
-    let far = estimated_hex_count(minimap_state.mm_size(), pixel_scale) > FAR_TILES_BUDGET;
+    let far = estimated_tile_count(minimap_state.mm_size(), pixel_scale) > FAR_TILES_BUDGET;
     if far {
         render_merged_map(
             &mut commands,
@@ -1291,8 +1262,8 @@ td_view: Res<crate::net::td::TdView>,
     // ---- Phase 1: discover & per-frame fog on visible chunk hexes ----
     for chunk in streaming_world.chunks.chunks.values() {
         for cell in &chunk.cells {
-            let hex_id = HexCell::id_of(cell.q, cell.r);
-            let (center_x, center_y) = cell.world_pos(HEX_SIZE);
+            let hex_id = WorldCell::id_of(cell.x, cell.y);
+            let (center_x, center_y) = cell.world_pos(WorldGenConfig::TILE_SIZE);
 
             let dx = center_x - player_pos.x;
             let dy = center_y - player_pos.y;
@@ -1352,16 +1323,16 @@ fn td_tile_border(
     let owner = net_td.owners.get(&hex_id)?;
     let is_mine = address == Some(owner.as_str());
     let (q, r) = {
-        let c = HexCoord::from_id(hex_id);
-        (c.q, c.r)
+        let c = TileCoord::from_id(hex_id);
+        (c.x, c.y)
     };
-    let is_border = HexCoord::new(q, r)
+    let is_border = TileCoord::new(q, r)
         .neighbors()
         .iter()
         .any(|&(nq, nr)| {
             net_td
                 .owners
-                .get(&HexCoord::new(nq, nr).to_id())
+                .get(&TileCoord::new(nq, nr).to_id())
                 .map(|other| other != owner)
                 .unwrap_or(true)
         });
@@ -1591,8 +1562,8 @@ pub fn render_capital_markers(
         .collect();
 
     for (&hex_id, &(fill, border_color)) in &active {
-        let c = HexCoord::from_id(hex_id);
-        let (wx, wy) = HexGrid::axial_to_world(c.q, c.r, HEX_SIZE);
+        let c = TileCoord::from_id(hex_id);
+        let (wx, wy) = WorldGrid::tile_center(c.x, c.y, HEX_SIZE);
         let (x, y) = world_to_map_pixel(
             (wx, wy),
             (player_pos.x, player_pos.y),
@@ -1856,35 +1827,35 @@ mod tests_zoom_budget {
     fn near_zooms_keep_tiles_far_zooms_go_bitmap() {
         // Local (0.15): ~0.9k hexes < budget → crisp per-hex nodes.
         assert!(
-            estimated_hex_count(200.0, MinimapZoom::Local.pixel_scale())
+            estimated_tile_count(200.0, MinimapZoom::Local.pixel_scale())
                 <= FAR_TILES_BUDGET
         );
         // Area/World far exceed the budget → merged bitmap.
         assert!(
-            estimated_hex_count(200.0, MinimapZoom::Area.pixel_scale())
+            estimated_tile_count(200.0, MinimapZoom::Area.pixel_scale())
                 > FAR_TILES_BUDGET
         );
         assert!(
-            estimated_hex_count(200.0, MinimapZoom::World.pixel_scale())
+            estimated_tile_count(200.0, MinimapZoom::World.pixel_scale())
                 > FAR_TILES_BUDGET
         );
         // Zoom-in levels stay node-priced: Close ~1.0k, Max ~0.3k.
         assert!(
-            estimated_hex_count(200.0, MinimapZoom::Close.pixel_scale())
+            estimated_tile_count(200.0, MinimapZoom::Close.pixel_scale())
                 <= FAR_TILES_BUDGET
         );
         assert!(
-            estimated_hex_count(200.0, MinimapZoom::Max.pixel_scale())
+            estimated_tile_count(200.0, MinimapZoom::Max.pixel_scale())
                 <= FAR_TILES_BUDGET
         );
         // Expanded (M) doubles the box: compact-Local fits nodes, but the
         // expanded box at Local needs >4.6k hexes → merged bitmap there too.
         assert!(
-            estimated_hex_count(400.0, MinimapZoom::Local.pixel_scale())
+            estimated_tile_count(400.0, MinimapZoom::Local.pixel_scale())
                 > FAR_TILES_BUDGET
         );
         assert!(
-            estimated_hex_count(400.0, MinimapZoom::Close.pixel_scale())
+            estimated_tile_count(400.0, MinimapZoom::Close.pixel_scale())
                 <= FAR_TILES_BUDGET
         );
     }

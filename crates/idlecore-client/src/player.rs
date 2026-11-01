@@ -11,8 +11,8 @@ pub struct Player;
 /// Hex coordinate pair (axial coordinates q, r)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CurrentHex {
-    pub q: i32,
-    pub r: i32,
+    pub x: i32,
+    pub y: i32,
 }
 
 /// Main player component — tracks all player state.

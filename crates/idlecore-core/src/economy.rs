@@ -3,7 +3,7 @@
 //! Local single-player: tracks player gold/XP, validates action costs,
 //! applies vehicle maintenance, and calculates teleport/level costs.
 
-use crate::hex::HexCoord;
+use crate::grid::TileCoord;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
@@ -423,7 +423,7 @@ impl LocalGameState {
             player_address: address.to_string(),
             economy: PlayerEconomy::default(),
             cooldowns: HashMap::new(),
-            current_hex_id: HexCoord::new(0, 0).to_id(),
+            current_hex_id: TileCoord::new(0, 0).to_id(),
             nearby_hexes: Vec::new(),
             gold: 0,
             xp: 0,

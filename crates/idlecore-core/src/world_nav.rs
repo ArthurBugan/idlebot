@@ -30,7 +30,7 @@ pub struct VisibilityMap {
 }
 
 fn id(q: i32, r: i32) -> u64 {
-    crate::world_gen::HexCell::id_of(q, r)
+    crate::world_gen::WorldCell::id_of(q, r)
 }
 
 impl VisibilityMap {

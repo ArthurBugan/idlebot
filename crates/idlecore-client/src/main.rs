@@ -183,11 +183,11 @@ fn main() {
 fn setup(mut commands: Commands) {
     // Start looking at the Earth-replica spawn forest (the server row snaps
     // us precisely once it replicates).
-    let (sq, sr) = idlecore_core::earth::spawn_hex();
-    let (wx, wy) = idlecore_core::hex_grid::HexGrid::axial_to_world(
+    let (sq, sr) = idlecore_core::earth::spawn_tile();
+    let (wx, wy) = idlecore_core::grid::WorldGrid::tile_center(
         sq,
         sr,
-        idlecore_core::world_gen::WorldGenConfig::HEX_SIZE,
+        idlecore_core::world_gen::WorldGenConfig::TILE_SIZE,
     );
 
     // 2D camera: follows the player (plugins/camera.rs), zoomed to the

@@ -644,7 +644,7 @@ pub struct Mob {
     pub hex_id: u64,
     pub hex_q: i32,
     pub hex_r: i32,
-    /// Exact position in world units (hex centers, server `hex_center`).
+    /// Exact position in world units (hex centers, server `tile_center`).
     pub position_x: f32,
     pub position_y: f32,
     pub hp: u32,
@@ -842,31 +842,32 @@ pub fn match_recipe(ingredients: [&str; 4]) -> Option<&'static str> {
 }
 
 /// Encode axial (q, r) into the u64 hex id: `(q << 32) | r`.
-pub fn hex_id_of(q: i32, r: i32) -> u64 {
+pub fn tile_id_of(q: i32, r: i32) -> u64 {
     ((q as u64) << 32) | (r as u32 as u64)
 }
 
-/// Decode q/r from a hex id (inverse of [`hex_id_of`], delegated to the
+/// Decode q/r from a hex id (inverse of [`tile_id_of`], delegated to the
 /// shared core encoding so client and server can never diverge).
 pub fn hex_coords_of(hex_id: u64) -> (i32, i32) {
-    let c = idlecore_core::hex::HexCoord::from_id(hex_id);
-    (c.q, c.r)
+    let c = idlecore_core::grid::TileCoord::from_id(hex_id);
+    (c.x, c.y)
 }
 
-/// Hex axial distance (cube coords).
-pub fn hex_distance(q1: i32, r1: i32, q2: i32, r2: i32) -> i32 {
-    let s1 = -q1 - r1;
-    let s2 = -q2 - r2;
-    ((q1 - q2).abs() + (r1 - r2).abs() + (s1 - s2).abs()) / 2
+/// Chebyshev distance between two tiles (8-way steps).
+pub fn tile_distance(q1: i32, r1: i32, q2: i32, r2: i32) -> i32 {
+    let dq = (q1 - q2).abs();
+    let dr = (r1 - r2).abs();
+    dq.max(dr)
 }
 
-/// World position of a hex center (spec PROPOSAL 9.1): flat-top axial.
-pub fn hex_center(q: i32, r: i32) -> (f32, f32) {
-    let size = 10.0f32;
-    let x = size * 3.0_f32.sqrt() * (q as f32 + r as f32 / 2.0);
-    let y = size * 1.5 * r as f32;
+/// World position of a tile center: aligned square tiles (same 17.32 wu
+/// footprint the hex grid had, so distances and sprite scales survive).
+pub fn tile_center(q: i32, r: i32) -> (f32, f32) {
+    let x = q as f32 * 17.320508075688772 + 8.660254037844386;
+    let y = r as f32 * 17.320508075688772 + 8.660254037844386;
     (x, y)
 }
+
 // ---------------------------------------------------------------------------
 // Scheduled reducer wrappers (Spec 015) — the host invokes these on the
 // schedule-table rows; bodies live in `scheduler.rs`.

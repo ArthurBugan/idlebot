@@ -13,8 +13,8 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use idlecore_core::defense_config as cfg;
-use idlecore_core::hex::HexCoord;
-use idlecore_core::hex_grid::HexGrid;
+use idlecore_core::grid::TileCoord;
+use idlecore_core::grid::WorldGrid;
 use idlecore_core::world_gen::WorldGenConfig;
 
 use super::gen::*;
@@ -379,7 +379,7 @@ fn unix_now_secs() -> u64 {
 }
 
 fn hex_center(q: i32, r: i32) -> (f32, f32) {
-    HexGrid::axial_to_world(q, r, WorldGenConfig::HEX_SIZE)
+    WorldGrid::tile_center(q, r, WorldGenConfig::TILE_SIZE)
 }
 
 fn clamp_ratio(hp: f32, max: f32) -> f32 {
@@ -470,8 +470,8 @@ fn sync_td_entities(
             .defense_structure()
             .iter()
             .map(|s| {
-                let c = HexCoord::from_id(s.hex_id);
-                let (hx, hy) = hex_center(c.q, c.r);
+                let c = TileCoord::from_id(s.hex_id);
+                let (hx, hy) = hex_center(c.x, c.y);
                 StructRow {
                     structure_id: s.structure_id,
                     x: hx + s.offset_x,
@@ -592,8 +592,8 @@ fn sync_td_entities(
     let (view_r2, terr_r2) = cull_radii(&extent);
     // ---- ownership overlays ----
     for (hex_id, owner) in &snap.territory {
-        let c = HexCoord::from_id(*hex_id);
-        let (cx, cy) = hex_center(c.q, c.r);
+        let c = TileCoord::from_id(*hex_id);
+        let (cx, cy) = hex_center(c.x, c.y);
         let dist_sq = {
             let dx = cx - px;
             let dy = cy - py;
@@ -606,18 +606,14 @@ fn sync_td_entities(
         commands.spawn((
             TdOverlay,
             Sprite {
-                image: hex_tex.hex.clone(),
-                // Tone: a warm gold ring for mine, cool violet for others —
-                // full-hex so territory reads as land, not pinhead dots.
+                // Square territory fill (no hex art) — a tile-wide colored
+                // rect so territory reads as land, not pinhead dots.
                 color: if ownership_mine {
                     Color::srgba(1.0, 0.86, 0.35, 0.5)
                 } else {
                     Color::srgba(0.62, 0.42, 1.0, 0.4)
                 },
-                custom_size: Some(Vec2::new(
-                    f32::sqrt(3.0) * WorldGenConfig::HEX_SIZE,
-                    2.0 * WorldGenConfig::HEX_SIZE,
-                )),
+                custom_size: Some(Vec2::splat(WorldGenConfig::TILE_SIZE)),
                 ..default()
             },
             Transform::from_xyz(cx, cy, prop_depth(cy) + 3.0),
@@ -629,8 +625,8 @@ fn sync_td_entities(
         if row.destroyed {
             continue;
         }
-        let c = HexCoord::from_id(row.hex_id);
-        let (cx, cy) = hex_center(c.q, c.r);
+        let c = TileCoord::from_id(row.hex_id);
+        let (cx, cy) = hex_center(c.x, c.y);
         let (dx, dy) = (cx - px, cy - py);
         if dx * dx + dy * dy > view_r2 {
             continue;
@@ -880,10 +876,6 @@ pub struct TdBuildMenu {
 /// the pale-green grass tiles (teal = build, gold = capital, azure = claim).
 fn hint_color(held: &str, claim_ready: bool) -> Option<Color> {
     match held {
-        cfg::ITEM_CAPITAL_CORE => {
-            // Gold: "here a capital city is legal".
-            Some(Color::srgba(1.0, 0.82, 0.28, 0.85))
-        }
         cfg::ITEM_ARROW_TOWER | cfg::ITEM_BALLISTA | cfg::ITEM_BONE_BARRICADE => {
             // Teal: "build here" (owned land).
             Some(Color::srgba(0.25, 0.95, 0.65, 0.9))
@@ -974,8 +966,6 @@ fn init_td_hex_tex(mut td: ResMut<TdHexTex>, mut images: ResMut<Assets<Image>>) 
 /// Show WHERE each tower-defense action will work (0.25 s rebuild):
 /// - Build mode armed (B) → owned hexes glow green; the armed kind builds
 ///   on E regardless of what is held.
-/// - holding the Capital Core → legal capital hexes (land, unclaimed, ≥8
-///   from every capital) glow yellow.
 /// - holding a structure item → owned hexes glow green ("build here").
 /// - empty hand (no build mode) + 5 Wood + 3 Stone → the claimable ring
 ///   glows blue.
@@ -1033,25 +1023,21 @@ fn td_place_hints(
     let Some(color) = color else { return };
     let (px, py) = (player_xf.translation.x, player_xf.translation.y);
     let (_, terr_r2) = cull_radii(&extent);
-    let (phq, phr) = idlecore_core::hex::world_pos_to_hex(
+    let (phq, phr) = idlecore_core::grid::world_pos_to_tile(
         px,
         py,
-        idlecore_core::world_gen::WorldGenConfig::HEX_SIZE,
+        idlecore_core::world_gen::WorldGenConfig::TILE_SIZE,
     );
-    let player_hex = HexCoord::new(phq, phr);
+    let player_hex = TileCoord::new(phq, phr);
 
     let spawn_hint = |commands: &mut Commands, q: i32, r: i32| {
         let (cx, cy) = hex_center(q, r);
-        // Full-hex overlay: √3·s wide, 2·s tall (pointy-top world hexes).
+        // Square tile overlay: TILE_SIZE per side.
         commands.spawn((
             TdHint,
             Sprite {
-                image: hex_tex.hex.clone(),
                 color,
-                custom_size: Some(Vec2::new(
-                    f32::sqrt(3.0) * WorldGenConfig::HEX_SIZE,
-                    2.0 * WorldGenConfig::HEX_SIZE,
-                )),
+                custom_size: Some(Vec2::splat(WorldGenConfig::TILE_SIZE)),
                 ..default()
             },
             Transform::from_xyz(cx, cy, prop_depth(cy) + 4.0),
@@ -1065,24 +1051,24 @@ fn td_place_hints(
                 if !mine(owner) {
                     continue;
                 }
-                let c = HexCoord::from_id(hex_id);
-                let (cx, cy) = hex_center(c.q, c.r);
+                let c = TileCoord::from_id(hex_id);
+                let (cx, cy) = hex_center(c.x, c.y);
                 if (cx - px).powi(2) + (cy - py).powi(2) > terr_r2 {
                     continue;
                 }
-                spawn_hint(&mut commands, c.q, c.r);
+                spawn_hint(&mut commands, c.x, c.y);
             }
         }
         // Capital placement: legal = land + unowned + ≥8 from every capital.
         cfg::ITEM_CAPITAL_CORE => {
             for dq in -9..=9 {
                 for dr in -9..=9 {
-                    let coord = HexCoord::new(player_hex.q + dq, player_hex.r + dr);
+                    let coord = TileCoord::new(player_hex.x + dq, player_hex.y + dr);
                     let dist = player_hex.distance(&coord);
                     if dist == 0 || dist > 9 {
                         continue;
                     }
-                    let (cx, cy) = hex_center(coord.q, coord.r);
+                    let (cx, cy) = hex_center(coord.x, coord.y);
                     if !idlecore_core::earth::is_land_at(cx, cy) {
                         continue;
                     }
@@ -1091,11 +1077,11 @@ fn td_place_hints(
                         continue;
                     }
                     if td.capitals.iter().any(|&cap| {
-                        HexCoord::from_id(cap).distance(&coord) < cfg::MIN_CAPITAL_SPACING
+                        TileCoord::from_id(cap).distance(&coord) < cfg::MIN_CAPITAL_SPACING
                     }) {
                         continue;
                     }
-                    spawn_hint(&mut commands, coord.q, coord.r);
+                    spawn_hint(&mut commands, coord.x, coord.y);
                 }
             }
         }
@@ -1105,25 +1091,25 @@ fn td_place_hints(
                 if !mine(owner) {
                     continue;
                 }
-                let c = HexCoord::from_id(hex_id);
-                let (cx, cy) = hex_center(c.q, c.r);
+                let c = TileCoord::from_id(hex_id);
+                let (cx, cy) = hex_center(c.x, c.y);
                 if (cx - px).powi(2) + (cy - py).powi(2) > terr_r2 {
                     continue;
                 }
-                spawn_hint(&mut commands, c.q, c.r);
+                spawn_hint(&mut commands, c.x, c.y);
             }
         }
         // Claim: the ring around my owned hexes (unowned land only).
         "" if claim_ready => {
-            let owned: Vec<HexCoord> = td
+            let owned: Vec<TileCoord> = td
                 .owners
                 .iter()
                 .filter(|(_, o)| mine(o))
-                .map(|(&h, _)| HexCoord::from_id(h))
+                .map(|(&h, _)| TileCoord::from_id(h))
                 .collect();
             for mine_hex in owned {
                 for (nq, nr) in mine_hex.neighbors() {
-                    let id = HexCoord::new(nq, nr).to_id();
+                    let id = TileCoord::new(nq, nr).to_id();
                     if td.owners.contains_key(&id) {
                         continue;
                     }
@@ -1179,12 +1165,12 @@ fn td_build_keys(
 /// hex of the player (Spec 024 "transfer XP into your buildings").
 fn choose_upgrade_target(
     owner: &str,
-    player_hex: HexCoord,
+    player_hex: TileCoord,
     rows: &[(u64, String, i32, i32)], // (structure_id, owner, q, r)
 ) -> Option<u64> {
     rows.iter()
         .filter(|(_, o, _, _)| o == owner)
-        .map(|&(id, _, q, r)| (HexCoord::new(q, r).distance(&player_hex), id))
+        .map(|&(id, _, q, r)| (TileCoord::new(q, r).distance(&player_hex), id))
         .filter(|(d, _)| *d <= 1)
         .min_by_key(|&(d, id)| (d, id))
         .map(|(_, id)| id)
@@ -1210,7 +1196,7 @@ fn td_upgrade_keys(
         net.push(NetEvent::ServerMessage("U: you are not on a hex".to_string()));
         return;
     };
-    let player_hex = HexCoord::new(cur.q, cur.r);
+    let player_hex = TileCoord::new(cur.x, cur.y);
     let rows: Vec<(u64, String, i32, i32)> = {
         let guard = net.conn.lock().unwrap();
         let Some(conn) = guard.as_ref() else {
@@ -1220,7 +1206,7 @@ fn td_upgrade_keys(
         conn.db
             .defense_structure()
             .iter()
-            .map(|s| (s.structure_id, s.owner.clone(), HexCoord::from_id(s.hex_id).q, HexCoord::from_id(s.hex_id).r))
+            .map(|s| (s.structure_id, s.owner.clone(), TileCoord::from_id(s.hex_id).x, TileCoord::from_id(s.hex_id).y))
             .collect()
     };
     let Some(target) = choose_upgrade_target(&address, player_hex, &rows) else {
@@ -2005,14 +1991,14 @@ mod stat_tests {
             (12u64, "me".to_string(), 3, 0),       // 3 hexes east — out of reach
             (13u64, "me".to_string(), 1, 0),       // 1 hex east — nearest
         ];
-        let me = HexCoord::new(0, 0);
+        let me = TileCoord::new(0, 0);
         assert_eq!(
             choose_upgrade_target("me", me, &rows),
             Some(11),
             "nearest own neighbor wins (tie → lowest id), enemies ignored"
         );
         // No own structure in reach → nothing to transfer into.
-        assert_eq!(choose_upgrade_target("me", HexCoord::new(9, 9), &rows), None);
+        assert_eq!(choose_upgrade_target("me", TileCoord::new(9, 9), &rows), None);
         assert_eq!(choose_upgrade_target("nobody", me, &rows), None);
     }
 

@@ -5,7 +5,7 @@
 //! geometric distance queries. This keeps river info from being duplicated
 //! in every cell.
 
-use crate::hex::HexCoord;
+use crate::grid::TileCoord;
 use serde::{Deserialize, Serialize};
 
 /// A point along a river with width and flow metadata.
@@ -78,15 +78,15 @@ impl River {
     }
 
     /// The hex coordinates this river spans (rounded to grid).
-    pub fn covered_hexes(&self, hex_radius: f32, hex_pad: f32) -> Vec<HexCoord> {
+    pub fn covered_hexes(&self, hex_radius: f32, hex_pad: f32) -> Vec<TileCoord> {
         // For each node, gather the hex that contains it plus a small pad radius.
         let mut set = std::collections::HashSet::new();
         for node in &self.nodes {
-            let (q, r) = crate::hex::world_pos_to_hex(node.x, node.y, hex_radius);
-            set.insert(HexCoord::new(q, r));
+            let (q, r) = crate::grid::world_pos_to_tile(node.x, node.y, hex_radius);
+            set.insert(TileCoord::new(q, r));
             if hex_pad > 0.0 {
                 for (dq, dr) in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, 1), (1, -1)] {
-                    set.insert(HexCoord::new(q + dq, r + dr));
+                    set.insert(TileCoord::new(q + dq, r + dr));
                 }
             }
         }
@@ -114,9 +114,9 @@ fn segment_distance(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Coastline {
     /// Land hex coordinates bordering water.
-    pub land_border_hexes: Vec<HexCoord>,
+    pub land_border_tiles: Vec<TileCoord>,
     /// Water hex coordinates bordering land.
-    pub water_border_hexes: Vec<HexCoord>,
+    pub water_border_tiles: Vec<TileCoord>,
 }
 
 impl Coastline {
@@ -126,8 +126,10 @@ impl Coastline {
     where
         F: Fn(i32, i32) -> bool,
     {
+        // 8-way square neighbors: a border tile touches any adjacent
+        // square of the opposite kind (out of bounds → not water).
         let neighbors = [
-            (-1, 0), (1, 0), (0, -1), (0, 1), (-1, 1), (1, -1),
+            (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1),
         ];
         let mut land_border = Vec::new();
         let mut water_border = Vec::new();
@@ -142,15 +144,15 @@ impl Coastline {
                 });
                 if has_opposite {
                     if water {
-                        water_border.push(HexCoord::new(q, r));
+                        water_border.push(TileCoord::new(q, r));
                     } else {
-                        land_border.push(HexCoord::new(q, r));
+                        land_border.push(TileCoord::new(q, r));
                     }
                 }
             }
         }
 
-        Self { land_border_hexes: land_border, water_border_hexes: water_border }
+        Self { land_border_tiles: land_border, water_border_tiles: water_border }
     }
 }
 
@@ -195,7 +197,7 @@ mod tests {
         let hexes = river.covered_hexes(10.0, 1.0);
         assert!(!hexes.is_empty());
         // Origin hex is covered
-        assert!(hexes.contains(&HexCoord::new(0, 0)));
+        assert!(hexes.contains(&TileCoord::new(0, 0)));
     }
 
     #[test]
@@ -204,7 +206,7 @@ mod tests {
         land.insert((0, 0));
         let coast = Coastline::compute(0, 0, 2, |q, r| !land.contains(&(q, r)));
         // (0,0) is land surrounded by water → on the border
-        assert!(coast.land_border_hexes.contains(&HexCoord::new(0, 0)));
-        assert!(coast.water_border_hexes.contains(&HexCoord::new(0, 1)));
+        assert!(coast.land_border_tiles.contains(&TileCoord::new(0, 0)));
+        assert!(coast.water_border_tiles.contains(&TileCoord::new(0, 1)));
     }
 }

@@ -45,7 +45,7 @@ pub fn init(ctx: &ReducerContext) {
 
     // The planet is far too large to pre-generate; tiles materialize lazily
     // around players (see world::ensure_tiles_around). Seed the spawn area.
-    let (sq, sr) = idlecore_core::earth::resolve_spawn_hex();
+    let (sq, sr) = idlecore_core::earth::resolve_spawn_tile();
     let count = crate::world::ensure_tiles_around(ctx, sq, sr);
     tracing::info!("Spawn area seeded at ({sq},{sr}): {count} hexes");
 

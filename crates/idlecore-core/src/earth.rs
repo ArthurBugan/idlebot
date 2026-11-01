@@ -149,9 +149,9 @@ pub const SPAWN_LON: f64 = -90.0;
 pub const SPAWN_LAT: f64 = 45.0;
 
 /// Axial coordinates of the spawn hex.
-pub fn spawn_hex() -> (i32, i32) {
+pub fn spawn_tile() -> (i32, i32) {
     let (x, y) = lonlat_to_world(SPAWN_LON, SPAWN_LAT);
-    crate::hex_grid::HexGrid::world_to_axial(x, y, crate::world_gen::WorldGenConfig::HEX_SIZE)
+    crate::grid::WorldGrid::world_to_tile(x, y, crate::world_gen::WorldGenConfig::TILE_SIZE)
 }
 
 /// True when the world position lies on the planet and is not open water.
@@ -171,25 +171,23 @@ pub fn is_land_at(x: f32, y: f32) -> bool {
     )
 }
 
-/// Nearest hex whose center sits on land, found by expanding axial rings
-/// around `(q, r)`. `max_rings` bounds the search (`None` past it — mid-ocean
-/// points like Point Nemo are thousands of hexes from any coast).
-pub fn nearest_land_hex(q: i32, r: i32, max_rings: u32) -> Option<(i32, i32)> {
-    // Proper cyclic cube directions: each is the previous rotated 60°, so
-    // walking each one `ring` times traces exactly one full axial ring.
-    const RING_DIRS: [(i32, i32); 6] = [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)];
-    let size = crate::world_gen::WorldGenConfig::HEX_SIZE;
+/// Nearest tile whose center sits on land, found by expanding square rings
+/// (Chebyshev radius) around `(q, r)`. `max_rings` bounds the search
+/// (`None` past it — mid-ocean points like Point Nemo are thousands of
+/// tiles from any coast).
+pub fn nearest_land_tile(q: i32, r: i32, max_rings: u32) -> Option<(i32, i32)> {
+    let size = crate::world_gen::WorldGenConfig::TILE_SIZE;
     for ring in 0..=max_rings {
-        let mut cq = q + RING_DIRS[3].0 * ring as i32;
-        let mut cr = r + RING_DIRS[3].1 * ring as i32;
-        for dir in RING_DIRS {
-            for _ in 0..ring {
-                let (x, y) = crate::hex_grid::HexGrid::axial_to_world(cq, cr, size);
-                if is_land_at(x, y) {
-                    return Some((cq, cr));
+        // Square ring: the perimeter of the Chebyshev-radius ring — the
+        // square analogue of the old axial hex ring walk.
+        for dx in -(ring as i32)..=(ring as i32) {
+            for dy in [-(ring as i32), ring as i32] {
+                for (cq, cr) in [(q + dx, r + dy), (q + dy, r + dx)] {
+                    let (x, y) = crate::grid::WorldGrid::tile_center(cq, cr, size);
+                    if is_land_at(x, y) {
+                        return Some((cq, cr));
+                    }
                 }
-                cq += dir.0;
-                cr += dir.1;
             }
         }
     }
@@ -199,14 +197,14 @@ pub fn nearest_land_hex(q: i32, r: i32, max_rings: u32) -> Option<(i32, i32)> {
 /// Spawn hex guaranteed to be land: the preferred spawn when it is on land,
 /// otherwise the nearest land found by spiral search (falling back to the
 /// preferred spawn itself if the whole search radius is ocean).
-pub fn resolve_spawn_hex() -> (i32, i32) {
-    let (sq, sr) = spawn_hex();
+pub fn resolve_spawn_tile() -> (i32, i32) {
+    let (sq, sr) = spawn_tile();
     let (wx, wy) =
-        crate::hex_grid::HexGrid::axial_to_world(sq, sr, crate::world_gen::WorldGenConfig::HEX_SIZE);
+        crate::grid::WorldGrid::tile_center(sq, sr, crate::world_gen::WorldGenConfig::TILE_SIZE);
     if is_land_at(wx, wy) {
         return (sq, sr);
     }
-    nearest_land_hex(sq, sr, 1024).unwrap_or((sq, sr))
+    nearest_land_tile(sq, sr, 1024).unwrap_or((sq, sr))
 }
 
 /// True when the position lies inside the mapped planet bounds.
@@ -491,11 +489,11 @@ mod tests {
 
     #[test]
     fn spawn_is_plantable_land() {
-        let (sq, sr) = spawn_hex();
-        let (wx, wy) = crate::hex_grid::HexGrid::axial_to_world(
+        let (sq, sr) = spawn_tile();
+        let (wx, wy) = crate::grid::WorldGrid::tile_center(
             sq,
             sr,
-            crate::world_gen::WorldGenConfig::HEX_SIZE,
+            crate::world_gen::WorldGenConfig::TILE_SIZE,
         );
         assert!(matches!(
             terrain_at(wx, wy),
@@ -504,12 +502,12 @@ mod tests {
     }
 
     #[test]
-    fn resolve_spawn_hex_is_land() {
-        let (sq, sr) = resolve_spawn_hex();
-        let (wx, wy) = crate::hex_grid::HexGrid::axial_to_world(
+    fn resolve_spawn_tile_is_land() {
+        let (sq, sr) = resolve_spawn_tile();
+        let (wx, wy) = crate::grid::WorldGrid::tile_center(
             sq,
             sr,
-            crate::world_gen::WorldGenConfig::HEX_SIZE,
+            crate::world_gen::WorldGenConfig::TILE_SIZE,
         );
         assert!(is_land_at(wx, wy));
     }
@@ -521,11 +519,11 @@ mod tests {
         let (gx, gy) = lonlat_to_world(0.0, 0.0);
         assert!(!is_land_at(gx, gy), "(0,0) should be sea");
         let (gq, gr) =
-            crate::hex_grid::HexGrid::world_to_axial(gx, gy, crate::world_gen::WorldGenConfig::HEX_SIZE);
-        let (lq, lr) = nearest_land_hex(gq, gr, 1024).expect("coast reachable");
+            crate::grid::WorldGrid::world_to_tile(gx, gy, crate::world_gen::WorldGenConfig::TILE_SIZE);
+        let (lq, lr) = nearest_land_tile(gq, gr, 1024).expect("coast reachable");
         assert_ne!((gq, gr), (lq, lr));
         let (lx, ly) =
-            crate::hex_grid::HexGrid::axial_to_world(lq, lr, crate::world_gen::WorldGenConfig::HEX_SIZE);
+            crate::grid::WorldGrid::tile_center(lq, lr, crate::world_gen::WorldGenConfig::TILE_SIZE);
         assert!(is_land_at(lx, ly), "found hex must be land");
     }
 }

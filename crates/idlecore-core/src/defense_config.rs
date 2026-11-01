@@ -30,8 +30,11 @@ pub const CAPITAL_HP_PER_LEVEL: u32 = 25;
 /// (max radius 91) can span 182 hex tiles plus a walking gap.
 pub const MIN_CAPITAL_SPACING: i32 = 200;
 /// Claimable ring around the capital at level 1; each level adds two.
-/// REV8: initial claim AREA ×10 — radius 26 (2107 hexes) became 83
-/// (20 917 hexes, 9.92×) so a fresh capital has room to roam, not a stamp.
+/// REV9: the claimable region is a SQUARE in world space (half-side =
+/// radius · HEX_SIZE·√3 wu), not a hex disc — so "radius" here is the
+/// per-axis straight-line reach in hex steps. REV8 raised the initial
+/// AREA ×10 (radius 26 → 83, 9.92×); REV9 reshaped it square, which adds
+/// the disc's lost corners (area ×4/π ≈ 1.27).
 pub const CLAIM_RADIUS_BASE: i32 = 83;
 /// Claim radius hard cap (prevents infinite territory): level 5+ plateaus
 /// at 91 hex tiles = 25 117 hexes (base + 2/level, same growth as ever).
@@ -39,6 +42,11 @@ pub const CLAIM_RADIUS_MAX: i32 = 91;
 /// Land-claim cost per hex (consumed from the inventory).
 pub const CLAIM_WOOD_COST: u64 = 5;
 pub const CLAIM_STONE_COST: u64 = 3;
+/// Chebyshev radius of the square a fresh capital auto-owns for free
+/// (33×33 tiles ≈ 277 wu half-axis at level): starter buildable area so
+/// the first structures go up without claim-grinding. Only land is
+/// granted; water inside it stays claimable-by-nobody as usual.
+pub const CAPITAL_STARTER_RADIUS: i32 = 16;
 /// Sect 022 action-cooldown reuse: one claim every 5s is fine, but keep the
 /// claim cadence a little stricter so territory spreads by walking, not spam.
 pub const CLAIM_COOLDOWN_SECS: u64 = 5;
@@ -489,12 +497,13 @@ mod tests {
         assert_eq!(claim_radius(2), 85);
         assert_eq!(claim_radius(5), 91);
         assert_eq!(claim_radius(99), 91, "hard cap");
-        // REV8: level-1 disc = 3r²+3r+1 hexes; radius 83 = 20 917 ≈ 10× the
-        // rev7 territory (radius 26 = 2107 hexes).
+        // The radius value and ×10 history stay from REV8 (radius 26 = 2107
+        // hex-disc ≈ radius 83's disc area). REV9 renders the claimable
+        // region as a WORLD SQUARE with half-side radius·HEX_SIZE·√3 wu —
+        // disc math is kept here as the sizing reference only.
         assert_eq!(3 * 83 * 83 + 3 * 83 + 1, 20_917);
         assert_eq!(3 * 26 * 26 + 3 * 26 + 1, 2107);
         assert_eq!(20_917 / 2107, 9, "initial claimable area ~×10 (9.92×)");
-        // Capped disc (radius 91): 25 117 hexes.
         assert_eq!(3 * 91 * 91 + 3 * 91 + 1, 25_117);
     }
 

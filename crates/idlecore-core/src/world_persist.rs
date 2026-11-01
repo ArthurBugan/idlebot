@@ -4,7 +4,7 @@
 //! *modifications* need to be serialized. This keeps save files tiny even for
 //! a world-scale map.
 
-use crate::hex::HexCoord;
+use crate::grid::TileCoord;
 use crate::terrain::TerrainType;
 use crate::world_gen::{WaterClass, WorldGenConfig};
 use serde::{Deserialize, Serialize};
@@ -13,7 +13,7 @@ use std::collections::HashMap;
 /// A single persistent modification to the world.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct WorldModification {
-    pub coord: HexCoord,
+    pub coord: TileCoord,
     pub kind: ModificationKind,
 }
 
@@ -35,15 +35,15 @@ pub enum ModificationKind {
 
 impl WorldModification {
     /// Apply the modification to a generated base cell, returning the modified cell.
-    pub fn apply(&self, base: &crate::world_gen::HexCell) -> crate::world_gen::HexCell {
+    pub fn apply(&self, base: &crate::world_gen::WorldCell) -> crate::world_gen::WorldCell {
         let mut cell = *base;
         match self.kind {
             ModificationKind::SetTerrain(t) => cell.terrain = t,
             ModificationKind::SetWater(w) => cell.water = w,
             ModificationKind::SetFlags(f) => cell.flags = f,
-            ModificationKind::RemoveResource => cell.flags &= !crate::world_gen::HexCell::FLAG_RESOURCE,
-            ModificationKind::BuildSettlement => cell.flags |= crate::world_gen::HexCell::FLAG_SETTLEMENT,
-            ModificationKind::BuildRoad => cell.flags |= crate::world_gen::HexCell::FLAG_ROAD,
+            ModificationKind::RemoveResource => cell.flags &= !crate::world_gen::WorldCell::FLAG_RESOURCE,
+            ModificationKind::BuildSettlement => cell.flags |= crate::world_gen::WorldCell::FLAG_SETTLEMENT,
+            ModificationKind::BuildRoad => cell.flags |= crate::world_gen::WorldCell::FLAG_ROAD,
         }
         cell
     }
@@ -61,8 +61,8 @@ impl WorldModDB {
     }
 
     /// Record a modification for a coordinate.
-    pub fn apply(&mut self, coord: HexCoord, kind: ModificationKind) {
-        let id = crate::world_gen::HexCell::id_of(coord.q, coord.r);
+    pub fn apply(&mut self, coord: TileCoord, kind: ModificationKind) {
+        let id = crate::world_gen::WorldCell::id_of(coord.x, coord.y);
         self.modifications.insert(id, WorldModification { coord, kind });
     }
 
@@ -71,7 +71,7 @@ impl WorldModDB {
         self.modifications
             .values()
             .filter(|m| {
-                m.coord.q >= min_q && m.coord.q <= max_q && m.coord.r >= min_r && m.coord.r <= max_r
+                m.coord.x >= min_q && m.coord.x <= max_q && m.coord.y >= min_r && m.coord.y <= max_r
             })
             .collect()
     }
@@ -86,9 +86,9 @@ impl WorldModDB {
     }
 
     /// Compute the final cell for a coordinate: base generation + mods.
-    pub fn cell_for(&self, config: &WorldGenConfig, q: i32, r: i32) -> crate::world_gen::HexCell {
-        let mut cell = config.generate_hex(q, r);
-        let id = crate::world_gen::HexCell::id_of(q, r);
+    pub fn cell_for(&self, config: &WorldGenConfig, q: i32, r: i32) -> crate::world_gen::WorldCell {
+        let mut cell = config.generate_cell(q, r);
+        let id = crate::world_gen::WorldCell::id_of(q, r);
         if let Some(m) = self.modifications.get(&id) {
             cell = m.apply(&cell);
         }
@@ -141,8 +141,8 @@ pub struct WorldModificationDb {
 /// Raw serializable form of a modification (engine-agnostic).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct RawMod {
-    pub q: i32,
-    pub r: i32,
+    pub x: i32,
+    pub y: i32,
     pub kind: ModificationKind,
 }
 
@@ -153,7 +153,7 @@ impl WorldModificationDb {
                 .modifications
                 .iter()
                 .map(|(id, m)| {
-                    (*id, RawMod { q: m.coord.q, r: m.coord.r, kind: m.kind })
+                    (*id, RawMod { x: m.coord.x, y: m.coord.y, kind: m.kind })
                 })
                 .collect(),
         }
@@ -162,7 +162,7 @@ impl WorldModificationDb {
     pub fn into_db(&self) -> WorldModDB {
         let mut db = WorldModDB::new();
         for raw in self.items.values() {
-            db.apply(HexCoord::new(raw.q, raw.r), raw.kind);
+            db.apply(TileCoord::new(raw.x, raw.y), raw.kind);
         }
         db
     }
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn mod_db_apply_and_retrieve() {
         let mut db = WorldModDB::new();
-        db.apply(HexCoord::new(3, -2), ModificationKind::BuildRoad);
+        db.apply(TileCoord::new(3, -2), ModificationKind::BuildRoad);
         assert_eq!(db.len(), 1);
         let in_region = db.modifications_in(-10, 10, -10, 10);
         assert_eq!(in_region.len(), 1);
@@ -226,9 +226,9 @@ mod tests {
     fn mod_db_cell_contains_mod() {
         let config = WorldGenConfig::default();
         let mut db = WorldModDB::new();
-        let base = config.generate_hex(3, -2);
+        let base = config.generate_cell(3, -2);
         assert!(!base.has_road());
-        db.apply(HexCoord::new(3, -2), ModificationKind::BuildRoad);
+        db.apply(TileCoord::new(3, -2), ModificationKind::BuildRoad);
         let cell = db.cell_for(&config, 3, -2);
         assert!(cell.has_road());
     }
@@ -237,7 +237,7 @@ mod tests {
     fn save_roundtrip_json() {
         let config = WorldGenConfig { seed: 7, world_radius: 50, flat: false };
         let mut db = WorldModDB::new();
-        db.apply(HexCoord::new(1, 1), ModificationKind::SetTerrain(TerrainType::Mountain));
+        db.apply(TileCoord::new(1, 1), ModificationKind::SetTerrain(TerrainType::Mountain));
         let save = WorldSave::from_world(&config, &db, PlayerState { position: (10.0, 20.0), ..Default::default() });
         let json = save.to_json();
         assert!(!json.is_empty());
