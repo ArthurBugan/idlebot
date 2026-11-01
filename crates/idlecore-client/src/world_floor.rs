@@ -1610,6 +1610,10 @@ pub struct FloorTiles {
     pub buildings: HashMap<(i32, i32), Entity>,
     /// Player slot of the last completed rebuild; unchanged → skip the pass.
     pub last_player_slot: Option<(i32, i32)>,
+    /// Spawn radius of the last completed rebuild. The pass re-runs whenever
+    /// this changes — zooming in/out while standing still must regrow the
+    /// floor ring (the dead zoom band where nothing rendered).
+    pub last_spawn_r: Option<f32>,
 }
 
 /// Floor tiles spawn within this many slots of the player at the default
@@ -1618,8 +1622,9 @@ pub struct FloorTiles {
 pub const FLOOR_SPAWN_RADIUS_SLOTS: i32 = 16;
 
 /// Absolute cap for the zoom-expanded spawn radius (world units):
-/// 170 ≈ √4296-slot disc — a few thousand sprites, never more.
-pub const FLOOR_MAX_RADIUS_UNITS: f32 = 170.0;
+/// 260 covers a 2560×1440 window at MIN_ZOOM (half-diag 176 ·1.15 ≈ 202)
+/// with margin; ~10k floor sprites worst case.
+pub const FLOOR_MAX_RADIUS_UNITS: f32 = 260.0;
 
 /// Live tiles despawn past this radius (hysteresis so border-walking
 /// doesn't churn spawns/despawns every slot crossing). Computed from the
@@ -1659,12 +1664,6 @@ pub fn update_world_floor(
     let py = player_transform.translation.y;
     let player_slot = world_pos_to_slot(px, py);
 
-    // Perf: rebuild only when the player crosses a slot boundary (or when a
-    // previous pass hit the spawn cap and left work unfinished).
-    if tiles.last_player_slot == Some(player_slot) {
-        return;
-    }
-
     let (psx, psy) = player_slot;
     // Zoom-aware radius: the default ring grown to cover the viewport half
     // diagonal (+15% margin) whenever zooming out would outrun it.
@@ -1672,6 +1671,16 @@ pub fn update_world_floor(
         .max((extent.half_diagonal * 1.15).min(FLOOR_MAX_RADIUS_UNITS));
     let spawn_slots = (spawn_r / SLOT_SIZE).ceil() as i32;
     let spawn_r2 = spawn_r * spawn_r;
+
+    // Perf: rebuild only when the player crosses a slot boundary OR the
+    // zoom-driven radius changed (zooming while standing still must
+    // regrow the floor ring), or when a previous pass hit the spawn cap
+    // and left work unfinished.
+    if tiles.last_player_slot == Some(player_slot)
+        && tiles.last_spawn_r == Some(spawn_r)
+    {
+        return;
+    }
 
     // Terrain per hex for the nearby chunks — one map built per pass, so the
     // per-slot lookups below are O(1).
@@ -1897,6 +1906,7 @@ pub fn update_world_floor(
     // Only latch the rebuild trigger once the wanted set is fully live.
     if complete {
         tiles.last_player_slot = Some(player_slot);
+        tiles.last_spawn_r = Some(spawn_r);
     }
 }
 

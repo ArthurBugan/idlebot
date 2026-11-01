@@ -13,10 +13,10 @@ const MINIMAP_PADDING: f32 = 10.0;
 /// art covers one hex (√3 × 10 ≈ 17.32 world units).
 const BASE_PIXELS_PER_UNIT: f32 = 132.0 / (1.7320508075688772 * 10.0);
 
-/// Camera zoom limits (pixels per world unit). The floor streams ~69–170
-/// world units around the player, so zoom-out is bounded where the world
-/// still exists (3.0 would show 4× the streamed area — all black).
-const MIN_ZOOM: f32 = 6.0;
+/// Camera zoom limits (pixels per world unit). The floor streams a zoom-
+/// capped ring around the player (≤260 wu), so zoom-out is bounded where
+/// the world still exists on common window sizes at 8 px/unit.
+const MIN_ZOOM: f32 = 8.0;
 const MAX_ZOOM: f32 = 2000.0;
 
 /// Zoom-aware visible extent (world units), updated each frame. Everything
