@@ -63,6 +63,23 @@ Final drop map (items that already exist in the inventory economy):
 `Slime Gel` enters `add_item` like Bone/Metal Part (no recipe yet — a
 farming/alchemy spec consumes it later).
 
+**REV2 — color-variant elite tiers.** Every slime and myconid recolor in the
+art pack joins the roster as a stat-scaled elite (same sprite family, same
+mechanics table, animated idle/walk from the shipped sheets):
+
+| Kind | Lvl | hp | dps | reach | step | drop (chance, qty) |
+|---|---|---|---|---|---|---|
+| Pink Slime | 2 | 40 | 5 | 1 | 1 (sprinter) | Gel 45%, 1 |
+| Pupple Slime | 3 | 70 | 6 | 1 | 2 | Gel 55%, 1 |
+| Black Slime | 4 | 130 | 10 | 1 | 4 | Gel 70%, 2 |
+| Myconid Blue | 4 | 90 | 6 | 2 | 4 | Gel 50%, 2 |
+| Myconid Pink | 5 | 85 | 8 | 2 | 5 | Gel 55%, 2 |
+| Myconid Purple | 5 | 100 | 8 | 3 | 5 | Gel 60%, 3 |
+| Myconid Red | 5 | 150 | 12 | 3 | 6 | Gel 90%, 4 |
+
+Roster = 15 kinds; wave composition cycles the full level-eligible tier set,
+so higher capitals field deeper recolor waves.
+
 ## 4. Mechanics (server `mobs.rs`)
 
 - `MobKind` gains `range_hexes: u32` and `splash: bool`.

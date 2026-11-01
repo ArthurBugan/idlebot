@@ -169,7 +169,8 @@ pub struct MobKind {
 
 /// Spec 025 §3 roster — real enemy art, distinct mechanics. March rule and
 /// 1s combat tick stay from Spec 023; new knobs only add behavior.
-pub const MOB_KINDS: [MobKind; 8] = [
+/// REV2: slime + myconid color-recolor tiers layer in as stat elites.
+pub const MOB_KINDS: [MobKind; 15] = [
     MobKind {
         name: "Slime",
         hp: 22,
@@ -195,6 +196,48 @@ pub const MOB_KINDS: [MobKind; 8] = [
         drop_item: ITEM_SLIME_GEL,
         drop_chance_pct: 55,
         drop_qty: 1,
+    },
+    // Elite slime color tiers (Spec 025 rev2): pink is the sprinter, pupple
+    // the mid tank, black the heavy charger. Same plain-mechanic family,
+    // stat-scaled — the art recolors ship free.
+    MobKind {
+        name: "Pink Slime",
+        hp: 40,
+        dps: 5,
+        step_interval_secs: 1,
+        min_capital_level: 2,
+        range_hexes: 1,
+        wall_dps: 0,
+        splash: false,
+        drop_item: ITEM_SLIME_GEL,
+        drop_chance_pct: 45,
+        drop_qty: 1,
+    },
+    MobKind {
+        name: "Pupple Slime",
+        hp: 70,
+        dps: 6,
+        step_interval_secs: 2,
+        min_capital_level: 3,
+        range_hexes: 1,
+        wall_dps: 0,
+        splash: false,
+        drop_item: ITEM_SLIME_GEL,
+        drop_chance_pct: 55,
+        drop_qty: 1,
+    },
+    MobKind {
+        name: "Black Slime",
+        hp: 130,
+        dps: 10,
+        step_interval_secs: 4,
+        min_capital_level: 4,
+        range_hexes: 1,
+        wall_dps: 0,
+        splash: false,
+        drop_item: ITEM_SLIME_GEL,
+        drop_chance_pct: 70,
+        drop_qty: 2,
     },
     MobKind {
         name: "Spear Goblin",
@@ -234,6 +277,60 @@ pub const MOB_KINDS: [MobKind; 8] = [
         drop_item: ITEM_SLIME_GEL,
         drop_chance_pct: 45,
         drop_qty: 2,
+    },
+    // Myconid color tiers (Spec 025 rev2): every recolor is a tougher
+    // spore-caster; red is the myconid elite that opens at capital L5.
+    MobKind {
+        name: "Myconid Blue",
+        hp: 90,
+        dps: 6,
+        step_interval_secs: 4,
+        min_capital_level: 4,
+        range_hexes: 2,
+        wall_dps: 0,
+        splash: false,
+        drop_item: ITEM_SLIME_GEL,
+        drop_chance_pct: 50,
+        drop_qty: 2,
+    },
+    MobKind {
+        name: "Myconid Pink",
+        hp: 85,
+        dps: 8,
+        step_interval_secs: 5,
+        min_capital_level: 5,
+        range_hexes: 2,
+        wall_dps: 0,
+        splash: false,
+        drop_item: ITEM_SLIME_GEL,
+        drop_chance_pct: 55,
+        drop_qty: 2,
+    },
+    MobKind {
+        name: "Myconid Purple",
+        hp: 100,
+        dps: 8,
+        step_interval_secs: 5,
+        min_capital_level: 5,
+        range_hexes: 3,
+        wall_dps: 0,
+        splash: false,
+        drop_item: ITEM_SLIME_GEL,
+        drop_chance_pct: 60,
+        drop_qty: 3,
+    },
+    MobKind {
+        name: "Myconid Red",
+        hp: 150,
+        dps: 12,
+        step_interval_secs: 6,
+        min_capital_level: 5,
+        range_hexes: 3,
+        wall_dps: 0,
+        splash: false,
+        drop_item: ITEM_SLIME_GEL,
+        drop_chance_pct: 90,
+        drop_qty: 4,
     },
     MobKind {
         name: "Bomb Goblin",
@@ -420,14 +517,17 @@ mod tests {
     #[test]
     fn mob_kinds_unlock_by_capital_level() {
         let l1 = mob_kinds_for_level(1);
-        assert_eq!(l1.len(), 2, "both slimes open the roster (Spec 025 §3)");
+        assert_eq!(l1.len(), 2, "both base slimes open the roster (Spec 025 §3)");
         assert_eq!(l1[0].name, "Slime");
         assert_eq!(l1[1].name, "Blue Slime");
-        assert_eq!(mob_kinds_for_level(2).len(), 4, "+ Spear/Archer");
-        assert_eq!(mob_kinds_for_level(3).len(), 6, "+ Myconid/Bomb");
-        assert_eq!(mob_kinds_for_level(4).len(), 8, "+ rooted bloom/boss");
+        assert_eq!(mob_kinds_for_level(2).len(), 5, "+ pink slime, Spear/Archer");
+        assert_eq!(mob_kinds_for_level(3).len(), 8, "+ pupple slime, Myconid/Bomb");
+        assert_eq!(mob_kinds_for_level(4).len(), 12, "+ black slime, Myconid Blue, bloom, boss");
+        assert_eq!(mob_kinds_for_level(5).len(), 15, "+ myconid pink/purple/red");
         assert!(mob_kind("Slime").is_some());
         assert!(mob_kind("Big Slime").is_some());
+        assert!(mob_kind("Black Slime").is_some());
+        assert!(mob_kind("Myconid Red").is_some());
         assert!(mob_kind("Scavenger").is_none(), "Spec 023 roster retired");
         assert!(mob_kind("Skeleton").is_none(), "no invented kinds");
     }
@@ -493,12 +593,14 @@ mod tests {
     #[test]
     fn wave_composition_unlocks_kinds_in_order() {
         assert_eq!(wave_composition(2, 1), ["Slime", "Blue Slime"]);
-        let mixed = wave_composition(4, 2);
-        assert!(mixed.contains(&"Spear Goblin"), "{mixed:?}");
-        let all = wave_composition(6, 3);
-        assert!(all.contains(&"Myconid"), "{all:?}");
-        let top = wave_composition(8, 4);
-        assert!(top.contains(&"Venom Bloom"), "{top:?}");
+        // L2 cycles three kinds once their tier opens.
+        assert_eq!(
+            wave_composition(3, 2),
+            ["Slime", "Blue Slime", "Pink Slime"]
+        );
+        let all = wave_composition(15, 5);
+        assert!(all.contains(&"Myconid Red"), "{all:?}");
+        assert!(all.contains(&"Venom Bloom"), "{all:?}");
     }
 
     #[test]

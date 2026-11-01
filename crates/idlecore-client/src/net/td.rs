@@ -200,14 +200,22 @@ struct TdMove {
 
 /// Spec 025 §5: roster name → (idle, walk0, walk1) atlas crops. The
 /// rooted Venom Bloom reuses its idle frame for both walk slots.
-const MOB_ATLAS: [(&str, &str, &str, &str); 8] = [
+/// REV2: +7 recolor elite tiers.
+const MOB_ATLAS: [(&str, &str, &str, &str); 15] = [
     ("Slime", atlas::TD_SLIME, atlas::TD_SLIME_W0, atlas::TD_SLIME_W1),
     ("Blue Slime", atlas::TD_SLIME_BLUE, atlas::TD_SLIME_BLUE_W0, atlas::TD_SLIME_BLUE_W1),
+    ("Pink Slime", atlas::TD_SLIME_PINK, atlas::TD_SLIME_PINK_W0, atlas::TD_SLIME_PINK_W1),
+    ("Pupple Slime", atlas::TD_SLIME_PUPPLE, atlas::TD_SLIME_PUPPLE_W0, atlas::TD_SLIME_PUPPLE_W1),
+    ("Black Slime", atlas::TD_SLIME_BLACK, atlas::TD_SLIME_BLACK_W0, atlas::TD_SLIME_BLACK_W1),
     ("Big Slime", atlas::TD_BIG_SLIME, atlas::TD_BIG_SLIME_W0, atlas::TD_BIG_SLIME_W1),
     ("Spear Goblin", atlas::TD_GOBLIN_SPEAR, atlas::TD_GOBLIN_SPEAR_W0, atlas::TD_GOBLIN_SPEAR_W1),
     ("Archer Goblin", atlas::TD_GOBLIN_ARCHER, atlas::TD_GOBLIN_ARCHER_W0, atlas::TD_GOBLIN_ARCHER_W1),
     ("Bomb Goblin", atlas::TD_GOBLIN_BOMB, atlas::TD_GOBLIN_BOMB_W0, atlas::TD_GOBLIN_BOMB_W1),
     ("Myconid", atlas::TD_MYCONID, atlas::TD_MYCONID_W0, atlas::TD_MYCONID_W1),
+    ("Myconid Blue", atlas::TD_MYCONID_BLUE, atlas::TD_MYCONID_BLUE_W0, atlas::TD_MYCONID_BLUE_W1),
+    ("Myconid Pink", atlas::TD_MYCONID_PINK, atlas::TD_MYCONID_PINK_W0, atlas::TD_MYCONID_PINK_W1),
+    ("Myconid Purple", atlas::TD_MYCONID_PURPLE, atlas::TD_MYCONID_PURPLE_W0, atlas::TD_MYCONID_PURPLE_W1),
+    ("Myconid Red", atlas::TD_MYCONID_RED, atlas::TD_MYCONID_RED_W0, atlas::TD_MYCONID_RED_W1),
     ("Venom Bloom", atlas::TD_VENOM_BLOOM, atlas::TD_VENOM_BLOOM, atlas::TD_VENOM_BLOOM),
 ];
 
