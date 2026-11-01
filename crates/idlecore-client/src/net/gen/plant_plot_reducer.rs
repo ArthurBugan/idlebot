@@ -39,7 +39,13 @@ pub trait plant_plot {
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
     /// /// Use [`plant_plot:plant_plot_then`] to run a callback after the reducer completes.
-    fn plant_plot(&self, hex_id: u64, slot_x: i32, slot_y: i32, kind: Option<String>) -> __sdk::Result<()> {
+    fn plant_plot(
+        &self,
+        hex_id: u64,
+        slot_x: i32,
+        slot_y: i32,
+        kind: Option<String>,
+    ) -> __sdk::Result<()> {
         self.plant_plot_then(hex_id, slot_x, slot_y, kind, |_, _| {})
     }
 
@@ -74,10 +80,14 @@ impl plant_plot for super::RemoteReducers {
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp
-            .invoke_reducer_with_callback(
-                PlantPlotArgs { hex_id, slot_x, slot_y, kind },
-                callback,
-            )
+        self.imp.invoke_reducer_with_callback(
+            PlantPlotArgs {
+                hex_id,
+                slot_x,
+                slot_y,
+                kind,
+            },
+            callback,
+        )
     }
 }

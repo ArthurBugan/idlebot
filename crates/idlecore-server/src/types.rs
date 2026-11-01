@@ -435,6 +435,28 @@ pub struct ScheduledEcoMaintenance {
     pub payload: u64,
 }
 
+/// Mob simulation step — every 1 second (Spec 023 §3.6).
+#[derive(Clone, Debug)]
+#[spacetimedb::table(scheduled(mob_tick), public, accessor = scheduled_mob_tick)]
+pub struct ScheduledMobTick {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: ScheduleAt,
+    pub payload: u64,
+}
+
+/// Raid wave opening + stale-wave sweeps — every 30 seconds (Spec 023 §3.6).
+#[derive(Clone, Debug)]
+#[spacetimedb::table(scheduled(raid_tick), public, accessor = scheduled_raid_tick)]
+pub struct ScheduledRaidTick {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: ScheduleAt,
+    pub payload: u64,
+}
+
 // ---------------------------------------------------------------------------
 // 10b. world_objects — server-authoritative resource nodes
 // ---------------------------------------------------------------------------
@@ -499,6 +521,134 @@ pub struct ObjectRemoved {
     pub slot: u8,
     /// Unix seconds when the slot becomes rollable again.
     pub respawn_at: u64,
+}
+
+// ---------------------------------------------------------------------------
+// 10c. tower-defense layer (Spec 023) — capitals, territory, defenses, mobs
+// ---------------------------------------------------------------------------
+
+/// The player's Capital City: the raid objective. The row survives
+/// destruction (see `destroyed`) so raid quarantine windows can be tracked
+/// even while there is nothing standing on the map.
+#[derive(Clone, Debug)]
+#[spacetimedb::table(
+    accessor = capital,
+    public,
+    index(accessor = capital_by_owner, btree(columns = [owner]))
+)]
+pub struct Capital {
+    #[primary_key]
+    #[auto_inc]
+    pub capital_id: u64,
+    pub owner: String,
+    /// Hex the Capital sits on (its hex is territory automatically).
+    pub hex_id: u64,
+    /// Current HP; max is derived from `level`.
+    pub hp: u32,
+    /// Capital level (waves scale, claim radius grows).
+    pub level: u32,
+    /// Raids survived / mobs killed feed this; levels off the 100·L² curve.
+    pub total_xp: u64,
+    /// No raid spawns for this capital before this timestamp.
+    pub grace_until: u64,
+    pub placed_at: u64,
+    /// Timestamp of the last wave opened against this capital (0 = never).
+    pub last_raid_at: u64,
+    /// Destroyed capitals keep their row until the owner re-places.
+    pub destroyed: bool,
+}
+
+/// Claimed (owned) hex. Single PK on the hex id makes double-claim races
+/// resolve deterministically: the second insert collides and is rejected.
+#[derive(Clone, Debug)]
+#[spacetimedb::table(
+    accessor = territory,
+    public,
+    index(accessor = territory_by_owner, btree(columns = [owner]))
+)]
+pub struct Territory {
+    #[primary_key]
+    pub hex_id: u64,
+    pub owner: String,
+    pub capital_id: u64,
+    pub claimed_at: u64,
+}
+
+/// A tower or wall built on an owned hex (one per free world slot, costed
+/// per `defense_config::DEFENSE_KINDS`).
+#[derive(Clone, Debug)]
+#[spacetimedb::table(
+    accessor = defense_structure,
+    public,
+    index(accessor = structure_by_capital, btree(columns = [capital_id])),
+    index(accessor = structure_by_hex, btree(columns = [hex_id]))
+)]
+pub struct DefenseStructure {
+    #[primary_key]
+    #[auto_inc]
+    pub structure_id: u64,
+    pub capital_id: u64,
+    pub owner: String,
+    pub hex_id: u64,
+    /// Same slot numbering as `world_object` (0..MAX_OBJECTS_PER_HEX).
+    pub slot: u8,
+    /// Slot-cell coordinates the client targeted (same encoding as plots).
+    pub slot_x: i32,
+    pub slot_y: i32,
+    /// Offset from hex center, in world units (mirror of world_object).
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub kind: String,
+    pub hp: u32,
+    pub built_at: u64,
+}
+
+/// One marching raider. Simulated server-side on 1s ticks; the client
+/// interpolates between `position_x/y` updates like remote players.
+#[derive(Clone, Debug)]
+#[spacetimedb::table(
+    accessor = mob,
+    public,
+    index(accessor = mob_by_capital, btree(columns = [capital_id]))
+)]
+pub struct Mob {
+    #[primary_key]
+    #[auto_inc]
+    pub mob_id: u64,
+    pub capital_id: u64,
+    pub wave_id: u64,
+    pub kind: String, // Scavenger | BoneWalker | RustHusk
+    /// Current hex the mob stands on.
+    pub hex_id: u64,
+    pub hex_q: i32,
+    pub hex_r: i32,
+    /// Exact position in world units (hex centers, server `hex_center`).
+    pub position_x: f32,
+    pub position_y: f32,
+    pub hp: u32,
+    /// Next-step accumulator handled by the 1s scheduler.
+    pub step_accum_secs: u32,
+}
+
+/// One raid opened against a capital. An open wave (`ended_at IS NULL`) blocks
+/// opening another one; staleness ends survivors without drops (`WAVE_TIMEOUT`).
+#[derive(Clone, Debug)]
+#[spacetimedb::table(
+    accessor = raid_wave,
+    public,
+    index(accessor = wave_by_capital, btree(columns = [capital_id]))
+)]
+pub struct RaidWave {
+    #[primary_key]
+    #[auto_inc]
+    pub wave_id: u64,
+    pub capital_id: u64,
+    pub owner: String,
+    pub opened_at: u64,
+    /// `None` while fighting; Some at all-dead or timeout.
+    pub ended_at: Option<u64>,
+    /// How the wave ended ("cleared" | "timeout" | "capital_destroyed").
+    pub outcome: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -611,6 +761,16 @@ pub const GATHER_XP: u64 = 2;
 pub const HARVEST_TREE_XP: u64 = 5;
 
 // ---------------------------------------------------------------------------
+// Tower-defense items (Spec 023) — names live in the shared `defense_config`
+// so client and server can never diverge on an item lookup.
+// ---------------------------------------------------------------------------
+
+pub use idlecore_core::defense_config::{
+    ITEM_ARROW_TOWER, ITEM_BALLISTA, ITEM_BONE, ITEM_BONE_BARRICADE, ITEM_CAPITAL_CORE,
+    ITEM_METAL_PART,
+};
+
+// ---------------------------------------------------------------------------
 // Discovery crafting (Spec 022 §4) — fixed recipe table, never shown in UI.
 // ---------------------------------------------------------------------------
 
@@ -707,6 +867,16 @@ pub fn market_cleanup_tick(ctx: &ReducerContext, _row: ScheduledMarketCleanup) {
 #[reducer]
 pub fn eco_maintenance_tick(ctx: &ReducerContext, _row: ScheduledEcoMaintenance) {
     crate::scheduler::eco_maintenance_tick_body(ctx);
+}
+
+#[reducer]
+pub fn mob_tick(ctx: &ReducerContext, _row: ScheduledMobTick) {
+    crate::scheduler::mob_tick_body(ctx);
+}
+
+#[reducer]
+pub fn raid_tick(ctx: &ReducerContext, _row: ScheduledRaidTick) {
+    crate::scheduler::raid_tick_body(ctx);
 }
 
 #[cfg(test)]

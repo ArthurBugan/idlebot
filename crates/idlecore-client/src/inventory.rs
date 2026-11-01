@@ -31,6 +31,7 @@ pub struct ItemIcons {
 pub fn load_item_icons(
     mut commands: Commands,
     props: Option<Res<crate::world_floor::PropTextures>>,
+    td: Option<Res<crate::net::td::TdTextures>>,
     mut done: Local<bool>,
 ) {
     if *done {
@@ -40,6 +41,10 @@ pub fn load_item_icons(
     if !props.ready {
         return; // icons not built yet (waiting on the sliced atlas)
     }
+    // Spec 023: tower-defense icons load through the TD texture set.
+    let Some(td) = td.filter(|t| t.ready) else {
+        return;
+    };
     let mut by_item = std::collections::HashMap::new();
     by_item.insert("Seed".to_string(), props.icon_seed.clone());
     by_item.insert("Wood".to_string(), props.icon_wood.clone());
@@ -54,6 +59,13 @@ pub fn load_item_icons(
     by_item.insert("WateringCan".to_string(), props.icon_watering_can.clone());
     // Picked-up / placeable craft bench (Spec 022 §3).
     by_item.insert("Workbench".to_string(), props.bench.clone());
+    // Tower-defense items (Spec 023 §3.3): capital core, drops, placables.
+    by_item.insert("CapitalCore".to_string(), td.icon_core.clone());
+    by_item.insert("MetalPart".to_string(), td.icon_part.clone());
+    by_item.insert("Bone".to_string(), td.icon_bone.clone());
+    by_item.insert("BoneBarricade".to_string(), td.icon_barricade.clone());
+    by_item.insert("ArrowTower".to_string(), td.icon_arrow.clone());
+    by_item.insert("Ballista".to_string(), td.icon_ballista.clone());
     // Vehicles appear as inventory items (equip/unequip from the panel).
     for v in ["Bicycle", "Car", "Scooter", "Motorcycle", "Boat", "Airplane"] {
         by_item.insert(v.to_string(), props.icon_car.clone());

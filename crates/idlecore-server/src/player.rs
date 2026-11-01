@@ -116,6 +116,9 @@ pub fn login(
     }
     if outcome.created {
         ctx.db.player().insert(outcome.player.clone());
+        // Spec 023 §2: every new player receives exactly one Capital Core —
+        // the item that founds their capital city.
+        crate::objects::add_item(ctx, &lower, crate::types::ITEM_CAPITAL_CORE, 1);
     } else {
         ctx.db.player().address().update(outcome.player.clone());
     }

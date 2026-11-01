@@ -107,3 +107,13 @@ pub fn eco_maintenance_tick_body(ctx: &ReducerContext) {
     crate::vehicles::charge_daily_maintenance(ctx, epoch_day);
     audit(ctx, "eco_maintenance", "eco decay + maintenance applied");
 }
+
+/// Spec 023 §3.6: every 1 s — tower fire, mob march + melee, wave ends.
+pub fn mob_tick_body(ctx: &ReducerContext) {
+    crate::mobs::tick(ctx);
+}
+
+/// Spec 023 §3.6: every 30 s — wave sweeps + new wave opening.
+pub fn raid_tick_body(ctx: &ReducerContext) {
+    crate::mobs::raid_tick(ctx);
+}

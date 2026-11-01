@@ -12,6 +12,9 @@ IdleBot is a multiplayer idle game where you manage a Tamagotchi-like character 
 
 - 🎮 **Idle Progression** — XP and Gold accumulate offline (up to 24h, tiered brackets)
 - 🌍 **Hex Grid World** — Shared multiplayer isometric world with terrain types (seeded, deterministic)
+- 🏰 **Tower Defense Layer (Spec 023)** — Found a Capital City, claim land hex by hex,
+  build Arrow Towers/Ballistas/Bone Barricades from gathered resources and mob drops
+  (Metal Parts, Bones), and defend against server-driven raid waves targeting your capital
 - 🎤 **Voice Chat** — Proximity-based voice channels (within hex) — server-side channel management; WebRTC audio layer (str0m) still pending
 - 🌱 **Farming** — Plant, grow, and harvest resources
 - 🚗 **Vehicles** — Bicycle, Scooter, Motorcycle, Boat, Airplane
@@ -113,6 +116,19 @@ Logins, verifies row replication, and exercises teleport against a running modul
 - [ ] Contract deployment
 - [ ] Marketplace UI polish
 - [ ] USDT integration end-to-end
+
+### Phase 4: Tower Defense (Spec 023) — playable
+
+- [x] Capital City place/re-place, land claim (adjacency + radius + cost)
+- [x] Defense structures (Arrow Tower / Ballista / Bone Barricade) with costs in
+      Wood/Stone + mob drops (Metal Part / Bone)
+- [x] Raid waves: pressure-scaled, border spawns, mob simulation on 1s ticks,
+      tower auto-fire, drops + capital XP/level-ups
+- [x] Destruction cascade (territory freed, Capital Core refunded, 24h grace)
+- [x] Client: TD world layer (mobs/structures/capitals with HP bars),
+      ownership overlays, minimap tints, raid banner + capital HUD
+- [ ] Tower upgrade tiers, offline-raid balance pass, dedicated TD art pass
+- [ ] PvP raiding between player capitals (post-MVP)
 
 ### Phase 3: Content & Polish
 

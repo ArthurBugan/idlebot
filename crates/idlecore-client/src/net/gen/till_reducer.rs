@@ -70,7 +70,13 @@ impl till for super::RemoteReducers {
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp
-            .invoke_reducer_with_callback(TillArgs { hex_id, slot_x, slot_y }, callback)
+        self.imp.invoke_reducer_with_callback(
+            TillArgs {
+                hex_id,
+                slot_x,
+                slot_y,
+            },
+            callback,
+        )
     }
 }

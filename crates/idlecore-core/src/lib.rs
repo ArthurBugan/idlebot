@@ -35,6 +35,7 @@ pub mod world_mesh;
 pub mod world_persist;
 pub mod world_nav;
 pub mod protocol;
+pub mod defense_config;
 pub mod wallet_auth;
 pub mod player_identity;
 pub mod scheduler;

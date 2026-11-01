@@ -99,6 +99,10 @@ pub struct Net {
     /// `sync_remote_players` rebuild early-outs while it is unchanged.
     players_dirty: std::sync::Arc<std::sync::atomic::AtomicU64>,
     players_dirty_last: u64,
+    /// Spec 023: tower-defense tables (`capital`, `territory`,
+    /// `defense_structure`, `mob`, `raid_wave`) bump this; `net::td` consumes it.
+    pub td_dirty: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    td_dirty_last: u64,
     tx: Sender<NetEvent>,
     rx: std::sync::Mutex<Receiver<NetEvent>>,
 }
@@ -117,6 +121,8 @@ impl Default for Net {
             auth_retried: false,
             players_dirty: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             players_dirty_last: 0,
+            td_dirty: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            td_dirty_last: 0,
             tx,
             rx: std::sync::Mutex::new(rx),
         }
@@ -320,6 +326,7 @@ impl Net {
         // it from `net_frame_tick` (frame_tick); wasm has no threads, so the
         // browser SDK spawns its own background task via `run_background_task`.
         let dirty = self.players_dirty.clone();
+        let td_dirty = self.td_dirty.clone();
         let conn_slot = self.conn.clone();
         #[cfg(target_arch = "wasm32")]
         {
@@ -331,7 +338,7 @@ impl Net {
                         return;
                     }
                 };
-                register_net_callbacks(&conn, tx.clone(), dirty.clone());
+                register_net_callbacks(&conn, tx.clone(), dirty, td_dirty);
                 conn.run_background_task();
                 *conn_slot.lock().unwrap() = Some(conn);
             });
@@ -347,7 +354,7 @@ impl Net {
                     return;
                 }
             };
-            register_net_callbacks(&conn, tx.clone(), dirty.clone());
+            register_net_callbacks(&conn, tx.clone(), dirty, td_dirty);
             *conn_slot.lock().unwrap() = Some(conn);
         }
     }
@@ -369,6 +376,21 @@ impl Net {
         changed
     }
 
+    /// Mark the tower-defense tables as changed (Spec 023). SDK row
+    /// callbacks bump this; reducers that mutate TD tables can too.
+    pub fn mark_td_dirty(&mut self) {
+        self.td_dirty
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// True if any TD table changed since the last poll.
+    pub fn poll_td_dirty(&mut self) -> bool {
+        let version = self.td_dirty.load(std::sync::atomic::Ordering::Relaxed);
+        let changed = version != self.td_dirty_last;
+        self.td_dirty_last = version;
+        changed
+    }
+
     /// The hex id (server encoding) at a world position.
     pub fn hex_id_at(x: f32, z: f32) -> u64 {
         let (q, r) = world_pos_to_hex(x, z, WorldGenConfig::HEX_SIZE);
@@ -384,6 +406,7 @@ fn register_net_callbacks(
     conn: &DbConnection,
     tx: Sender<NetEvent>,
     dirty: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    td_dirty: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) {
     conn.db.player().on_insert({
         let tx = tx.clone();
@@ -413,6 +436,29 @@ fn register_net_callbacks(
             dirty.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     });
+
+    // Spec 023: tower-defense tables — any row change re-syncs the TD layer.
+    macro_rules! td_bump {
+        ($table:ident) => {{
+            let dirty = td_dirty.clone();
+            conn.db.$table().on_insert(move |_ctx, _row| {
+                dirty.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            });
+            let dirty = td_dirty.clone();
+            conn.db.$table().on_update(move |_ctx, _old, _new| {
+                dirty.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            });
+            let dirty = td_dirty.clone();
+            conn.db.$table().on_delete(move |_ctx, _row| {
+                dirty.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            });
+        }};
+    }
+    td_bump!(capital);
+    td_bump!(territory);
+    td_bump!(defense_structure);
+    td_bump!(mob);
+    td_bump!(raid_wave);
 
     conn.subscription_builder()
         .on_error({
@@ -586,6 +632,7 @@ impl Plugin for NetPlugin {
         app.insert_resource(Net::default())
             .init_resource::<PositionSync>()
             .add_plugins(super::login::LoginPlugin)
+            .add_plugins(super::td::TdPlugin)
             .add_systems(Startup, auto_connect)
             .add_systems(PreUpdate, (net_frame_tick, net_drain).chain())
             .add_systems(
@@ -660,6 +707,8 @@ fn interact_key_press(
     player: Option<Query<&ClientPlayer>>,
     target: Res<crate::world_floor::ActionTarget>,
     inventory: Res<crate::inventory::Inventory>,
+    td: Res<crate::net::td::TdTerritory>,
+    build_mode: Res<crate::net::td::TdBuildMode>,
     mut touch: ResMut<crate::touch::TouchControls>,
 ) {
     let e_pressed = keyboard.just_pressed(KeyCode::KeyE) || touch.interact;
@@ -941,7 +990,94 @@ fn interact_key_press(
         }
         // --- 5. Plant by held item on the empty plot (Spec 022 §1/§3).
         let (slot_x, slot_y) = (target.slot_x, target.slot_y);
+        // Spec 023 build mode: B-armed structure beats held-item + claim.
+        let building = build_mode.kind.filter(|k| crate::net::td::BUILDABLES.contains(k));
+        // --- Spec 023 claim preflight (§3.2): empty hand + full claim cost,
+        // standing on an unowned land hex adjacent to our territory.
+        let claim_target_coord = idlecore_core::hex::HexCoord::new(target.q, target.r);
+        let claim_adjacent_owned = net.address.as_deref().is_some_and(|address| {
+            td.owners
+                .iter()
+                .any(|(&h, owner)| {
+                    owner == address
+                        && idlecore_core::hex::HexCoord::from_id(h)
+                            .distance(&claim_target_coord)
+                            == 1
+                })
+        });
+        let claim_prepared = inventory
+            .counts
+            .get(idlecore_core::defense_config::ITEM_WOOD)
+            .copied()
+            .unwrap_or(0) >= idlecore_core::defense_config::CLAIM_WOOD_COST
+            && inventory
+                .counts
+                .get(idlecore_core::defense_config::ITEM_STONE)
+                .copied()
+                .unwrap_or(0) >= idlecore_core::defense_config::CLAIM_STONE_COST;
         match held.as_deref() {
+            // --- Spec 023 build mode: E books an armed structure at the
+            // aimed slot on owned land; raw materials are consumed directly
+            // (no tower item exists — Spec 023 §3.4).
+            _ if building.is_some() => {
+                let kind = building.unwrap().to_string();
+                super::hud::send_reducer(&mut net, {
+                    let tx = tx.clone();
+                    move |r| {
+                        r.build_defense_then(
+                            hex_id,
+                            slot_x,
+                            slot_y,
+                            kind.clone(),
+                            super::hud::reducer_report("build_defense", tx, hex_id),
+                        )
+                    }
+                });
+            }
+            // --- Spec 023 §3.2: E with an empty hand claims the hex you are
+            // standing on when it borders your territory and you carry the
+            // full cost (5 Wood + 3 Stone) — the blue floor hint marks these.
+            None if claim_prepared
+                && claim_adjacent_owned
+                && building.is_none()
+                && td.owners.get(&hex_id).is_none() =>
+            {
+                super::hud::send_reducer(&mut net, {
+                    let tx = tx.clone();
+                    move |r| {
+                        r.claim_land_then(
+                            hex_id,
+                            super::hud::reducer_report("claim_land", tx, hex_id),
+                        )
+                    }
+                });
+            }
+            // --- Tower Defense (Spec 023): the Capital Core founds the
+            // capital city; held structures build defenses on owned land.
+            Some("CapitalCore") => super::hud::send_reducer(&mut net, {
+                let tx = tx.clone();
+                move |r| {
+                    r.place_capital_then(
+                        hex_id,
+                        super::hud::reducer_report("place_capital", tx, hex_id),
+                    )
+                }
+            }),
+            Some("ArrowTower") | Some("Ballista") | Some("BoneBarricade") => {
+                let kind = held.clone().unwrap_or_default();
+                super::hud::send_reducer(&mut net, {
+                    let tx = tx.clone();
+                    move |r| {
+                        r.build_defense_then(
+                            hex_id,
+                            slot_x,
+                            slot_y,
+                            kind.clone(),
+                            super::hud::reducer_report("build_defense", tx, hex_id),
+                        )
+                    }
+                });
+            }
             Some("Seed") => {
                 // Seeds only go into tilled soil (till first with the Hoe);
                 // the planted crop must then be watered to grow.

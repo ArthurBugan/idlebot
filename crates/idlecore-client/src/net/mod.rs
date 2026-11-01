@@ -7,4 +7,5 @@ pub mod hud;
 pub mod login;
 pub mod market;
 pub mod plugin;
+pub mod td;
 

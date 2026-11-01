@@ -233,9 +233,9 @@ fn orange_tree_aspect() -> f32 { 112.0 / 48.0 }
 fn apple_tree_aspect() -> f32 { 112.0 / 48.0 }
 // Farm props
 fn hay_bales_aspect() -> f32 { 1.0 }
-fn scarecrow_aspect() -> f32 { 16.0 / 16.0 }
-fn birdhouse_aspect() -> f32 { 32.0 / 32.0 }
-fn well_aspect() -> f32 { 16.0 / 16.0 }
+fn scarecrow_aspect() -> f32 { 1.0 }
+fn birdhouse_aspect() -> f32 { 1.0 }
+fn well_aspect() -> f32 { 1.0 }
 fn feed_trough_aspect() -> f32 { 1.0 }
 // Fences & paths
 fn fence_wood_aspect() -> f32 { 1.0 }
@@ -273,6 +273,20 @@ pub mod atlas {
     pub const ICON_HOE: &str = "icon_hoe";
     pub const ICON_WATERING_CAN: &str = "icon_watering_can";
     pub const ICON_CAR: &str = "icon_car";
+    // Tower-defense layer (Spec 023) — placeholder crops, tinted at render.
+    pub const TD_MOB_SCAV: &str = "td_mob_scav";
+    pub const TD_MOB_WALKER: &str = "td_mob_walker";
+    pub const TD_MOB_HUSK: &str = "td_mob_husk";
+    pub const TD_CAPITAL: &str = "td_capital";
+    pub const TD_BARRICADE: &str = "td_barricade";
+    pub const TD_ARROW_TOWER: &str = "td_arrow_tower";
+    pub const TD_BALLISTA: &str = "td_ballista";
+    pub const ICON_CAPITAL_CORE: &str = "icon_capital_core";
+    pub const ICON_METAL_PART: &str = "icon_metal_part";
+    pub const ICON_BONE: &str = "icon_bone";
+    pub const ICON_BONE_BARRICADE: &str = "icon_bone_barricade";
+    pub const ICON_ARROW_TOWER: &str = "icon_arrow_tower";
+    pub const ICON_BALLISTA: &str = "icon_ballista";
     // Floor tiles
     pub const FLOOR_GRASS: &str = "floor_grass";
     pub const FLOOR_SAND: &str = "floor_sand";
@@ -434,6 +448,29 @@ pub fn enqueue_model_slices(
     r(atlas::ICON_HOE, "models/Icons/RPG icons/Weapons and Armor/1. Wood/Hoe.png", 2, 2, 28, 13);
     r(atlas::ICON_WATERING_CAN, "models/Icons/RPG icons/Weapons and Armor/1. Wood/Watering can.png", 2, 2, 28, 13);
     r(atlas::ICON_CAR, "models/Objects/Exterior/Bus.png", 8, 6, 99, 55);
+
+    // ---- Tower-defense layer (Spec 023) — existing art, tinted at render ----
+    // Mobs: first standing frame of each animation strip (16×16 cells).
+    r(atlas::TD_MOB_SCAV, "models/Animals/Forest/Frog/Frogs-Sheet.png", 0, 0, 16, 16);
+    r(atlas::TD_MOB_WALKER, "models/Animals/Forest/Crow/Crow.png", 0, 0, 16, 16);
+    r(atlas::TD_MOB_HUSK, "models/Animals/Farm/Ostrich/Ostrich Brown.png", 0, 0, 16, 16);
+    // Capital: one full house (128×112) — a city hall reads better than a well.
+    r(atlas::TD_CAPITAL, "models/Objects/Exterior/Houses/1.png", 0, 0, 128, 112);
+    // Barricade: the stone chunk sits mid-sheet on the fence border frame.
+    r(atlas::TD_BARRICADE, "models/Objects/Exterior/Fence and Bridge/Fence Stone.png", 24, 32, 16, 16);
+    // Tower: the full scarecrow/guard figure (16×32 — the 16×16 crop was
+    // truncating it mid-body: "sprite broken").
+    r(atlas::TD_ARROW_TOWER, "models/Objects/Exterior/Scarescrow.png", 0, 0, 16, 32);
+    // Ballista: hay-bale stack, first cell.
+    r(atlas::TD_BALLISTA, "models/Objects/Exterior/Hay Bales.png", 0, 0, 16, 16);
+    // Icons: metal ingot (2nd cell of the bars row), bone (cell 1), and the
+    // same placeholders as the world arts above.
+    r(atlas::ICON_CAPITAL_CORE, "models/Objects/Exterior/Houses/1.png", 0, 0, 128, 112);
+    r(atlas::ICON_METAL_PART, "models/Icons/RPG icons/Extras/Bars and ores.png", 16, 0, 16, 16);
+    r(atlas::ICON_BONE, "models/Icons/RPG icons/Extras/Bones.png", 0, 0, 16, 16);
+    r(atlas::ICON_BONE_BARRICADE, "models/Objects/Exterior/Fence and Bridge/Fence Stone.png", 24, 32, 16, 16);
+    r(atlas::ICON_ARROW_TOWER, "models/Objects/Exterior/Scarescrow.png", 0, 0, 16, 32);
+    r(atlas::ICON_BALLISTA, "models/Objects/Exterior/Hay Bales.png", 0, 0, 16, 16);
 
     // ---- Floor tiles (plain seamless 16×16 crops) ----
     r(atlas::FLOOR_GRASS, "models/Tileset/Tileset Grass Summer.png", 144, 32, 16, 16);

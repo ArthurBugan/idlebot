@@ -9,12 +9,15 @@
 
 
 pub mod types;
+pub mod capital;
+pub mod defense;
 pub mod world;
 pub mod economy;
 pub mod player;
 pub mod movement;
 pub mod interactions;
 pub mod objects;
+pub mod mobs;
 pub mod teleport;
 pub mod vehicles;
 pub mod cosmetics;
@@ -25,7 +28,7 @@ pub mod eco;
 pub mod scheduler;
 
 use spacetimedb::{reducer, ReducerContext, ScheduleAt, TimeDuration, Table};
-use crate::types::{scheduled_idle_gains, scheduled_plant_growth, scheduled_voice_cleanup, scheduled_market_cleanup, scheduled_eco_maintenance};
+use crate::types::{scheduled_idle_gains, scheduled_plant_growth, scheduled_voice_cleanup, scheduled_market_cleanup, scheduled_eco_maintenance, scheduled_mob_tick, scheduled_raid_tick };
 use std::time::Duration;
 
 /// Identity → address helper used by every reducre.
@@ -77,6 +80,20 @@ pub fn init(ctx: &ReducerContext) {
         ctx.db.scheduled_eco_maintenance().insert(crate::types::ScheduledEcoMaintenance {
             scheduled_id: 0,
             scheduled_at: ScheduleAt::Interval(TimeDuration::from_duration(Duration::from_secs(3600))),
+            payload: 0,
+        });
+    }
+    if ctx.db.scheduled_mob_tick().iter().next().is_none() {
+        ctx.db.scheduled_mob_tick().insert(crate::types::ScheduledMobTick {
+            scheduled_id: 0,
+            scheduled_at: ScheduleAt::Interval(TimeDuration::from_duration(Duration::from_secs(1))),
+            payload: 0,
+        });
+    }
+    if ctx.db.scheduled_raid_tick().iter().next().is_none() {
+        ctx.db.scheduled_raid_tick().insert(crate::types::ScheduledRaidTick {
+            scheduled_id: 0,
+            scheduled_at: ScheduleAt::Interval(TimeDuration::from_duration(Duration::from_secs(30))),
             payload: 0,
         });
     }
@@ -348,6 +365,71 @@ pub fn harvest_plot(
     let result = crate::interactions::harvest_plot(ctx, &address, hex_id, slot_x, slot_y);
     crate::player::log_outcome(ctx, &address, "harvest", result.clone());
     result.into_result()
+}
+
+// ---------------------------------------------------------------------------
+// Tower-defense layer (Spec 023): capital city + land claims
+// ---------------------------------------------------------------------------
+
+/// Found the Capital City on a legal hex, consuming the Capital Core item
+/// (Spec 023 §3.1). Placing IS founding: the hex becomes owned territory.
+#[reducer]
+pub fn place_capital(ctx: &ReducerContext, hex_id: u64) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    crate::capital::place_capital(ctx, &address, hex_id)
+}
+
+/// Claim an unclaimed land hex adjacent to your territory, paying
+/// 5 Wood + 3 Stone (Spec 023 §3.2). Only claimed land allows defenses.
+#[reducer]
+pub fn claim_land(ctx: &ReducerContext, hex_id: u64) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    crate::capital::claim_land(ctx, &address, hex_id)
+}
+
+// ---------------------------------------------------------------------------
+// Tower defense (Spec 023): build / remove structures
+// ---------------------------------------------------------------------------
+
+/// Build a defense structure (Arrow Tower / Ballista / Bone Barricade) on an
+/// owned hex at the selected ground slot, consuming the exact item cost
+/// (Spec 023 §3.4).
+#[reducer]
+pub fn build_defense(
+    ctx: &ReducerContext,
+    hex_id: u64,
+    slot_x: i32,
+    slot_y: i32,
+    kind: String,
+) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    crate::defense::build_defense(ctx, &address, hex_id, slot_x, slot_y, &kind)
+}
+
+/// Remove one of your own structures; refunds 50% of the build cost
+/// (Spec 023 §3.4).
+#[reducer]
+pub fn remove_defense(ctx: &ReducerContext, structure_id: u64) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    crate::defense::remove_defense(ctx, &address, structure_id)
+}
+
+/// DEBUG (Spec 023): force a raid wave against YOUR capital, bypassing the
+/// grace/reattack timers — balance-tuning button on the debug panel (F1).
+#[reducer]
+pub fn debug_force_wave(ctx: &ReducerContext) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    crate::mobs::debug_force_wave(ctx, &address)
 }
 
 // ---------------------------------------------------------------------------

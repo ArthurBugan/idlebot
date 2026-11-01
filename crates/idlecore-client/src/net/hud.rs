@@ -24,6 +24,8 @@ enum HudAction {
     Teleport,
     EditName,
     AvatarNext,
+    /// Spec 023 debug: force a raid wave on OUR capital (ignores grace/reattack).
+    ForceWave,
 }
 
 /// Avatar shapes the server accepts (Spec 014 T1.1).
@@ -135,6 +137,7 @@ fn spawn_hud(mut commands: Commands) {
             ("Teleport (hex)", HudAction::Teleport),
             ("Edit Name", HudAction::EditName),
             ("Avatar -> Next", HudAction::AvatarNext),
+            ("⚔ Force Raid Wave", HudAction::ForceWave),
         ] {
             parent
                 .spawn((
@@ -403,7 +406,11 @@ pub(crate) fn send_reducer(
     };
     let tx = net.sender();
     match result {
-        Ok(()) => net.mark_players_dirty(),
+        Ok(()) => {
+            net.mark_players_dirty();
+            // Spec 023: reducers may mutate TD tables (capital/claim/build).
+            net.mark_td_dirty();
+        }
         Err(e) => {
             let _ = tx.send(NetEvent::ServerMessage(format!("send failed: {e}")));
         }
@@ -511,6 +518,14 @@ fn hud_buttons(
                             .unwrap_or(false);
                         let target = if equipped { "None" } else { "Car" };
                         send_reducer(&mut net, |r| r.equip_vehicle_then(target.to_string(), reducer_report("equip_vehicle", tx.clone(), 0)));
+                    }
+                    HudAction::ForceWave => {
+                        // Spec 023 debug: raid ourselves, ignoring grace — the
+                        // server's `debug_force_wave` reducer (owner-only).
+                        send_reducer(&mut net, |r| {
+                            r.debug_force_wave_then(reducer_report("debug_force_wave", tx.clone(), 0))
+                        });
+                        net.mark_td_dirty();
                     }
                     HudAction::Teleport => {
                         crate::net::hud::try_send_teleport(&mut net, &mut minimap_state, &mut latency);

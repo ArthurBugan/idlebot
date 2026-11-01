@@ -26,6 +26,8 @@ use crate::player::Player;
 use crate::fps_counter::FpsText;
 use crate::time_ext::Instant;
 
+use crate::net::plugin::Net;
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -111,7 +113,7 @@ pub struct MinimapState {
     /// Key of the last tile render; `render_visible_tiles` skips a frame when
     /// nothing about the view (position/zoom/rotation/discovery/streaming)
     /// changed, so standing still costs nothing.
-    pub last_tiles_key: Option<(f32, f32, f32, f32, u8, bool, usize, usize)>,
+    pub last_tiles_key: Option<(f32, f32, f32, f32, u8, bool, usize, usize, u64)>,
 }
 
 impl Default for MinimapState {
@@ -918,6 +920,10 @@ pub fn render_visible_tiles(
     mut tile_query: Query<(&mut Node, &mut ImageNode), With<MapTileNode>>,
     mut next_render: Local<f64>,
     time: Res<Time>,
+    // Spec 023: claimed-land tint + raid pulse (net::td cache).
+    net_td: Res<crate::net::td::TdTerritory>,
+td_view: Res<crate::net::td::TdView>,
+    net: Res<Net>,
 ) {
     let Some(player_pos) = minimap_state.player_pos else { return };
 
@@ -947,6 +953,7 @@ pub fn render_visible_tiles(
     // Perf: skip the whole pass when the view is unchanged since last frame
     // (standing still → zero work; any movement/zoom/rotation/discovery
     // changes the key and re-renders everything correctly).
+    let td_owners_len = net_td.owners.len() as u64;
     let key = (
         player_pos.x,
         player_pos.y,
@@ -956,6 +963,7 @@ pub fn render_visible_tiles(
         minimap_state.expanded,
         explored_hexes.explored.len(),
         streaming_world.chunks.chunks.len(),
+        td_owners_len,
     );
     if minimap_state.last_tiles_key == Some(key) {
         return;
@@ -1000,8 +1008,12 @@ pub fn render_visible_tiles(
                 node.width = Val::Px(tile_w);
                 node.height = Val::Px(tile_h);
                 image.image = handle.clone();
+                // Spec 023: claimed hexes tint (gold = mine, violet = other);
+                // the capital hex flashes red while a wave is open.
+                image.color = td_tile_tint(hex_id, &net_td, &td_view, net.address.clone());
             }
         } else {
+            let color = td_tile_tint(hex_id, &net_td, &td_view, net.address.clone());
             let entity = commands.spawn((
                 Name::new("minimap-tile"),
                 MapTileNode,
@@ -1013,7 +1025,11 @@ pub fn render_visible_tiles(
                     height: Val::Px(tile_h),
                     ..default()
                 },
-                ImageNode::new(handle),
+                ImageNode {
+                    image: handle,
+                    color,
+                    ..default()
+                },
             )).id();
             commands.entity(entity).insert(ChildOf(map_content_entity));
             hex_entity_map.hex_entities.insert(hex_id, entity);
@@ -1051,6 +1067,32 @@ pub fn render_visible_tiles(
             });
 
         }
+    }
+}
+
+/// Spec 023 helper: multiply-tint for the minimap hex of `hex_id` —
+/// gold for my territory, violet for other players', red on the capital
+/// hex while a wave targets it. `Color::WHITE` = no tint.
+fn td_tile_tint(
+    hex_id: u64,
+    net_td: &crate::net::td::TdTerritory,
+    td_view: &crate::net::td::TdView,
+    address: Option<String>,
+) -> Color {
+    if td_view.incoming.is_some() {
+        if let Some(cap) = td_view.capital.as_ref() {
+            if cap.hex_id == hex_id {
+                return Color::srgb(1.0, 0.4, 0.35);
+            }
+        }
+    }
+    let is_mine = address
+        .as_deref()
+        .map(|me| net_td.owners.get(&hex_id).map(|o| o == me).unwrap_or(false));
+    match net_td.owners.get(&hex_id) {
+        Some(_) if is_mine == Some(true) => Color::srgb(1.0, 0.85, 0.45),
+        Some(_) => Color::srgb(0.7, 0.55, 1.0),
+        None => Color::WHITE,
     }
 }
 

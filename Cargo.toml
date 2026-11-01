@@ -12,8 +12,8 @@ bevy = { version = "0.19", default-features = true }
 bevy_rapier3d = "0.36"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-spacetimedb = "2.7"
-spacetimedb-sdk = "2.8"
+spacetimedb = "2.14"
+spacetimedb-sdk = "2.14"
 alloy = { version = "2.2", features = ["full"] }
 chrono = "0.4"
 rand = { version = "0.8", features = ["small_rng"] }
