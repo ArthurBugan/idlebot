@@ -3,19 +3,26 @@
 Working checklist. Status mirrors the working tree — nothing committed until
 the owner says so.
 
-## D0 — constants & schema (partial: shipped rev7)
+## D0 — constants & schema (DONE, live)
 
 - [x] claim_radius base 26 (+2/level, cap 34) — area math tests updated
 - [x] MIN_CAPITAL_SPACING 24 → 60 + spacing test rewritten
-- [x] STRUCTURE_LEVEL_MAX + scaling helpers (to do — Phase D)
-- [ ] `defense_structure.level` / `total_xp` columns
-- [ ] `chest_item` table (chest_id, slot_index, item, count)
+- [x] STRUCTURE_LEVEL_MAX (5) + `structure_max_hp` (+30%/L) + `structure_dps`
+      (+25%/L) + `structure_transfer_xp` helpers + tests
+- [x] `defense_structure.level` / `total_xp` columns (`#[default(1)]`/`#[default(0)]`)
+- [x] `chest_item` table (key = "{structure_id}|{item}") + generated client
+      bindings (chest_deposit/chest_withdraw/transfer_building_xp reducers)
+- [x] DB wiped (owner-approved) and re-published — clean schema live
 
-## D1 — server
+## D1 — server (DONE)
 
-- [ ] transfer_building_xp reducer + tests
-- [ ] chest deposit/withdraw/destroy-refund reducers + tests
-- [ ] build placement inside-territory radius test
+- [x] `transfer_building_xp` reducer: owner-only, spends the player's
+      current-ring surplus, caps at L5, hp clamps to the new max
+- [x] chest `deposit`/`withdraw` reducers + 64-stack capacity guard
+- [x] raid hooks: leveled tower fire (+25%dps/L), cleared-wave repair to the
+      leveled max, structure death respawns at half level (chest contents
+      refunded to the owner first), capital destruction refunds chests
+- [x] build placement inside-territory test (existing gates assert radius 26)
 
 ## D2 — client
 
@@ -33,6 +40,19 @@ the owner says so.
 
 ## Progress notes
 
+- D0/D1 session (committed): core leveling helpers tested (4 new core tests:
+  hp/dps scaling, 100·L² curve, transfer math incl. multi-ring + cap; server
+  pure tests for half_level + deposit guard). Two real test bugs found &
+  fixed while building: cap disc area 3487→3571 (bad arithmetic), and
+  `half_level` ignored STRUCTURE_LEVEL_MAX (255 → 127). Server review also
+  brought the claim-radius/spacing tests to the 26/60 world. Schema:
+  `defense_structure.level` (u8, default 1) + `total_xp` (u64, default 0) +
+  `chest_item` table; the DB was WIPED by owner go-ahead to apply the new
+  schema (fresh world). Raid integration: leveled dps, leveled repair,
+  half-level rubble respawn, chest refunds on tower/capital death.
+- PLAYTEST tomorrow: place a capital (fresh Core comes from `new_player`),
+  claim ring, build, force-wave, transfer XP via the new reducer (client
+  transfer panel pending — D2), deposit/withdraw chest items.
 - rev7 (this session): claim radius L1 8→26 (~10×, 2107 hexes vs 217),
   growth +2/level, cap 34 (3487), spacing 60; tests updated in
   `defense_config.rs` + `capital.rs`. Client: `TdHexTex` procedural hexagon

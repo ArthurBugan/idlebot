@@ -249,6 +249,12 @@ fn structure_sprite(td: &TdTextures, kind: &str) -> (Handle<Image>, f32, Color) 
             td.arrow_tower.1,
             Color::srgb(0.55, 0.8, 1.0),
         ),
+        // The chest borrows the barricade art, warm brown crate tone.
+        cfg::ITEM_STORAGE_CHEST => (
+            td.barricade.0.clone(),
+            td.barricade.1,
+            Color::srgb(0.65, 0.45, 0.25),
+        ),
         _ => (td.ballista.0.clone(), td.ballista.1, Color::srgb(0.7, 0.55, 1.0)),
     }
 }
@@ -281,6 +287,8 @@ struct StructRow {
     y: f32,
     kind: String,
     hp: u32,
+    /// 0 = legacy row (client treats as L1); pip shows from L2.
+    level: u8,
 }
 
 struct MobRow {
@@ -319,7 +327,13 @@ fn clamp_ratio(hp: f32, max: f32) -> f32 {
     (hp / max).clamp(0.0, 1.0)
 }
 
-/// Health bars go green → amber → red as they empty.
+/// "L2" text above a structure's HP bar from level 2; None hides the pip
+/// for level-1/legacy rows (Spec 024).
+fn structure_level_label(level: u8) -> Option<String> {
+    (level >= 2).then(|| format!("L{}", level.min(cfg::STRUCTURE_LEVEL_MAX)))
+}
+
+/// Structure health-bar tint from an HP ratio (green → amber → red).
 fn bar_color(ratio: f32) -> Color {
     if ratio > 0.6 {
         Color::srgb(0.25, 0.9, 0.3)
@@ -401,6 +415,8 @@ fn sync_td_entities(
                     y: hy + s.offset_y,
                     kind: s.kind.clone(),
                     hp: s.hp,
+                    // 0/absent = L1 for the HUD pip logic.
+                    level: s.level,
                 }
             })
             .collect();
@@ -591,7 +607,8 @@ fn sync_td_entities(
         }
         let Some(def) = cfg::defense_kind(&row.kind) else { continue };
         let (image, aspect, color) = structure_sprite(&td_tex, &row.kind);
-        let ratio = clamp_ratio(row.hp as f32, def.hp as f32);
+        // Leveled structures fill their bar against their own max HP.
+        let ratio = clamp_ratio(row.hp as f32, cfg::structure_max_hp(def, row.level) as f32);
         // Bottom-anchored so walls/towers stand on the ground slot.
         let height = 2.2;
         let pos = Vec3::new(row.x, row.y + 0.4, prop_depth(row.y) + 12.0);
@@ -614,6 +631,16 @@ fn sync_td_entities(
             },
             Transform::from_xyz(0.0, height + 0.3, 0.04),
         ));
+        // Spec 024: green level pip above the HP bar from L2.
+        if let Some(label) = structure_level_label(row.level) {
+            commands.spawn((
+                Text2d::new(label),
+                TextFont { font_size: 14.0.into(), ..default() },
+                TextColor(Color::srgb(0.3, 1.0, 0.55)),
+                TextShadow { color: Color::BLACK, offset: Vec2::new(0.5, 0.5) },
+                Transform::from_xyz(row.x, row.y + height + 0.75, prop_depth(row.y) + 12.0),
+            ));
+        }
         let _ = row.structure_id;
     }
 
@@ -717,8 +744,14 @@ pub struct TdBuildMode {
     pub kind: Option<&'static str>,
 }
 
-/// The const proxy kinds the build menu cycles through, with cost lines.
-pub const BUILDABLES: [&str; 3] = [cfg::ITEM_BONE_BARRICADE, cfg::ITEM_ARROW_TOWER, cfg::ITEM_BALLISTA];
+/// The const proxy kinds the build menu lists, with cost lines. Spec 024
+/// adds the storage chest as a fourth buildable.
+pub const BUILDABLES: [&str; 4] = [
+    cfg::ITEM_BONE_BARRICADE,
+    cfg::ITEM_ARROW_TOWER,
+    cfg::ITEM_BALLISTA,
+    cfg::ITEM_STORAGE_CHEST,
+];
 
 /// Build menu (B) open/closed — the menu replaces blind B-cycling.
 #[derive(Resource, Default)]
@@ -736,6 +769,10 @@ fn hint_color(held: &str, claim_ready: bool) -> Option<Color> {
         }
         cfg::ITEM_ARROW_TOWER | cfg::ITEM_BALLISTA | cfg::ITEM_BONE_BARRICADE => {
             // Teal: "build here" (owned land).
+            Some(Color::srgba(0.25, 0.95, 0.65, 0.9))
+        }
+        cfg::ITEM_STORAGE_CHEST => {
+            // Amber-teal: the vault belongs on owned soil as well.
             Some(Color::srgba(0.25, 0.95, 0.65, 0.9))
         }
         "" if claim_ready => {
@@ -1124,10 +1161,13 @@ fn td_build_icons(td: Res<TdTextures>, mut rows: Query<(&TdBuildRow, &mut ImageN
     }
     for (row_entry, mut icon) in &mut rows {
         let kind = row_entry.0;
-        let handle = match kind {
+        let handle: &Handle<Image> = match kind {
             cfg::ITEM_BONE_BARRICADE => &td.icon_barricade,
             cfg::ITEM_ARROW_TOWER => &td.icon_arrow,
             cfg::ITEM_BALLISTA => &td.icon_ballista,
+            // No dedicated chest crop in the atlas yet — reuse the Metal
+            // Part icon tinted crate-brown (Spec 024 §2.3 placeholder).
+            cfg::ITEM_STORAGE_CHEST => &td.icon_part,
             _ => continue,
         };
         if icon.image != *handle {
@@ -1573,6 +1613,7 @@ fn kind_display(kind: &str) -> &'static str {
         cfg::ITEM_BONE_BARRICADE => "Barricade",
         cfg::ITEM_ARROW_TOWER => "Arrow Tower",
         cfg::ITEM_BALLISTA => "Ballista",
+        cfg::ITEM_STORAGE_CHEST => "Chest",
         _ => "Structure",
     }
 }
@@ -1760,6 +1801,19 @@ mod stat_tests {
         assert_eq!(hp_bar_color(1.0), Color::srgb(0.25, 0.9, 0.3));
         assert_eq!(hp_bar_color(0.45), Color::srgb(0.95, 0.75, 0.2));
         assert_eq!(hp_bar_color(0.1), Color::srgb(1.0, 0.3, 0.25));
+    }
+
+    #[test]
+    fn structure_level_pip_hides_for_level_1_and_legacy_rows() {
+        assert_eq!(structure_level_label(0), None, "legacy (0) = L1, no pip");
+        assert_eq!(structure_level_label(1), None);
+        assert_eq!(structure_level_label(2).as_deref(), Some("L2"));
+        assert_eq!(structure_level_label(5).as_deref(), Some("L5"));
+        assert_eq!(
+            structure_level_label(9).as_deref(),
+            Some("L5"),
+            "over-cap rows read as the top level"
+        );
     }
 
     #[test]

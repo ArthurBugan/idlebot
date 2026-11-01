@@ -11,6 +11,7 @@ pub const ITEM_BONE: &str = "Bone";
 pub const ITEM_BONE_BARRICADE: &str = "BoneBarricade";
 pub const ITEM_ARROW_TOWER: &str = "ArrowTower";
 pub const ITEM_BALLISTA: &str = "Ballista";
+pub const ITEM_STORAGE_CHEST: &str = "StorageChest";
 /// Pre-existing items the defense costs spend (mirrors server `types.rs`).
 pub const ITEM_WOOD: &str = "Wood";
 pub const ITEM_STONE: &str = "Stone";
@@ -46,6 +47,57 @@ pub const GRACE_FIRST_RAID_SECS: u64 = 30 * 60;
 pub const GRACE_REBUILD_SECS: u64 = 24 * 3600;
 /// Capital XP granted per mob killed (levels use the standard 100·L² curve).
 pub const CAPITAL_XP_PER_MOB: u64 = 10;
+
+/// Max level a defense structure reaches by XP transfer (Spec 024 §2.2).
+pub const STRUCTURE_LEVEL_MAX: u8 = 5;
+/// HP gained per structure level, in percent of the kind base.
+pub const STRUCTURE_HP_STEP_PCT: u32 = 30;
+/// DPS gained per structure level, in percent of the kind base (towers only).
+pub const STRUCTURE_DPS_STEP_PCT: u32 = 25;
+
+/// XP the structure needs to go from `level` to `level + 1` (100·L² curve,
+/// same family as the player/capital: L1→L2 100, L2→L3 400, …).
+pub fn structure_xp_for_next_level(level: u8) -> u64 {
+    100 * (level as u64).pow(2)
+}
+
+/// Max HP of a structure at `level` (+30%/level over the kind base).
+pub fn structure_max_hp(kind: &DefenseKind, level: u8) -> u32 {
+    let l = u32::from(level.max(1)).min(u32::from(STRUCTURE_LEVEL_MAX));
+    ((kind.hp as u64 * (100 + (STRUCTURE_HP_STEP_PCT as u64) * u64::from(l - 1))) / 100) as u32
+}
+
+/// Tower DPS at `level` (+25%/level over the kind base, floored).
+pub fn structure_dps(kind: &DefenseKind, level: u8) -> u32 {
+    let l = u32::from(level.max(1)).min(u32::from(STRUCTURE_LEVEL_MAX));
+    ((kind.dps as u64 * (100 + (STRUCTURE_DPS_STEP_PCT as u64) * u64::from(l - 1))) / 100) as u32
+}
+
+/// Spend player surplus XP into a structure's level bucket (Spec 024 §2.2):
+/// takes at most `spendable`, levels up when the bucket crosses the
+/// threshold. Returns `(level, bucket, xp_spent)`. No-op (spent 0) once the
+/// structure is at [`STRUCTURE_LEVEL_MAX`].
+pub fn structure_transfer_xp(level: u8, bucket: u64, spendable: u64) -> (u8, u64, u64) {
+    if level >= STRUCTURE_LEVEL_MAX {
+        return (STRUCTURE_LEVEL_MAX, bucket, 0);
+    }
+    let (mut level, mut bucket, mut spent) = (level, bucket, 0);
+    loop {
+        let need = structure_xp_for_next_level(level);
+        let take = (need - bucket).min(spendable.saturating_sub(spent));
+        bucket += take;
+        spent += take;
+        if bucket < need {
+            break;
+        }
+        level += 1;
+        bucket = 0;
+        if level >= STRUCTURE_LEVEL_MAX {
+            break;
+        }
+    }
+    (level, bucket, spent)
+}
 
 /// Max claim radius for a capital level (base 26, +2/level, capped at 34).
 pub fn claim_radius(level: u32) -> i32 {
@@ -192,7 +244,7 @@ pub struct DefenseKind {
     pub is_wall: bool,
 }
 
-pub const DEFENSE_KINDS: [DefenseKind; 3] = [
+pub const DEFENSE_KINDS: [DefenseKind; 4] = [
     DefenseKind {
         name: ITEM_BONE_BARRICADE,
         cost: &[(ITEM_BONE, 6)],
@@ -215,6 +267,16 @@ pub const DEFENSE_KINDS: [DefenseKind; 3] = [
         hp: 60,
         range_hexes: 3,
         dps: 22,
+        is_wall: false,
+    },
+    // Spec 024 §2.3: storage chest — vault for items on owned soil;
+    // destroyed by raids after its contents are refunded to the owner.
+    DefenseKind {
+        name: ITEM_STORAGE_CHEST,
+        cost: &[(ITEM_WOOD, 8), (ITEM_METAL_PART, 2)],
+        hp: 60,
+        range_hexes: 0,
+        dps: 0,
         is_wall: false,
     },
 ];
@@ -242,8 +304,8 @@ mod tests {
         // radius-8 territory (217) playtesting found cramped.
         assert_eq!(3 * 26 * 26 + 3 * 26 + 1, 2107);
         assert_eq!(3 * 8 * 8 + 3 * 8 + 1, 217);
-        // Capped disc (radius 34) stays dense-city scale.
-        assert_eq!(3 * 34 * 34 + 3 * 34 + 1, 3487);
+        // Capped disc (radius 34) stays dense-city scale: 3571 hexes.
+        assert_eq!(3 * 34 * 34 + 3 * 34 + 1, 3571);
     }
 
     #[test]
@@ -301,12 +363,59 @@ mod tests {
 
     #[test]
     fn defense_kinds_are_buildable_and_walled() {
-        assert_eq!(DEFENSE_KINDS.len(), 3);
+        assert_eq!(DEFENSE_KINDS.len(), 4);
         assert!(defense_kind("ArrowTower").is_some());
         assert!(defense_kind("BoneBarricade").unwrap().is_wall);
         assert_eq!(defense_kind("ArrowTower").unwrap().range_hexes, 2);
         assert_eq!(defense_kind("Ballista").unwrap().range_hexes, 3);
         assert!(defense_kind("Castle").is_none(), "no invented kinds");
+        // The chest is a passive buildable: no attack, no wall.
+        let chest = defense_kind("StorageChest").unwrap();
+        assert!(!chest.is_wall);
+        assert_eq!(chest.dps, 0);
+        assert_eq!(chest.range_hexes, 0);
+        assert_eq!(chest.hp, 60);
+    }
+
+    #[test]
+    fn structure_levels_scale_hp_and_dps() {
+        let tower = defense_kind("ArrowTower").unwrap();
+        // HP: +30%/level (80 → 104 → … → 176 at the L5 cap).
+        assert_eq!(structure_max_hp(tower, 0), 80, "legacy rows read as L1");
+        assert_eq!(structure_max_hp(tower, 1), 80);
+        assert_eq!(structure_max_hp(tower, 2), 104);
+        assert_eq!(structure_max_hp(tower, 5), 176);
+        assert_eq!(structure_max_hp(tower, 9), 176, "over-cap level clamps");
+        // DPS: +25%/level floored (10 → 12 → 15 → 17 → 20).
+        assert_eq!(structure_dps(tower, 1), 10);
+        assert_eq!(structure_dps(tower, 2), 12);
+        assert_eq!(structure_dps(tower, 5), 20);
+        // Walls and chests never gain DPS.
+        assert_eq!(structure_dps(defense_kind("StorageChest").unwrap(), 5), 0);
+        assert_eq!(structure_dps(defense_kind("BoneBarricade").unwrap(), 5), 0);
+    }
+
+    #[test]
+    fn structure_xp_curve_follows_100l2() {
+        assert_eq!(structure_xp_for_next_level(1), 100);
+        assert_eq!(structure_xp_for_next_level(2), 400);
+        assert_eq!(structure_xp_for_next_level(4), 1600);
+    }
+
+    #[test]
+    fn structure_transfer_spends_surplus_and_levels() {
+        // Nothing spare → pure partial fill.
+        assert_eq!(structure_transfer_xp(1, 0, 50), (1, 50, 50));
+        // Threshold crossed → level-up; any remainder keeps filling the
+        // next ring (one call always consumes the entire offer).
+        assert_eq!(structure_transfer_xp(1, 0, 150), (2, 50, 150));
+        // Big transfer crosses multiple rings (100 + 400 + 100 left).
+        assert_eq!(structure_transfer_xp(1, 0, 600), (3, 100, 600));
+        // Pre-filled bucket tips over into the next level immediately.
+        assert_eq!(structure_transfer_xp(1, 90, 60), (2, 50, 60));
+        // Capped structures keep their bucket and spend nothing.
+        assert_eq!(structure_transfer_xp(5, 777, 9999), (5, 777, 0));
+        assert_eq!(structure_transfer_xp(9, 0, 1), (5, 0, 0), "over-cap rows stop at 5");
     }
 
     #[test]

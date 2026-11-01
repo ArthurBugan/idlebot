@@ -40,13 +40,17 @@ your realm, both at the capital and per structure.
   spec additionally tests hex-inside-radius so an allied owner can never
   build in someone else's claim.
 
-### 2.2 Structure levels via XP transfer (new mechanics)
+### 2.2 Structure levels via XP transfer (new mechanics) — **implemented D1**
 
-- `defense_structure` gains `level: u8` (default 1) + `total_xp: u64`.
+- `defense_structure` gains `level: u8` (default 1, `#[default(1)]`) +
+  `total_xp: u64` (the current-level ring bucket, `#[default(0)]`).
 - **Costs to level a structure:** consumes the *player's own* XP
-  (`player.xp` in the 100·L² curve, Spec 017). Reducer:
-  `transfer_building_xp(structure_id)`,
-  owner-only, next thresholds `100 · L²` of the structure's own level.
+  (`player.total_xp`, Spec 017). Reducer
+  `transfer_building_xp(structure_id)` (live, `buildings.rs`):
+  owner-only, capped at `STRUCTURE_LEVEL_MAX = 5`, transfer thresholds are
+  `100 · L²` of the structure's own level (L1→L2 100, L2→L3 400, L3→L4 900,
+  L4→L5 1600). One call consumes the whole offered surplus → the bucket
+  fills and each crossing level bumps `level` + clamps `hp` to the new max.
 - **Level perks** (in `defense_config` scaling helpers, used server-side on
   the 1s tick + client HUD):
   - `structure_max_hp(kind, level)` — HP grows +30% per level over base

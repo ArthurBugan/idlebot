@@ -131,6 +131,9 @@ pub fn build_defense(
         kind: def.name.to_string(),
         hp: def.hp,
         built_at: now,
+        // Fresh towers start at level 1 with an empty XP bucket (Spec 024).
+        level: 1,
+        total_xp: 0,
     });
     touch(ctx, &p.address, now);
     tracing::info!(

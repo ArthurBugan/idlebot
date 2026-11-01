@@ -19,6 +19,8 @@ pub struct DefenseStructure {
     pub kind: String,
     pub hp: u32,
     pub built_at: u64,
+    pub level: u8,
+    pub total_xp: u64,
 }
 
 impl __sdk::InModule for DefenseStructure {
@@ -41,6 +43,8 @@ pub struct DefenseStructureCols {
     pub kind: __sdk::__query_builder::Col<DefenseStructure, String>,
     pub hp: __sdk::__query_builder::Col<DefenseStructure, u32>,
     pub built_at: __sdk::__query_builder::Col<DefenseStructure, u64>,
+    pub level: __sdk::__query_builder::Col<DefenseStructure, u8>,
+    pub total_xp: __sdk::__query_builder::Col<DefenseStructure, u64>,
 }
 
 impl __sdk::__query_builder::HasCols for DefenseStructure {
@@ -59,6 +63,8 @@ impl __sdk::__query_builder::HasCols for DefenseStructure {
             kind: __sdk::__query_builder::Col::new(table_name, "kind"),
             hp: __sdk::__query_builder::Col::new(table_name, "hp"),
             built_at: __sdk::__query_builder::Col::new(table_name, "built_at"),
+            level: __sdk::__query_builder::Col::new(table_name, "level"),
+            total_xp: __sdk::__query_builder::Col::new(table_name, "total_xp"),
         }
     }
 }

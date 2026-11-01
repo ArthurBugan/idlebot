@@ -11,6 +11,7 @@
 pub mod types;
 pub mod capital;
 pub mod defense;
+pub mod buildings;
 pub mod world;
 pub mod economy;
 pub mod player;

@@ -1,0 +1,80 @@
+warning: unused doc comment
+   --> crates/idlecore-core/src/defense_config.rs:272:5
+    |
+272 | /     /// Spec 024 §2.3: storage chest — vault for items on owned soil;
+273 | |     /// destroyed by raids after its contents are refunded to the owner.
+    | |________________________________________________________________________^
+274 | /     DefenseKind {
+275 | |         name: ITEM_STORAGE_CHEST,
+276 | |         cost: &[(ITEM_WOOD, 8), (ITEM_METAL_PART, 2)],
+277 | |         hp: 60,
+...   |
+280 | |         is_wall: false,
+281 | |     },
+    | |_____- rustdoc does not generate documentation for expressions
+    |
+    = help: use `//` for a plain comment
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: `idlecore-core` (lib) generated 1 warning
+warning: unused import: `SLOT_SIZE`
+   --> crates/idlecore-server/src/objects.rs:180:74
+    |
+180 |     use idlecore_core::slots::{slot_center, slot_hex, world_pos_to_slot, SLOT_SIZE};
+    |                                                                          ^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `super`
+   --> crates/idlecore-server/src/defense.rs:180:9
+    |
+180 |     use super::*;
+    |         ^^^^^
+
+warning: unused import: `Table`
+ --> crates/idlecore-server/src/interactions.rs:7:35
+  |
+7 | use spacetimedb::{ReducerContext, Table};
+  |                                   ^^^^^
+
+warning: value assigned to `capital_id` is never read
+   --> crates/idlecore-server/src/capital.rs:188:26
+    |
+188 |     let mut capital_id = None;
+    |                          ^^^^ this value is reassigned later and never used
+...
+199 |             capital_id = Some(row.capital_id);
+    |             --------------------------------- `capital_id` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `dir_x`
+  --> crates/idlecore-server/src/movement.rs:37:5
+   |
+37 |     dir_x: f32,
+   |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_dir_x`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `dir_y`
+  --> crates/idlecore-server/src/movement.rs:38:5
+   |
+38 |     dir_y: f32,
+   |     ^^^^^ help: if this is intentional, prefix it with an underscore: `_dir_y`
+
+warning: constant `AXIAL_NEIGHBORS` is never used
+  --> crates/idlecore-server/src/objects.rs:34:7
+   |
+34 | const AXIAL_NEIGHBORS: [(i32, i32); 6] =
+   |       ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `idlecore-server` (lib test) generated 7 warnings (run `cargo fix --lib -p idlecore-server --tests` to apply 3 suggestions)
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (target/debug/deps/idlecore_server-9e5c2529f0f897c8)
+fatal runtime error: failed to initiate panic, error 5, aborting
+fatal runtime error: failed to initiate panic, error 5error: test failed, to rerun pass `-p idlecore-server --lib`
+
+Caused by:
+  process didn't exit successfully: `/Users/arthur/Documents/idlebot/target/debug/deps/idlecore_server-9e5c2529f0f897c8` (signal: 6, SIGABRT: process abort signal)

@@ -14,7 +14,7 @@ use crate::economy::find_player;
 use crate::objects::{add_item, count_item, remove_item};
 use crate::types::{
     capital, defense_structure, hex_distance, hex_id_of, now_secs, player, raid_wave, territory,
-    hex_tile, Capital, Territory, ACTION_COOLDOWN_SECS,
+    hex_tile, Capital, DefenseStructure, Territory, ACTION_COOLDOWN_SECS,
 };
 use crate::world::ensure_hex;
 
@@ -307,16 +307,21 @@ pub fn destroy_capital(ctx: &ReducerContext, mut cap: Capital, now: u64) {
     for hex_id in lands {
         ctx.db.territory().hex_id().delete(hex_id);
     }
-    // Structures are erased (they were part of lost territory).
-    let structures: Vec<u64> = ctx
+    // Structures are erased (they were part of lost territory); chest
+    // contents go back to the owner first so the loss is bounded.
+    let structures: Vec<DefenseStructure> = ctx
         .db
         .defense_structure()
         .structure_by_capital()
         .filter(cap.capital_id)
-        .map(|s| s.structure_id)
         .collect();
-    for id in structures {
-        ctx.db.defense_structure().structure_id().delete(id);
+    for s in &structures {
+        if s.kind == cfg::ITEM_STORAGE_CHEST {
+            crate::buildings::refund_chest(ctx, s.structure_id, &cap.owner);
+        }
+    }
+    for s in structures {
+        ctx.db.defense_structure().structure_id().delete(s.structure_id);
     }
     // Any open wave against this capital closes immediately.
     for mut wave in ctx
@@ -382,20 +387,20 @@ mod tests {
 
     #[test]
     fn claim_radius_gates_far_hexes() {
-        // Ownership chain reaching distance 8, so the adjacency gate passes
+        // Ownership chain reaching distance 26, so the adjacency gate passes
         // and the radius gate is the decisive rejection at L1.
-        let owned = vec![id(0, 0), id(0, 8)];
-        // Radius 8 at L1 — (0,9) is adjacent to owned (0,8) but distance 9
-        // from the capital exceeds radius 8.
+        let owned = vec![id(0, 0), id(0, 26)];
+        // Radius 26 at L1 — (0,27) is adjacent to owned (0,26) but distance
+        // 27 from the capital exceeds radius 26.
         assert_eq!(
-            claim_error(id(0, 9), false, &owned, id(0, 0), 1),
+            claim_error(id(0, 27), false, &owned, id(0, 0), 1),
             Some(ClaimError::OutOfRadius)
         );
-        // L2 expands to 9: same candidate now legal.
-        assert_eq!(claim_error(id(0, 9), false, &owned, id(0, 0), 2), None);
-        // Distance-8 hex adjacent to an owned tail hex passes both gates.
+        // L2 expands to 28: same candidate now legal.
+        assert_eq!(claim_error(id(0, 27), false, &owned, id(0, 0), 2), None);
+        // Distance-26 hex adjacent to an owned tail hex passes both gates.
         assert_eq!(
-            claim_error(id(0, 8), false, &vec![id(0, 0), id(0, 7)], id(0, 0), 1),
+            claim_error(id(0, 26), false, &vec![id(0, 0), id(0, 25)], id(0, 0), 1),
             None
         );
         // Water is never claimable, whatever the radius.

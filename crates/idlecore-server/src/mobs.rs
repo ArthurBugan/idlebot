@@ -310,6 +310,8 @@ pub fn tick(ctx: &ReducerContext) {
         if kind.dps == 0 || kind.range_hexes == 0 {
             continue;
         }
+        // Spec 024: leveled towers hit harder (+25% dps per level).
+        let dps = cfg::structure_dps(kind, tower.level);
         let (tq, tr) = hex_coords_of(tower.hex_id);
         let target = ctx
             .db
@@ -319,7 +321,7 @@ pub fn tick(ctx: &ReducerContext) {
             .filter(|m| hex_distance(m.hex_q, m.hex_r, tq, tr) <= kind.range_hexes as i32)
             .min_by_key(|m| (hex_distance(m.hex_q, m.hex_r, tq, tr), m.mob_id));
         if let Some(target) = target {
-            *mob_damage.entry(target.mob_id).or_insert(0) += kind.dps;
+            *mob_damage.entry(target.mob_id).or_insert(0) += dps;
         }
     }
 
@@ -381,7 +383,7 @@ pub fn tick(ctx: &ReducerContext) {
         }
     }
 
-    // Apply structure damage: destroy fallen walls/towers.
+    // Apply structure damage: destroy fallen walls/towers, respawn chests.
     let struct_hits = struct_damage.len();
     let capital_hits = capital_damage.len();
     for (sid, dmg) in struct_damage {
@@ -390,7 +392,26 @@ pub fn tick(ctx: &ReducerContext) {
                 s.hp -= dmg;
                 ctx.db.defense_structure().structure_id().update(s);
             } else {
+                let kind = cfg::defense_kind(&s.kind);
+                // A fallen chest first empties its vault back into the
+                // owner's inventory (Spec 024 §2.3 — loss bounded to the
+                // build cost).
+                if s.kind == cfg::ITEM_STORAGE_CHEST {
+                    crate::buildings::refund_chest(ctx, sid, &s.owner);
+                }
                 ctx.db.defense_structure().structure_id().delete(sid);
+                // While the capital survives, leveled structures leave
+                // rubble that rebuilds at half their level (min L1).
+                if let Some(kind) = kind {
+                    if capitals.get(&s.capital_id).is_some_and(|c| !c.destroyed) {
+                        let level = crate::buildings::half_level(s.level);
+                        let mut reborn = s.clone();
+                        reborn.level = level;
+                        reborn.total_xp = 0;
+                        reborn.hp = cfg::structure_max_hp(kind, level);
+                        ctx.db.defense_structure().insert(reborn);
+                    }
+                }
                 tracing::info!("STRUCTURE-FELL structure#{sid}");
             }
         }
@@ -427,11 +448,12 @@ pub fn tick(ctx: &ReducerContext) {
         };
         close_wave(ctx, wave, now, outcome);
         if outcome == "cleared" {
-            // Capital survived: towers stand repaired (MVP rule, Spec 023 §3.4).
+            // Capital survived: towers stand repaired against their leveled
+            // max HP (Spec 023 §3.4 + Spec 024 level scaling).
             for s in ctx.db.defense_structure().structure_by_capital().filter(cid) {
                 let Some(kind) = cfg::defense_kind(&s.kind) else { continue };
                 let mut row = s.clone();
-                row.hp = kind.hp;
+                row.hp = cfg::structure_max_hp(kind, row.level);
                 ctx.db.defense_structure().structure_id().update(row);
             }
         }

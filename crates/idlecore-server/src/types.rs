@@ -601,6 +601,28 @@ pub struct DefenseStructure {
     pub kind: String,
     pub hp: u32,
     pub built_at: u64,
+    /// Spec 024 §2.2: structure level (1..=STRUCTURE_LEVEL_MAX).
+    #[default(1)]
+    pub level: u8,
+    /// XP poured into the current level ring (spendable surplus transfer).
+    #[default(0)]
+    pub total_xp: u64,
+}
+
+/// One stored stack inside a `StorageChest` structure (Spec 024 §2.3);
+/// `key` = "{structure_id}|{item}" so one chest holds one row per item kind.
+#[derive(Clone, Debug)]
+#[spacetimedb::table(
+    accessor = chest_item,
+    public,
+    index(accessor = chest_by_structure, btree(columns = [structure_id]))
+)]
+pub struct ChestItem {
+    #[primary_key]
+    pub key: String,
+    pub structure_id: u64,
+    pub item: String,
+    pub count: u64,
 }
 
 /// One marching raider. Simulated server-side on 1s ticks; the client

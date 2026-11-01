@@ -12,6 +12,10 @@ pub mod buy_listing_reducer;
 pub mod buy_vehicle_reducer;
 pub mod capital_table;
 pub mod capital_type;
+pub mod chest_deposit_reducer;
+pub mod chest_item_table;
+pub mod chest_item_type;
+pub mod chest_withdraw_reducer;
 pub mod claim_idle_gains_reducer;
 pub mod claim_land_reducer;
 pub mod clean_reducer;
@@ -82,6 +86,7 @@ pub mod territory_type;
 pub mod till_reducer;
 pub mod transaction_table;
 pub mod transaction_type;
+pub mod transfer_building_xp_reducer;
 pub mod update_profile_reducer;
 pub mod vehicle_owned_type;
 pub mod voice_channel_table;
@@ -98,6 +103,10 @@ pub use buy_listing_reducer::buy_listing;
 pub use buy_vehicle_reducer::buy_vehicle;
 pub use capital_table::*;
 pub use capital_type::Capital;
+pub use chest_deposit_reducer::chest_deposit;
+pub use chest_item_table::*;
+pub use chest_item_type::ChestItem;
+pub use chest_withdraw_reducer::chest_withdraw;
 pub use claim_idle_gains_reducer::claim_idle_gains;
 pub use claim_land_reducer::claim_land;
 pub use clean_reducer::clean;
@@ -168,6 +177,7 @@ pub use territory_type::Territory;
 pub use till_reducer::till;
 pub use transaction_table::*;
 pub use transaction_type::Transaction;
+pub use transfer_building_xp_reducer::transfer_building_xp;
 pub use update_profile_reducer::update_profile;
 pub use vehicle_owned_type::VehicleOwned;
 pub use voice_channel_table::*;
@@ -201,6 +211,16 @@ pub enum Reducer {
     },
     BuyVehicle {
         vehicle_type: String,
+    },
+    ChestDeposit {
+        chest_id: u64,
+        item: String,
+        count: u64,
+    },
+    ChestWithdraw {
+        chest_id: u64,
+        item: String,
+        count: u64,
     },
     ClaimIdleGains,
     ClaimLand {
@@ -304,6 +324,9 @@ pub enum Reducer {
         slot_x: i32,
         slot_y: i32,
     },
+    TransferBuildingXp {
+        structure_id: u64,
+    },
     UpdateProfile {
         display_name: Option<String>,
         avatar: Option<String>,
@@ -333,6 +356,8 @@ impl __sdk::Reducer for Reducer {
             Reducer::BuyCosmetic { .. } => "buy_cosmetic",
             Reducer::BuyListing { .. } => "buy_listing",
             Reducer::BuyVehicle { .. } => "buy_vehicle",
+            Reducer::ChestDeposit { .. } => "chest_deposit",
+            Reducer::ChestWithdraw { .. } => "chest_withdraw",
             Reducer::ClaimIdleGains => "claim_idle_gains",
             Reducer::ClaimLand { .. } => "claim_land",
             Reducer::Clean { .. } => "clean",
@@ -360,6 +385,7 @@ impl __sdk::Reducer for Reducer {
             Reducer::RenewListing { .. } => "renew_listing",
             Reducer::TeleportPlayer { .. } => "teleport_player",
             Reducer::Till { .. } => "till",
+            Reducer::TransferBuildingXp { .. } => "transfer_building_xp",
             Reducer::UpdateProfile { .. } => "update_profile",
             Reducer::VoiceJoin { .. } => "voice_join",
             Reducer::VoiceLeave { .. } => "voice_leave",
@@ -397,6 +423,24 @@ impl __sdk::Reducer for Reducer {
                     vehicle_type: vehicle_type.clone(),
                 })
             }
+            Reducer::ChestDeposit {
+                chest_id,
+                item,
+                count,
+            } => __sats::bsatn::to_vec(&chest_deposit_reducer::ChestDepositArgs {
+                chest_id: chest_id.clone(),
+                item: item.clone(),
+                count: count.clone(),
+            }),
+            Reducer::ChestWithdraw {
+                chest_id,
+                item,
+                count,
+            } => __sats::bsatn::to_vec(&chest_withdraw_reducer::ChestWithdrawArgs {
+                chest_id: chest_id.clone(),
+                item: item.clone(),
+                count: count.clone(),
+            }),
             Reducer::ClaimIdleGains => {
                 __sats::bsatn::to_vec(&claim_idle_gains_reducer::ClaimIdleGainsArgs {})
             }
@@ -570,6 +614,11 @@ impl __sdk::Reducer for Reducer {
                 slot_x: slot_x.clone(),
                 slot_y: slot_y.clone(),
             }),
+            Reducer::TransferBuildingXp { structure_id } => {
+                __sats::bsatn::to_vec(&transfer_building_xp_reducer::TransferBuildingXpArgs {
+                    structure_id: structure_id.clone(),
+                })
+            }
             Reducer::UpdateProfile {
                 display_name,
                 avatar,
@@ -608,6 +657,7 @@ impl __sdk::Reducer for Reducer {
 #[doc(hidden)]
 pub struct DbUpdate {
     capital: __sdk::TableUpdate<Capital>,
+    chest_item: __sdk::TableUpdate<ChestItem>,
     defense_structure: __sdk::TableUpdate<DefenseStructure>,
     eco_transaction: __sdk::TableUpdate<EcoTransaction>,
     hex_tile: __sdk::TableUpdate<HexTile>,
@@ -643,6 +693,9 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
                 "capital" => db_update
                     .capital
                     .append(capital_table::parse_table_update(table_update)?),
+                "chest_item" => db_update
+                    .chest_item
+                    .append(chest_item_table::parse_table_update(table_update)?),
                 "defense_structure" => db_update
                     .defense_structure
                     .append(defense_structure_table::parse_table_update(table_update)?),
@@ -744,6 +797,9 @@ impl __sdk::DbUpdate for DbUpdate {
         diff.capital = cache
             .apply_diff_to_table::<Capital>("capital", &self.capital)
             .with_updates_by_pk(|row| &row.capital_id);
+        diff.chest_item = cache
+            .apply_diff_to_table::<ChestItem>("chest_item", &self.chest_item)
+            .with_updates_by_pk(|row| &row.key);
         diff.defense_structure = cache
             .apply_diff_to_table::<DefenseStructure>("defense_structure", &self.defense_structure)
             .with_updates_by_pk(|row| &row.structure_id);
@@ -844,6 +900,9 @@ impl __sdk::DbUpdate for DbUpdate {
                 "capital" => db_update
                     .capital
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "chest_item" => db_update
+                    .chest_item
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "defense_structure" => db_update
                     .defense_structure
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
@@ -931,6 +990,9 @@ impl __sdk::DbUpdate for DbUpdate {
             match &table_rows.table[..] {
                 "capital" => db_update
                     .capital
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "chest_item" => db_update
+                    .chest_item
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "defense_structure" => db_update
                     .defense_structure
@@ -1020,6 +1082,7 @@ impl __sdk::DbUpdate for DbUpdate {
 #[doc(hidden)]
 pub struct AppliedDiff<'r> {
     capital: __sdk::TableAppliedDiff<'r, Capital>,
+    chest_item: __sdk::TableAppliedDiff<'r, ChestItem>,
     defense_structure: __sdk::TableAppliedDiff<'r, DefenseStructure>,
     eco_transaction: __sdk::TableAppliedDiff<'r, EcoTransaction>,
     hex_tile: __sdk::TableAppliedDiff<'r, HexTile>,
@@ -1058,6 +1121,7 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
         callbacks: &mut __sdk::DbCallbacks<RemoteModule>,
     ) {
         callbacks.invoke_table_row_callbacks::<Capital>("capital", &self.capital, event);
+        callbacks.invoke_table_row_callbacks::<ChestItem>("chest_item", &self.chest_item, event);
         callbacks.invoke_table_row_callbacks::<DefenseStructure>(
             "defense_structure",
             &self.defense_structure,
@@ -1811,6 +1875,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
 
     fn register_tables(client_cache: &mut __sdk::ClientCache<Self>) {
         capital_table::register_table(client_cache);
+        chest_item_table::register_table(client_cache);
         defense_structure_table::register_table(client_cache);
         eco_transaction_table::register_table(client_cache);
         hex_tile_table::register_table(client_cache);
@@ -1838,6 +1903,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
     }
     const ALL_TABLE_NAMES: &'static [&'static str] = &[
         "capital",
+        "chest_item",
         "defense_structure",
         "eco_transaction",
         "hex_tile",
