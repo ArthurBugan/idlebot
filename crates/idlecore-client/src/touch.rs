@@ -5,6 +5,9 @@
 //! floating/dynamic joysticks, axis locking, and works with mouse on desktop.
 
 use bevy::prelude::*;
+// 0.20: the old `bevy::ui::Button` is now a deprecated private type
+// alias, so spawn/query the headless `ui_widgets::Button` instead.
+use bevy::ui_widgets::Button;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::asset::RenderAssetUsages;
 use virtual_joystick::{

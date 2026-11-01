@@ -8,6 +8,9 @@
 //!   • click a cell, then another, to move a stack between cells
 
 use bevy::prelude::*;
+// 0.20: the old `bevy::ui::Button` is now a deprecated private type
+// alias, so spawn/query the headless `ui_widgets::Button` instead.
+use bevy::ui_widgets::Button;
 use bevy::input::mouse::MouseButton;
 use spacetimedb_sdk::Table;
 use crate::net::gen::player_item_table::PlayerItemTableAccess;

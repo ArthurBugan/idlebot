@@ -8,6 +8,9 @@
 
 use bevy::input::keyboard::KeyCode;
 use bevy::prelude::*;
+// 0.20: the old `bevy::ui::Button` is now a deprecated private type
+// alias, so spawn/query the headless `ui_widgets::Button` instead.
+use bevy::ui_widgets::Button;
 
 use crate::net::hud::{reducer_report, send_reducer};
 use crate::time_ext::now_unix_secs;

@@ -5,6 +5,9 @@
 use bevy::input::ButtonState;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
+// 0.20: the old `bevy::ui::Button` is now a deprecated private type
+// alias, so spawn/query the headless `ui_widgets::Button` instead.
+use bevy::ui_widgets::Button;
 
 use crate::player::ClientPlayer;
 use spacetimedb_sdk::Table;
