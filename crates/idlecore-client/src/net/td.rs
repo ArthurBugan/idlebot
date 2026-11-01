@@ -34,11 +34,22 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 /// Shared HUD text tint (same value as `net::hud`, kept local for privacy).
 const TEXT_COLOR: Color = Color::srgb(0.9, 0.95, 1.0);
 
-/// View radius (squared, world units) beyond which TD markers aren't drawn.
-const VIEW_RADIUS_SQ: f32 = 90.0 * 90.0;
-
+/// View radius (world units) beyond which TD markers aren't drawn; a floor
+/// that grows with zoom (the zoomed-out viewport must keep seeing markers).
+const VIEW_RADIUS: f32 = 90.0;
+/// Cap for the zoom-expanded radii (world units): territory discs max at
+/// radius-34 hexes × 17.3 wu ≈ 590, but 340 keeps entity counts sane.
+const MAX_CULL_RADIUS: f32 = 340.0;
 /// How far (world radius) ownership overlays stretch around the player.
-const TERRITORY_RADIUS_SQ: f32 = 120.0 * 120.0;
+const TERRITORY_RADIUS: f32 = 120.0;
+
+/// Squared cull radii for the current zoom: fixed floors grown to cover the
+/// zoomed-out viewport (the black-at-zoom-out fix) when it's wider.
+fn cull_radii(extent: &crate::plugins::camera::ViewExtent) -> (f32, f32) {
+    let view = VIEW_RADIUS.max((extent.half_diagonal * 1.1).min(MAX_CULL_RADIUS));
+    let terr = TERRITORY_RADIUS.max((extent.half_diagonal * 1.15).min(MAX_CULL_RADIUS));
+    (view * view, terr * terr)
+}
 
 pub struct TdPlugin;
 
@@ -405,6 +416,7 @@ fn sync_td_entities(
     mut territory: ResMut<TdTerritory>,
     mut tdview: ResMut<TdView>,
     mut tracker: ResMut<TdTracker>,
+    extent: Res<crate::plugins::camera::ViewExtent>,
     td_tex: Res<TdTextures>,
     hex_tex: Res<TdHexTex>,
     player_xf: Res<PlayerTransform>,
@@ -577,6 +589,7 @@ fn sync_td_entities(
     }
 
     let (px, py) = (player_xf.translation.x, player_xf.translation.y);
+    let (view_r2, terr_r2) = cull_radii(&extent);
     // ---- ownership overlays ----
     for (hex_id, owner) in &snap.territory {
         let c = HexCoord::from_id(*hex_id);
@@ -586,7 +599,7 @@ fn sync_td_entities(
             let dy = cy - py;
             dx * dx + dy * dy
         };
-        if dist_sq > TERRITORY_RADIUS_SQ {
+        if dist_sq > terr_r2 {
             continue;
         }
         let ownership_mine = Some(owner.as_str()) == address.as_deref();
@@ -619,7 +632,7 @@ fn sync_td_entities(
         let c = HexCoord::from_id(row.hex_id);
         let (cx, cy) = hex_center(c.q, c.r);
         let (dx, dy) = (cx - px, cy - py);
-        if dx * dx + dy * dy > VIEW_RADIUS_SQ {
+        if dx * dx + dy * dy > view_r2 {
             continue;
         }
         let max = cfg::capital_max_hp(row.level);
@@ -653,7 +666,7 @@ fn sync_td_entities(
     // ---- defense structures ----
     for row in &snap.structures {
         let (dx, dy) = (row.x - px, row.y - py);
-        if dx * dx + dy * dy > VIEW_RADIUS_SQ {
+        if dx * dx + dy * dy > view_r2 {
             continue;
         }
         let Some(def) = cfg::defense_kind(&row.kind) else { continue };
@@ -971,6 +984,7 @@ fn td_place_hints(
     mut acc: Local<f32>,
     net: Res<Net>,
     td: Res<TdTerritory>,
+    extent: Res<crate::plugins::camera::ViewExtent>,
     hex_tex: Res<TdHexTex>,
     build_mode: Res<TdBuildMode>,
     inventory: Res<crate::inventory::Inventory>,
@@ -1017,6 +1031,7 @@ fn td_place_hints(
     };
     let Some(color) = color else { return };
     let (px, py) = (player_xf.translation.x, player_xf.translation.y);
+    let (_, terr_r2) = cull_radii(&extent);
     let (phq, phr) = idlecore_core::hex::world_pos_to_hex(
         px,
         py,
@@ -1051,7 +1066,7 @@ fn td_place_hints(
                 }
                 let c = HexCoord::from_id(hex_id);
                 let (cx, cy) = hex_center(c.q, c.r);
-                if (cx - px).powi(2) + (cy - py).powi(2) > TERRITORY_RADIUS_SQ {
+                if (cx - px).powi(2) + (cy - py).powi(2) > terr_r2 {
                     continue;
                 }
                 spawn_hint(&mut commands, c.q, c.r);
@@ -1091,7 +1106,7 @@ fn td_place_hints(
                 }
                 let c = HexCoord::from_id(hex_id);
                 let (cx, cy) = hex_center(c.q, c.r);
-                if (cx - px).powi(2) + (cy - py).powi(2) > TERRITORY_RADIUS_SQ {
+                if (cx - px).powi(2) + (cy - py).powi(2) > terr_r2 {
                     continue;
                 }
                 spawn_hint(&mut commands, c.q, c.r);
@@ -2038,5 +2053,25 @@ mod stat_tests {
         assert_eq!(fmt_countdown(7199), "119m59");
         assert_eq!(fmt_countdown(7200), "2h00m");
         assert_eq!(fmt_countdown(79_978), "22h12m");
+    }
+}
+
+#[cfg(test)]
+mod tests_cull_radii {
+    use super::*;
+
+    #[test]
+    fn cull_radii_cover_the_zoomed_out_viewport() {
+        // Default extents: the historical fixed radii win.
+        let (v, t) = cull_radii(&crate::plugins::camera::ViewExtent { half_diagonal: 40.0 });
+        assert_eq!(v, VIEW_RADIUS * VIEW_RADIUS);
+        assert_eq!(t, TERRITORY_RADIUS * TERRITORY_RADIUS);
+        // Zoomed out (half-diagonal 133 ≈ 1600px window at MIN_ZOOM): the
+        // radii grow to cover the viewport, never beyond the cap.
+        let (v, t) = cull_radii(&crate::plugins::camera::ViewExtent { half_diagonal: 133.0 });
+        assert!(v >= 133.0 * 133.0, "view must cover the viewport: {v}");
+        assert!(t >= 133.0 * 133.0, "territory must cover the viewport: {t}");
+        let (_, t) = cull_radii(&crate::plugins::camera::ViewExtent { half_diagonal: 10_000.0 });
+        assert_eq!(t, MAX_CULL_RADIUS * MAX_CULL_RADIUS, "hard cap");
     }
 }

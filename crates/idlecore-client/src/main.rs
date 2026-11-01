@@ -86,6 +86,7 @@ fn main() {
         .insert_resource(minimap::WaypointEntityMap::default())
         .insert_resource(minimap::CapitalMarkerEntityMap::default())
         .insert_resource(minimap::ChunkLoadState::default())
+        .insert_resource(minimap::MergedMapImage::default())
         .insert_resource(world_floor::FloorTiles::default())
         .insert_resource(world_floor::WaterTextures::default())
         .insert_resource(world_floor::SolidFloorTextures::default())

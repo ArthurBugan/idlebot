@@ -12,7 +12,7 @@
 
 use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
-use bevy::input::mouse::MouseWheel;
+use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::math::Rot2;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::ui::widget::ImageNode;
@@ -115,6 +115,9 @@ pub struct MinimapState {
     /// nothing about the view (position/zoom/rotation/discovery/streaming)
     /// changed, so standing still costs nothing.
     pub last_tiles_key: Option<(f32, f32, f32, f32, u8, bool, usize, usize, u64)>,
+    /// True while the merged-terrain bitmap replaces the per-hex tile nodes
+    /// (Area/World zooms). Toggles node despawn/respawn on the transition.
+    pub merged_active: bool,
 }
 
 impl Default for MinimapState {
@@ -129,6 +132,7 @@ impl Default for MinimapState {
             selected_px: None,
             last_selection_px: None,
             last_tiles_key: None,
+            merged_active: false,
         }
     }
 }
@@ -150,6 +154,147 @@ impl MinimapState {
         (15.0 + 3.0) * self.pixel_scale()
     }
 }
+
+/// One merged "zoomed-out" map image (Spec 025 fix): the per-hex tile grid
+/// can't paint Area/World zooms (thousands of 3px nodes, sub-pixel hexes), so
+/// far zooms render the streamed terrain into a single texture instead.
+#[derive(Resource, Default)]
+pub struct MergedMapImage {
+    pub handle: Option<Handle<Image>>,
+    /// Sample-grid size the texture was built for (w, h).
+    pub grid: u32,
+}
+
+#[derive(Component)]
+pub struct MergedMapNode;
+
+/// Above this hex count a zoom level uses the merged bitmap instead of
+/// per-hex UI tiles. Local ≈ 4.0k, Close ≈ 1.2k, Max ≈ 0.3k stay nodes;
+/// Area ≈ 16k and World ≈ 64k flip to the bitmap.
+const FAR_TILES_BUDGET: usize = 5200;
+
+/// Estimated explored-hex count the visible minimap box would need as
+/// per-hex UI tiles. Pure so the budget split is unit-testable.
+fn estimated_hex_count(mm_size: f32, pixel_scale: f32) -> usize {
+    let half_w = mm_size * 0.5 / pixel_scale; // world units (split across)
+    let half_h = mm_size * 0.5 / pixel_scale;
+    let hex_w = SQRT_3 * WorldGenConfig::HEX_SIZE;
+    let hex_h = 2.0 * WorldGenConfig::HEX_SIZE;
+    (std::f32::consts::PI * (half_w / hex_w) * (half_h / hex_h)) as usize
+}
+
+/// Paint the zoomed-out map: one texture covering the whole minimap box,
+/// refreshed only on key change (~10 Hz max), sampling the streamed chunk
+/// cells through the same pixel↔world math as the tiles. Fog semantics:
+/// explored hexes render bright, streamed-but-unexplored dim, unstreamed
+/// transparent (the box edge around the prefetch ring).
+#[allow(clippy::too_many_arguments)]
+fn render_merged_map(
+    commands: &mut Commands,
+    minimap_state: &mut MinimapState,
+    streaming_world: &StreamingWorldResource,
+    explored: &ExploredHexes,
+    map_content_entity: Entity,
+    merged: &mut MergedMapImage,
+    images: &mut Assets<Image>,
+    pixel_scale: f32,
+    player_pos: Vec2,
+) {
+    let mm = minimap_state.mm_size();
+    // Sample every 2 px — ~10k samples for the compact box, ~40k expanded.
+    let step = 2.0_f32.max((mm / 128.0).ceil());
+    let grid = (mm / step).ceil() as u32;
+    let rotation = minimap_state.rotation.map_rotation(minimap_state.facing_angle);
+    let mm_center = mm / 2.0;
+
+    let mut pixels = vec![0u8; (grid * grid * 4) as usize];
+    for ry in 0..grid {
+        for rx in 0..grid {
+            // Sample each grid cell's center; image row 0 = the map's top
+            // edge (bevy Image data is bottom-up, so flip y).
+            let sample_x = (rx as f32 + 0.5) * step;
+            let sample_y = mm - (ry as f32 + 0.5) * step;
+            let (world_x, world_y) = map_pixel_to_world(
+                (sample_x, sample_y),
+                (player_pos.x, player_pos.y),
+                pixel_scale,
+                mm_center,
+                rotation,
+            );
+            let (q, r) =
+                idlecore_core::hex::world_pos_to_hex(world_x, world_y, WorldGenConfig::HEX_SIZE);
+            let Some(cell) = streaming_world.chunks.get_cell(q, r) else {
+                continue;
+            };
+            let hex_id = HexCoord::new(q, r).to_id();
+            // Fog: visited hexes paint full terrain; streamed-but-unexplored
+            // stays a dim silhouette.
+            let visited = explored.explored.contains_key(&hex_id);
+            let alpha: f32 = if visited { 255.0 } else { 80.0 };
+            let dim = if visited { 1.0 } else { 0.5 };
+            let c = terrain_color(&cell.terrain).to_srgba();
+            let idx = ((ry * grid + rx) * 4) as usize;
+            pixels[idx] = (c.red * 255.0 * dim) as u8;
+            pixels[idx + 1] = (c.green * 255.0 * dim) as u8;
+            pixels[idx + 2] = (c.blue * 255.0 * dim) as u8;
+            pixels[idx + 3] = alpha as u8;
+        }
+    }
+    merged_texture(merged, images, grid, pixels, commands, map_content_entity, mm);
+}
+
+/// Replace the merged-map texture (rebuild on size change) and show its
+/// ImageNode as the bottom layer of the map content.
+fn merged_texture(
+    merged: &mut MergedMapImage,
+    images: &mut Assets<Image>,
+    grid: u32,
+    pixels: Vec<u8>,
+    commands: &mut Commands,
+    map_content_entity: Entity,
+    mm: f32,
+) {
+    let image = Image::new(
+        Extent3d { width: grid, height: grid, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    if merged.grid != grid || merged.handle.is_none() {
+        if let Some(old) = merged.handle.take() {
+            images.remove(&old);
+        }
+        let handle = images.add(image);
+        commands
+            .spawn((
+                Name::new("merged-map"),
+                MergedMapNode,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    top: Val::Px(0.0),
+                    width: Val::Px(mm),
+                    height: Val::Px(mm),
+                    ..default()
+                },
+                ImageNode {
+                    image: handle.clone(),
+                    ..default()
+                },
+            ))
+            .insert(ChildOf(map_content_entity));
+        merged.handle = Some(handle);
+        merged.grid = grid;
+    } else if let Some(handle) = merged.handle.clone() {
+        if let Some(mut existing) = images.get_mut(&handle) {
+            *existing = image;
+        }
+    }
+}
+
+
+
 
 /// Track of placed waypoints.
 #[derive(Resource, Default)]
@@ -757,12 +902,14 @@ pub fn handle_input(
     mut scroll: MessageReader<MouseWheel>,
     windows: Query<&Window>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
+    time: Res<Time>,
     mut minimap_state: ResMut<MinimapState>,
     mut minimap_waypoints: ResMut<MinimapWaypoints>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     widgets: Query<&Interaction>,
     mut net: ResMut<crate::net::plugin::Net>,
     mut latency: ResMut<crate::net::plugin::ServerLatency>,
+    mut zoom_budget: Local<f32>,
     mut last_click: Local<Option<(Instant, Vec2)>>,
 ) {
     if keyboard.just_pressed(KeyCode::KeyN) {
@@ -786,19 +933,48 @@ pub fn handle_input(
     }
 
     let on_minimap = get_minimap_mouse_pos(&windows, minimap_state.mm_size()).is_some();
+    // Spec 025 fix: zoom by scroll travel, not event count — the OS streams
+    // coalesced/tail events (trackpad momentum) that used to flip every zoom
+    // level in one flick. Line notches stay discrete; pixel gestures budget
+    // one level per ~0.35 s at full tilt.
+    const ZOOM_TRACK_RATE: f32 = 3.0;
+    let mut line_notches = 0.0f32;
+    let mut track_vel = 0.0f32;
     for event in scroll.read() {
         if !on_minimap {
             continue;
         }
-        if event.y > 0.0 {
+        match event.unit {
+            MouseScrollUnit::Line => line_notches += event.y,
+            MouseScrollUnit::Pixel => track_vel += -event.y / 100.0,
+        }
+    }
+    if on_minimap {
+        let flips = line_notches.round().clamp(-1.0, 1.0);
+        if flips > 0.0 {
             if let Some(new_zoom) = minimap_state.zoom.zoom_in() {
                 minimap_state.zoom = new_zoom;
             }
-        } else if event.y < 0.0 {
+        } else if flips < 0.0 {
             if let Some(new_zoom) = minimap_state.zoom.zoom_out() {
                 minimap_state.zoom = new_zoom;
             }
         }
+        *zoom_budget += track_vel.clamp(-1.0, 1.0) * ZOOM_TRACK_RATE * time.delta_secs();
+        while *zoom_budget >= 1.0 {
+            *zoom_budget -= 1.0;
+            if let Some(new_zoom) = minimap_state.zoom.zoom_in() {
+                minimap_state.zoom = new_zoom;
+            }
+        }
+        while *zoom_budget <= -1.0 {
+            *zoom_budget += 1.0;
+            if let Some(new_zoom) = minimap_state.zoom.zoom_out() {
+                minimap_state.zoom = new_zoom;
+            }
+        }
+        // Idle drift decays so a long pause never carries stale budget.
+        *zoom_budget *= (1.0 - time.delta_secs()).max(0.0);
     }
 
     if mouse_buttons.just_pressed(MouseButton::Right) {
@@ -932,6 +1108,8 @@ pub fn render_visible_tiles(
     mut tile_query: Query<(&mut Node, &mut ImageNode, &mut BorderColor), With<MapTileNode>>,
     mut next_render: Local<f64>,
     time: Res<Time>,
+    mut merged: ResMut<MergedMapImage>,
+    merged_q: Query<Entity, With<MergedMapNode>>,
     // Spec 023: claimed-land tint + raid pulse (net::td cache).
     net_td: Res<crate::net::td::TdTerritory>,
 td_view: Res<crate::net::td::TdView>,
@@ -981,6 +1159,42 @@ td_view: Res<crate::net::td::TdView>,
         return;
     }
     minimap_state.last_tiles_key = Some(key);
+
+    // Spec 025 fix: the per-hex tile grid can't paint far zooms (thousands
+    // of 3px nodes; hexes sub-pixel) — those levels render one merged
+    // terrain bitmap instead. Near zooms keep the crisp tile nodes.
+    let far = estimated_hex_count(minimap_state.mm_size(), pixel_scale) > FAR_TILES_BUDGET;
+    if far {
+        render_merged_map(
+            &mut commands,
+            &mut minimap_state,
+            &streaming_world,
+            &explored_hexes,
+            map_content_entity,
+            &mut merged,
+            &mut images,
+            pixel_scale,
+            player_pos,
+        );
+        if !minimap_state.merged_active {
+            // Entering the bitmap mode: wipe the stale per-hex nodes; they
+            // respawn fresh when the player zooms back in.
+            for entity in hex_entity_map.hex_entities.values() {
+                commands.entity(*entity).despawn();
+            }
+            hex_entity_map.hex_entities.clear();
+            minimap_state.merged_active = true;
+        }
+        return;
+    }
+    if minimap_state.merged_active {
+        if let Ok(node) = merged_q.single() {
+            commands.entity(node).despawn();
+        }
+        merged.handle = None;
+        merged.grid = 0;
+        minimap_state.merged_active = false;
+    }
 
     // ---- Phase 1: discover hexes from currently-streamed chunks ----
 
@@ -1593,4 +1807,46 @@ pub fn render_selection_marker(
             UiTransform::IDENTITY,
         ));
     });
+}
+
+#[cfg(test)]
+mod tests_zoom_budget {
+    use super::*;
+
+    #[test]
+    fn near_zooms_keep_tiles_far_zooms_go_bitmap() {
+        // Local (0.15): ~0.9k hexes < budget → crisp per-hex nodes.
+        assert!(
+            estimated_hex_count(200.0, MinimapZoom::Local.pixel_scale())
+                <= FAR_TILES_BUDGET
+        );
+        // Area/World far exceed the budget → merged bitmap.
+        assert!(
+            estimated_hex_count(200.0, MinimapZoom::Area.pixel_scale())
+                > FAR_TILES_BUDGET
+        );
+        assert!(
+            estimated_hex_count(200.0, MinimapZoom::World.pixel_scale())
+                > FAR_TILES_BUDGET
+        );
+        // Zoom-in levels stay node-priced: Close ~1.0k, Max ~0.3k.
+        assert!(
+            estimated_hex_count(200.0, MinimapZoom::Close.pixel_scale())
+                <= FAR_TILES_BUDGET
+        );
+        assert!(
+            estimated_hex_count(200.0, MinimapZoom::Max.pixel_scale())
+                <= FAR_TILES_BUDGET
+        );
+        // Expanded (M) doubles the box: compact-Local fits nodes, but the
+        // expanded box at Local needs >4.6k hexes → merged bitmap there too.
+        assert!(
+            estimated_hex_count(400.0, MinimapZoom::Local.pixel_scale())
+                > FAR_TILES_BUDGET
+        );
+        assert!(
+            estimated_hex_count(400.0, MinimapZoom::Close.pixel_scale())
+                <= FAR_TILES_BUDGET
+        );
+    }
 }

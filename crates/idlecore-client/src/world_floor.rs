@@ -1270,6 +1270,7 @@ pub fn update_world_object_visuals(
     mut commands: Commands,
     net: Res<crate::net::plugin::Net>,
     player_transform: Res<PlayerTransform>,
+    extent: Res<crate::plugins::camera::ViewExtent>,
     props: Res<PropTextures>,
     time: Res<Time>,
     mut next_scan: Local<f64>,
@@ -1299,7 +1300,8 @@ pub fn update_world_object_visuals(
     *last_py = py;
     let conn_guard = net.conn.lock().unwrap();
     let Some(conn) = conn_guard.as_ref() else { return };
-    let max_dist = RENDER_RADIUS_HEXES + 2.0 * WorldGenConfig::HEX_SIZE;
+    let max_dist = (RENDER_RADIUS_HEXES + 2.0 * WorldGenConfig::HEX_SIZE)
+        .max((extent.half_diagonal * 1.1).min(230.0));
 
     let now = now_unix_secs();
 
@@ -1610,14 +1612,18 @@ pub struct FloorTiles {
     pub last_player_slot: Option<(i32, i32)>,
 }
 
-/// Floor tiles spawn within this many slots of the player (≈69 units —
-/// comfortably more than a screen at the default zoom). Nothing beyond this
-/// exists.
+/// Floor tiles spawn within this many slots of the player at the default
+/// zoom (≈69 units). Zoomed out, the radius grows to cover the viewport
+/// (capped at [`FLOOR_MAX_RADIUS_UNITS`] — tile count stays bounded).
 pub const FLOOR_SPAWN_RADIUS_SLOTS: i32 = 16;
 
+/// Absolute cap for the zoom-expanded spawn radius (world units):
+/// 170 ≈ √4296-slot disc — a few thousand sprites, never more.
+pub const FLOOR_MAX_RADIUS_UNITS: f32 = 170.0;
+
 /// Live tiles despawn past this radius (hysteresis so border-walking
-/// doesn't churn spawns/despawns every slot crossing).
-const FLOOR_DESPAWN_RADIUS_SLOTS: i32 = 19;
+/// doesn't churn spawns/despawns every slot crossing). Computed from the
+/// dynamic spawn radius (+2 slots slack) at update time now.
 
 /// Max floor tiles spawned per rebuild pass; the pass re-runs until the
 /// wanted set is complete, so teleports fill in over a few frames instead
@@ -1637,6 +1643,7 @@ pub fn update_world_floor(
     mut commands: Commands,
     streaming_world: Res<StreamingWorldResource>,
     player_transform: Res<PlayerTransform>,
+    extent: Res<crate::plugins::camera::ViewExtent>,
     mut tiles: ResMut<FloorTiles>,
     water: Res<WaterTextures>,
     solid: Res<SolidFloorTextures>,
@@ -1659,7 +1666,11 @@ pub fn update_world_floor(
     }
 
     let (psx, psy) = player_slot;
-    let spawn_r = FLOOR_SPAWN_RADIUS_SLOTS as f32 * SLOT_SIZE;
+    // Zoom-aware radius: the default ring grown to cover the viewport half
+    // diagonal (+15% margin) whenever zooming out would outrun it.
+    let spawn_r = (FLOOR_SPAWN_RADIUS_SLOTS as f32 * SLOT_SIZE)
+        .max((extent.half_diagonal * 1.15).min(FLOOR_MAX_RADIUS_UNITS));
+    let spawn_slots = (spawn_r / SLOT_SIZE).ceil() as i32;
     let spawn_r2 = spawn_r * spawn_r;
 
     // Terrain per hex for the nearby chunks — one map built per pass, so the
@@ -1682,8 +1693,8 @@ pub fn update_world_floor(
     // Wanted set: slots in the square around the player, culled to a circle.
     // Sorted near-first so a capped pass fills the view center first.
     let mut wanted: Vec<(f32, i32, i32, TerrainType, WaterClass)> = Vec::new();
-    for sx in (psx - FLOOR_SPAWN_RADIUS_SLOTS)..=(psx + FLOOR_SPAWN_RADIUS_SLOTS) {
-        for sy in (psy - FLOOR_SPAWN_RADIUS_SLOTS)..=(psy + FLOOR_SPAWN_RADIUS_SLOTS) {
+    for sx in (psx - spawn_slots)..=(psx + spawn_slots) {
+        for sy in (psy - spawn_slots)..=(psy + spawn_slots) {
             let (cx, cy) = slot_center(sx, sy);
             let dx = cx - px;
             let dy = cy - py;
@@ -1860,8 +1871,9 @@ pub fn update_world_floor(
         }
     }
 
-    // Despawn tiles beyond the hysteresis radius.
-    let despawn_r2 = (FLOOR_DESPAWN_RADIUS_SLOTS as f32 * SLOT_SIZE).powi(2);
+    // Despawn tiles beyond the hysteresis radius (spawn radius + slack —
+    // both scale with zoom so border-walking never churns).
+    let despawn_r2 = (spawn_r + 2.0 * SLOT_SIZE).powi(2);
     let px2 = px;
     let py2 = py;
     let mut removed_slots: Vec<(i32, i32)> = Vec::new();

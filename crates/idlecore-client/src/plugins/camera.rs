@@ -13,9 +13,27 @@ const MINIMAP_PADDING: f32 = 10.0;
 /// art covers one hex (√3 × 10 ≈ 17.32 world units).
 const BASE_PIXELS_PER_UNIT: f32 = 132.0 / (1.7320508075688772 * 10.0);
 
-/// Camera zoom limits (pixels per world unit).
-const MIN_ZOOM: f32 = 3.0;
+/// Camera zoom limits (pixels per world unit). The floor streams ~69–170
+/// world units around the player, so zoom-out is bounded where the world
+/// still exists (3.0 would show 4× the streamed area — all black).
+const MIN_ZOOM: f32 = 6.0;
 const MAX_ZOOM: f32 = 2000.0;
+
+/// Zoom-aware visible extent (world units), updated each frame. Everything
+/// that renders around the player culls against this so zooming out never
+/// outruns what the floor/tiles spawn — the zoom-out-black-map fix.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct ViewExtent {
+    /// Half-diagonal of the viewport in world units.
+    pub half_diagonal: f32,
+}
+
+impl Default for ViewExtent {
+    fn default() -> Self {
+        // ~a 1600×900 window at the default zoom until the first update.
+        Self { half_diagonal: 60.0 }
+    }
+}
 
 /// Camera zoom level (pixels per world unit).
 #[derive(Resource)]
@@ -31,11 +49,30 @@ impl Default for CameraZoom {
     }
 }
 
+/// Half-diagonal of the viewport in world units (pure for unit tests).
+fn visible_half_diagonal(width: f32, height: f32, px_per_unit: f32) -> f32 {
+    let half_w = width * 0.5 / px_per_unit;
+    let half_h = height * 0.5 / px_per_unit;
+    (half_w * half_w + half_h * half_h).sqrt()
+}
+
+/// Track the zoom-aware viewport extent so world culls can follow zoom.
+fn track_view_extent(
+    windows: Query<&Window>,
+    zoom: Res<CameraZoom>,
+    mut extent: ResMut<ViewExtent>,
+) {
+    let Ok(window) = windows.single() else { return };
+    extent.half_diagonal =
+        visible_half_diagonal(window.width(), window.height(), zoom.scale.max(1e-4));
+}
+
 pub struct CameraPlugin;
 
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (follow_camera, handle_zoom));
+        app.init_resource::<ViewExtent>()
+            .add_systems(Update, (follow_camera, handle_zoom, track_view_extent));
     }
 }
 
@@ -116,6 +153,7 @@ fn handle_zoom(
     minimap_state: Res<MinimapState>,
     mut zoom: ResMut<CameraZoom>,
     mut touch: ResMut<crate::touch::TouchControls>,
+    time: Res<Time>,
 ) {
     // Zoom step per wheel notch / +/- key press (1.3 = +30% per step).
     let factor: f32 = 1.3;
@@ -124,21 +162,39 @@ fn handle_zoom(
     // makes a single scroll notch jump straight to MAX_ZOOM, so normalize
     // pixel deltas to notch units first.
     const PIXELS_PER_NOTCH: f32 = 100.0;
+    // Trackpad scrolling is a continuous gesture: the OS streams small
+    // pixel deltas (plus a decaying momentum tail) at frame rate, so zoom
+    // must follow *scroll velocity*, not event count. ZOOM_TRACK_RATE is
+    // the strides/sec at full tilt: 3.0 → 1.3³ ≈ 2.2x per second.
+    const ZOOM_TRACK_RATE: f32 = 3.0;
 
+    let mut notch_dir = 0.0f32; // discrete wheel notches this frame
+    let mut track_dir = 0.0f32; // normalized pixel delta this frame
     for event in scroll.read() {
-        if event.y == 0.0 || cursor_over_minimap(&windows, &minimap_state) {
+        let over_mm = cursor_over_minimap(&windows, &minimap_state);
+        if event.y == 0.0 || over_mm {
             continue;
         }
         // Trackpads (Pixel deltas, macOS natural scrolling) report the
         // "zoom in" gesture as negative y; mice (Line deltas) report wheel
         // up as positive. Normalize both so up/forward zooms in.
-        let dir = match event.unit {
-            MouseScrollUnit::Line => event.y,
-            MouseScrollUnit::Pixel => -event.y / PIXELS_PER_NOTCH,
-        };
-        // Clamp per-event step so a large/coalesced delta can't lurch.
-        let dir = dir.clamp(-2.0, 2.0);
+        match event.unit {
+            MouseScrollUnit::Line => notch_dir += event.y,
+            MouseScrollUnit::Pixel => track_dir += -event.y / PIXELS_PER_NOTCH,
+        }
+    }
+    // Exact-1: clamp per-frame sums so a large/coalesced burst can't lurch
+    // (the old per-event multiply let one momentum stream hit the range).
+    if notch_dir != 0.0 {
+        let dir = notch_dir.clamp(-2.0, 2.0);
         zoom.scale = (zoom.scale * factor.powf(dir)).clamp(MIN_ZOOM, MAX_ZOOM);
+    }
+    // Trackpad zoom follows scroll travel: ~100 px accumulated = one notch
+    // (×1.3), fps-independent (no dt — the per-frame sum already encodes
+    // scroll velocity; multiplying by dt under-scaled it 60×).
+    if track_dir != 0.0 {
+        let vel = track_dir.clamp(-1.0, 1.0);
+        zoom.scale = (zoom.scale * factor.powf(vel)).clamp(MIN_ZOOM, MAX_ZOOM);
     }
 
     if keys.just_pressed(KeyCode::Equal) || keys.just_pressed(KeyCode::NumpadAdd) {
@@ -179,5 +235,16 @@ mod tests {
         assert!((cam - target).length() < 0.05, "did not converge: {cam}");
         // Never overshoots (pure lerp).
         assert!(cam.x <= target.x + 1e-4);
+    }
+
+    #[test]
+    fn view_half_diagonal_is_the_pythagorean_viewport_arc() {
+        // 1600×900 window, 6 px/world-unit (max zoom-out): half-diagonal ≈ 171.
+        let half = visible_half_diagonal(1600.0, 900.0, 6.0);
+        assert!(
+            (half - ((800.0_f32 / 6.0).powi(2) + (450.0_f32 / 6.0).powi(2)).sqrt()).abs() < 1e-4
+        );
+        // Zooming IN (bigger px/unit) shrinks the world extent.
+        assert!(visible_half_diagonal(1600.0, 900.0, 60.0) < half / 9.0);
     }
 }
