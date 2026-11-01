@@ -743,6 +743,14 @@ pub const ITEM_WORKBENCH: &str = "Workbench";
 /// Destroying a grass tuft drops this much fiber plus a chance of seeds.
 pub const GRASS_PER_TUFT: u64 = 2;
 pub const STONE_PER_ROCK: u64 = 2;
+/// Percentage chance a mined rock also carries a Metal Part (Spec 023 §3.3) —
+/// the early hook into the tower-defense economy before raid drops.
+pub const ROCK_METAL_PART_PCT: u64 = 25;
+/// Deterministic roll: `object_id % 100 < ROCK_METAL_PART_PCT` (matches the
+/// per-object seed-chance pattern used by grass).
+pub fn mined_metal_part(object_id: u64) -> bool {
+    object_id % 100 < ROCK_METAL_PART_PCT
+}
 /// Destroying a grass tuft drops this many seeds.
 pub const SEEDS_PER_GRASS: u64 = 2;
 /// Harvesting a mature tree yields wood + seeds to keep the loop going.

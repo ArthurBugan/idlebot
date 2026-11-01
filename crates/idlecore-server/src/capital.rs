@@ -382,15 +382,22 @@ mod tests {
 
     #[test]
     fn claim_radius_gates_far_hexes() {
-        let owned = vec![id(0, 0), id(0, 1), id(0, 2)];
-        // Radius 2 at L1 — (0,3) is reachable (adjacent to (0,2))? distance from
-        // capital (0,0) is 3 > 2. Rejected even though adjacent.
+        // Ownership chain reaching distance 8, so the adjacency gate passes
+        // and the radius gate is the decisive rejection at L1.
+        let owned = vec![id(0, 0), id(0, 8)];
+        // Radius 8 at L1 — (0,9) is adjacent to owned (0,8) but distance 9
+        // from the capital exceeds radius 8.
         assert_eq!(
-            claim_error(id(0, 3), false, &owned, id(0, 0), 1),
+            claim_error(id(0, 9), false, &owned, id(0, 0), 1),
             Some(ClaimError::OutOfRadius)
         );
-        // L2 expands to 3.
-        assert_eq!(claim_error(id(0, 3), false, &owned, id(0, 0), 2), None);
+        // L2 expands to 9: same candidate now legal.
+        assert_eq!(claim_error(id(0, 9), false, &owned, id(0, 0), 2), None);
+        // Distance-8 hex adjacent to an owned tail hex passes both gates.
+        assert_eq!(
+            claim_error(id(0, 8), false, &vec![id(0, 0), id(0, 7)], id(0, 0), 1),
+            None
+        );
         // Water is never claimable, whatever the radius.
         assert_eq!(
             claim_error(id(0, 1), true, &owned, id(0, 0), 5),
@@ -400,22 +407,24 @@ mod tests {
 
     #[test]
     fn claims_keep_minimum_distance_between_capitals() {
-        assert!(capital_spacing_ok(id(8, 0), &[id(0, 0)]));
-        assert!(capital_spacing_ok(id(4, 4), &[id(0, 0)]), "distance 8");
-        assert!(!capital_spacing_ok(id(7, 0), &[id(0, 0)]));
-        assert!(!capital_spacing_ok(id(4, 3), &[id(0, 0)]), "distance 7");
+        assert!(capital_spacing_ok(id(60, 0), &[id(0, 0)]));
+        assert!(capital_spacing_ok(id(30, 30), &[id(0, 0)]), "distance 60");
+        assert!(!capital_spacing_ok(id(59, 0), &[id(0, 0)]));
+        assert!(!capital_spacing_ok(id(30, 29), &[id(0, 0)]), "distance 59");
         // Empty world accepts anything.
         assert!(capital_spacing_ok(id(0, 0), &[]));
         // Several capitals each enforce the gap.
-        let live = vec![id(0, 0), id(20, 0)];
-        assert!(!capital_spacing_ok(id(5, 0), &live));
-        assert!(!capital_spacing_ok(id(14, 0), &live), "6 hexes from (20,0)");
-        // (12,0): 8 from (20,0) and 12 from origin — legal.
-        assert!(capital_spacing_ok(id(12, 0), &live));
-        // (28,0): 8 hexes from (20,0) and 28 from the origin — legal.
-        assert!(capital_spacing_ok(id(28, 0), &live));
-        // (9,0): 9 from origin, 11 from (20,0) — legal.
-        assert!(capital_spacing_ok(id(9, 0), &live));
+        let live = vec![id(0, 0), id(120, 0)];
+        assert!(!capital_spacing_ok(id(10, 0), &live));
+        assert!(!capital_spacing_ok(id(110, 0), &live), "10 hexes from (120,0)");
+        // (60,0): 60 from (0,0) and 60 from (120,0) — legal.
+        assert!(capital_spacing_ok(id(60, 0), &live));
+        // (130,0): 130 from (0,0) and 10 from (120,0)? no, 10 < 60 — denied.
+        assert!(!capital_spacing_ok(id(130, 0), &live), "10 hexes from (120,0)");
+        // (180,0): 180 from (0,0) and 60 from (120,0) — legal.
+        assert!(capital_spacing_ok(id(180, 0), &live));
+        // (100,0): 100 from origin, 20 from (120,0) — denied.
+        assert!(!capital_spacing_ok(id(100, 0), &live));
     }
 
     #[test]

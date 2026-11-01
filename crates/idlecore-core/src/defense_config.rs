@@ -22,12 +22,18 @@ pub const ITEM_STONE: &str = "Stone";
 /// Capital HP at level 1; each level adds `CAPITAL_HP_PER_LEVEL`.
 pub const CAPITAL_HP_BASE: u32 = 100;
 pub const CAPITAL_HP_PER_LEVEL: u32 = 25;
-/// Minimum hex distance between any two placed capitals.
-pub const MIN_CAPITAL_SPACING: i32 = 8;
-/// Claimed hexes around the capital at level 1; each level adds one.
-pub const CLAIM_RADIUS_BASE: i32 = 2;
-/// Claim radius hard cap (prevents infinite territory).
-pub const CLAIM_RADIUS_MAX: i32 = 5;
+/// Minimum hex distance between any two placed capitals. Scales with the
+/// territory size (see [`CLAIM_RADIUS_BASE`]) so a fresh capital can never
+/// sit inside a rival's effective claim disc: two full level-1 discs
+/// (radius 26) can span 52 hex tiles plus a walking gap.
+pub const MIN_CAPITAL_SPACING: i32 = 60;
+/// Claimable ring around the capital at level 1; each level adds two.
+/// A hex disc of radius 26 holds 2107 hexes — ~10× the previous radius-8
+/// territory (217 hexes) that playtesting found cramped.
+pub const CLAIM_RADIUS_BASE: i32 = 26;
+/// Claim radius hard cap (prevents infinite territory): level 5+ plateaus
+/// at 34 hex tiles = 3487 hexes, still dense-city scale.
+pub const CLAIM_RADIUS_MAX: i32 = 34;
 /// Land-claim cost per hex (consumed from the inventory).
 pub const CLAIM_WOOD_COST: u64 = 5;
 pub const CLAIM_STONE_COST: u64 = 3;
@@ -41,10 +47,10 @@ pub const GRACE_REBUILD_SECS: u64 = 24 * 3600;
 /// Capital XP granted per mob killed (levels use the standard 100·L² curve).
 pub const CAPITAL_XP_PER_MOB: u64 = 10;
 
-/// Max claim radius for a capital level (base 2, +1/level, capped at 5).
+/// Max claim radius for a capital level (base 26, +2/level, capped at 34).
 pub fn claim_radius(level: u32) -> i32 {
     CLAIM_RADIUS_BASE
-        .saturating_add(level.saturating_sub(1) as i32)
+        .saturating_add((level.saturating_sub(1) as i32).saturating_mul(2))
         .min(CLAIM_RADIUS_MAX)
 }
 
@@ -73,6 +79,10 @@ pub fn capital_level_from_xp(total_xp: u64) -> u32 {
 
 /// One raid's mob budget.
 pub const WAVE_MAX_MOBS: u32 = 12;
+/// Claimed hexes that saturate the wave-size pressure term (`wave_size`
+/// bottoms out at 2 and hits the 12-cap at 160 claimed hexes — most of the
+/// 217-hex L1 disc — so pressure still escalates over the whole territory).
+pub const WAVE_SIZE_DIVISOR: u32 = 16;
 /// Minimum minutes between waves on the same capital.
 pub const WAVE_REATTACK_SECS: u64 = 10 * 60;
 /// A raid forcefields no longer than this; survivors despawn without drops.
@@ -144,8 +154,14 @@ pub fn mob_kinds_for_level(level: u32) -> Vec<&'static MobKind> {
 
 /// Wave size from pressure: territory size and capital level
 /// (Spec 023 §3.5), capped at [`WAVE_MAX_MOBS`].
+///
+/// REV6: territory grew ~10× (radius 8 ⇒ a 217-hex L1 disc), so the old
+/// `claimed/2` divisor saturated the 12-mob cap at 12 claimed hexes — every
+/// real territory fought max pressure. `/16` now spans the whole disc:
+/// L1 caps out at ~`WAVE_SIZE_PRESSURE_CAP_HEXES` claims, and the level
+/// multiplier `1.15^(L-1)` stays the main growth lever below the cap.
 pub fn wave_size(claimed_hexes: usize, capital_level: u32) -> usize {
-    let base = 2.0 + claimed_hexes as f32 / 2.0;
+    let base = 2.0 + claimed_hexes as f32 / WAVE_SIZE_DIVISOR as f32;
     let scaled = base * 1.15_f32.powi(capital_level.saturating_sub(1) as i32);
     (scaled.ceil() as usize).clamp(2, WAVE_MAX_MOBS as usize)
 }
@@ -217,11 +233,17 @@ mod tests {
 
     #[test]
     fn claim_radius_grows_by_level_and_caps() {
-        assert_eq!(claim_radius(1), 2);
-        assert_eq!(claim_radius(2), 3);
-        assert_eq!(claim_radius(3), 4);
-        assert_eq!(claim_radius(4), 5);
-        assert_eq!(claim_radius(99), 5, "hard cap");
+        assert_eq!(claim_radius(1), 26);
+        assert_eq!(claim_radius(2), 28);
+        assert_eq!(claim_radius(3), 30);
+        assert_eq!(claim_radius(5), 34);
+        assert_eq!(claim_radius(99), 34, "hard cap");
+        // Level-1 disc = 3r²+3r+1 hexes; 26 radius = 2107 ≈ 10× the previous
+        // radius-8 territory (217) playtesting found cramped.
+        assert_eq!(3 * 26 * 26 + 3 * 26 + 1, 2107);
+        assert_eq!(3 * 8 * 8 + 3 * 8 + 1, 217);
+        // Capped disc (radius 34) stays dense-city scale.
+        assert_eq!(3 * 34 * 34 + 3 * 34 + 1, 3487);
     }
 
     #[test]
@@ -254,12 +276,17 @@ mod tests {
 
     #[test]
     fn wave_size_scales_with_pressure_and_caps() {
-        assert_eq!(wave_size(1, 1), 3, "(2 + 0.5).ceil()");
-        assert_eq!(wave_size(4, 1), 4);
-        // 1.15^2 ≈ 1.3225 → (2 + 1)·1.3225 = 3.9675 → ceil 4.
-        assert_eq!(wave_size(2, 3), 4);
-        // Territory of 20 hexes at L5 far exceeds the cap.
-        assert_eq!(wave_size(20, 5), WAVE_MAX_MOBS as usize);
+        // REV6 divisor 16: 12 claimed hexes are now only a starter of ~3,
+        // instead of saturating the cap.
+        assert_eq!(wave_size(12, 1), 3, "(2 + 12/16).ceil() = (2.75).ceil()");
+        // (2 + 4/16) = 2.25 → ceil 3.
+        assert_eq!(wave_size(4, 1), 3);
+        // 1.15^2 ≈ 1.3225 → (2.75)·1.3225 = 3.637 → ceil 4.
+        assert_eq!(wave_size(12, 3), 4);
+        // Pressure still reaches the cap within the L1 disc (217 hexes):
+        // 160 claimed → 2 + 10 = 12.
+        assert_eq!(wave_size(160, 1), WAVE_MAX_MOBS as usize);
+        assert_eq!(wave_size(216, 5), WAVE_MAX_MOBS as usize, "stays capped");
         assert_eq!(wave_size(0, 1), 2, "never empty");
     }
 

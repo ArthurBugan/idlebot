@@ -35,13 +35,13 @@ WALK → CLAIM land → PLACE capital → BUILD defenses
 ## 3. Design
 
 ### 3.1 Capital City
-- **Placing:** `place_capital(hex_id)` — requires: hex not spawned as Water, hex unclaimed, ≥ `MIN_CAPITAL_SPACING` (8) hexes from every other capital, player has the Capital Core item. Consumes the item; binds the player's identity to that capital.
+- **Placing:** `place_capital(hex_id)` — requires: hex not spawned as Water, hex unclaimed, ≥ `MIN_CAPITAL_SPACING` (24) hexes from every other capital, player has the Capital Core item. Consumes the item; binds the player's identity to that capital.
 - **Stats:** `hp / max_hp` (100 at L1), `level` (1), `last_raid_at`, `destroyed: bool`.
 - **Level-up:** capital XP = per-mob kill; thresholds use `100 · level²` (same curve as `progression.rs`). Each level: +1 max claim radius (see below), +15% wave size.
 - **Destruction:** `hp ≤ 0` → removed structures, territory freed, Capital Core returned to inventory (not placed), `grace_until = now + 24h`.
 
 ### 3.2 Land Claim
-- `claim_land(hex_id)`: hex must be **unclaimed**, **walkable terrain** (all but Water), and adjacent (hex `distance == 1`) to a hex owned by the player, within the capital's claim radius (L1 → 2 hexes, +1 per level, max 5). Cost: **5 Wood + 3 Stone**. Reuses the per-player 5s action cooldown.
+- `claim_land(hex_id)`: hex must be **unclaimed**, **walkable terrain** (all but Water), and adjacent (hex `distance == 1`) to a hex owned by the player, within the capital's claim radius (L1 → 8 hexes, +1 per level, max 15 — rev5: the base disc is ~10× the original territory: 217 hexes). Cost: **5 Wood + 3 Stone**. Reuses the per-player 5s action cooldown.
 - One player ⇢ `N` hexes keyed by owner address; a `territory` table is the source of truth (single PK = hex id). Overlap is impossible since the claim reducer checks ownership atomically.
 - Claimed hexes render with an owner tint; minimap draws the border.
 
@@ -65,7 +65,7 @@ Built via `build_defense(hex_id, slot_x, slot_y, kind)` on an owned hex, using t
 
 ### 3.5 Mobs & Raids
 - **Kinds:** `Scavenger` (30 HP, 4 DPS), `Bone Walker` (80 HP, 8 DPS), `Rust Husk` (140 HP, 12 DPS). Unlock by capital level: L1 = Scavenger, L2 += Bone Walker, L3 += Rust Husk.
-- **Pressure:** `wave_size = ceil((2 + claimed_hexes/2) * 1.15^(level-1))`, capped at 12 concurrent mobs per capital; one wave at a time.
+- **Pressure:** `wave_size = ceil((2 + claimed_hexes/16) * 1.15^(level-1))`, capped at 12 concurrent mobs per capital; one wave at a time. (REV6: divisor 2 → 16 — the ~10× rev5 territory saturated the old formula's cap at 12 claims; `/16` spreads pressure over the disc, cap at 160 claimed hexes.)
 - **Timing:** a 30s `raid_tick` scheduler rolls waves. First raid only after `GRACE_WINDOW = 30 min` since capital placement; re-attack cooldown ≥ 10 min after the previous wave ends.
 - **Spawning:** waves spawn at territory border hexes (owned hex adjacent to unowned/water); if the territory is a single hex, at ring distance 2. Positions distribute across 1–2 border points.
 - **Movement/AI (MVP):** straight-line march toward the capital hex center, hex step per `mob_tick` (1s) — no pathfinding graph. Engagement priority: (1) any structure within on-hex adjacency → melee it, (2) towers only ever attack them (they don't retaliate at range in MVP), (3) capital in adjacency → attack capital.

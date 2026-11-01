@@ -35,21 +35,35 @@ fn border_hexes(ctx: &ReducerContext, capital: &Capital) -> Vec<(i32, i32)> {
         .filter(&capital.owner)
         .map(|t| t.hex_id)
         .collect();
+    frontier_hexes(&owned, |hex_id| {
+        ctx.db
+            .hex_tile()
+            .hex_id()
+            .find(hex_id)
+            .map(|t| t.terrain == "Water")
+    })
+}
+
+/// Pure frontier computation (Spec 023 §3.5, unit-testable without
+/// SpacetimeDB): every unowned hex adjacent to an owned one, in deterministic
+/// sorted order. `terrain_of` returns `Some(true)` for water (excluded),
+/// `Some(false)` for walkable land, and `None` for unmaterialized hexes
+/// (they exist only where players have walked — skipped entirely).
+pub fn frontier_hexes(
+    owned: &HashSet<u64>,
+    terrain_of: impl Fn(u64) -> Option<bool>,
+) -> Vec<(i32, i32)> {
     let mut borders: Vec<(i32, i32)> = Vec::new();
     let mut seen: HashSet<u64> = HashSet::new();
-    for &hex_id in &owned {
+    for &hex_id in owned {
         let (q, r) = hex_coords_of(hex_id);
         for (nq, nr) in HexCoord::new(q, r).neighbors() {
             let nid = hex_id_of(nq, nr);
             if owned.contains(&nid) || !seen.insert(nid) {
                 continue;
             }
-            // Spawn on walkable land only; unmaterialized frontier hexes are
-            // skipped (they exist only where players have walked).
-            let Some(tile) = ctx.db.hex_tile().hex_id().find(nid) else {
-                continue;
-            };
-            if tile.terrain == "Water" {
+            // Spawn on unowned walkable land only.
+            if terrain_of(nid) != Some(false) {
                 continue;
             }
             borders.push((nq, nr));
@@ -113,12 +127,8 @@ fn spawn_wave(ctx: &ReducerContext, capital: &Capital, now: u64) -> bool {
     }
     // Up to two spawn points, pushed out to at least MIN_MARCH_HEXES so the
     // wave has a visible trek across the frontier before reaching targets.
-    let take = borders.len().min(2).max(1);
-    let stride = borders.len().div_ceil(take);
-    let points: Vec<(i32, i32)> = borders
+    let points: Vec<(i32, i32)> = pick_border_points(&borders)
         .into_iter()
-        .step_by(stride)
-        .take(take)
         .map(|(q, r)| walk_out(ctx, capital, q, r))
         .collect();
 
@@ -188,6 +198,37 @@ fn close_wave(ctx: &ReducerContext, mut wave: RaidWave, now: u64, outcome: &str)
     ctx.db.raid_wave().wave_id().update(wave);
 }
 
+/// Pure spawn gate (Spec 023 §3.6, unit-testable): the wave eligibility part
+/// of [`raid_tick`], stripped of reducer access. A capital opens a wave only
+/// when no wave is open (single-wave invariant), its grace window has passed,
+/// and the reattack cooldown since `last_raid_at` has elapsed.
+pub fn wave_eligible(
+    now: u64,
+    grace_until: u64,
+    last_raid_at: u64,
+    has_open_wave: bool,
+) -> bool {
+    if has_open_wave {
+        return false;
+    }
+    if now < grace_until {
+        return false;
+    }
+    now.saturating_sub(last_raid_at) >= cfg::WAVE_REATTACK_SECS
+}
+
+/// Pure spawn-point selection from a sorted frontier (Spec 023 rev4):
+/// up to two points spread across the list by stride — one for a single-hex
+/// frontier, both ends for anything larger.
+pub fn pick_border_points(borders: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    if borders.is_empty() {
+        return Vec::new();
+    }
+    let take = borders.len().min(2).max(1);
+    let stride = borders.len().div_ceil(take);
+    borders.iter().step_by(stride).take(take).copied().collect()
+}
+
 /// Every 30s: sweep waves that outlived `WAVE_TIMEOUT` (survivors despawn,
 /// no drops), then open one wave per eligible capital. Raids hit offline
 /// capitals too — only the grace windows protect (user decision, 023 rev2).
@@ -221,13 +262,9 @@ pub fn raid_tick(ctx: &ReducerContext) {
             .wave_by_capital()
             .filter(capital.capital_id)
             .any(|w| w.ended_at.is_none());
-        if has_open_wave || now < capital.grace_until {
-            continue;
+        if wave_eligible(now, capital.grace_until, capital.last_raid_at, has_open_wave) {
+            spawn_wave(ctx, &capital, now);
         }
-        if now.saturating_sub(capital.last_raid_at) < cfg::WAVE_REATTACK_SECS {
-            continue;
-        }
-        spawn_wave(ctx, &capital, now);
     }
     crate::scheduler::audit(
         ctx,
@@ -554,5 +591,114 @@ mod tests {
         // Diagonal approach from another direction also closes.
         let (mq, mr) = step_toward_hex(-3, 4, 0, 0);
         assert!(hex_distance(mq, mr, 0, 0) < hex_distance(-3, 4, 0, 0));
+    }
+
+    // -- T3.2: scheduler invariants ----------------------------------------
+
+    fn capital_at(grace_until: u64, last_raid_at: u64) -> Capital {
+        Capital {
+            capital_id: 1,
+            owner: "addr-A".to_string(),
+            hex_id: 0,
+            hp: 100,
+            level: 1,
+            total_xp: 0,
+            grace_until,
+            placed_at: 0,
+            last_raid_at,
+            destroyed: false,
+        }
+    }
+
+    #[test]
+    fn wave_grace_suppresses_spawns() {
+        let cap = capital_at(5_000, 0);
+        // Inside the grace window: no wave opens, whatever the reattack clock.
+        assert!(!wave_eligible(4_999, cap.grace_until, cap.last_raid_at, false));
+        // The instant grace expires the capital becomes attackable.
+        assert!(wave_eligible(5_000, cap.grace_until, cap.last_raid_at, false));
+    }
+
+    #[test]
+    fn single_wave_is_an_invariant() {
+        let cap = capital_at(0, 0);
+        // An open wave blocks any second wave, even long after grace.
+        assert!(!wave_eligible(999_999, cap.grace_until, cap.last_raid_at, true));
+        // Same capital without an open wave is eligible again.
+        assert!(wave_eligible(cfg::WAVE_REATTACK_SECS, cap.grace_until, 0, false));
+    }
+
+    #[test]
+    fn wave_reattack_window_counts_from_last_raid() {
+        let cap = capital_at(0, cfg::WAVE_REATTACK_SECS);
+        // One second before the cooldown elapses: blocked.
+        assert!(!wave_eligible(
+            2 * cfg::WAVE_REATTACK_SECS - 1,
+            cap.grace_until,
+            cap.last_raid_at,
+            false
+        ));
+        // Exactly at the boundary: allowed.
+        assert!(wave_eligible(
+            2 * cfg::WAVE_REATTACK_SECS,
+            cap.grace_until,
+            cap.last_raid_at,
+            false
+        ));
+        // A brand-new capital (never raided) is eligible immediately after grace.
+        assert!(wave_eligible(
+            cfg::WAVE_REATTACK_SECS.max(60),
+            cap.grace_until,
+            capital_at(60, 0).last_raid_at,
+            false
+        ));
+    }
+
+    #[test]
+    fn frontier_hexes_skip_water_unowned_unmaterialized_and_duplicates() {
+        use std::collections::HashSet;
+        let owned: HashSet<u64> = [hex_id_of(0, 0), hex_id_of(1, 0)]
+            .into_iter()
+            .collect();
+        // Frontier candidates around the two owned hexes: (1,-1) / (2,-1) /
+        // (2,0) / (0,-1) / (-1,0) / (-1,1) land, (0,1) water, (1,1)
+        // unmaterialized (None → skipped).
+        let terrain = |id: u64| -> Option<bool> {
+            let c = HexCoord::from_id(id);
+            if (c.q, c.r) == (0, 1) {
+                return Some(true);
+            }
+            if (c.q, c.r) == (1, 1) {
+                return None;
+            }
+            Some(false)
+        };
+        let borders = frontier_hexes(&owned, terrain);
+        assert_eq!(
+            borders,
+            vec![(-1, 0), (-1, 1), (0, -1), (1, -1), (2, -1), (2, 0)],
+            "sorted, water and unmaterialized skipped, shared frontier deduped"
+        );
+        // Every border is unowned and truly adjacent to an owned hex.
+        for &(q, r) in &borders {
+            assert!(!owned.contains(&hex_id_of(q, r)), "border ({q},{r}) must be unowned");
+            let is_adjacent = HexCoord::new(q, r)
+                .neighbors()
+                .iter()
+                .any(|&(nq, nr)| owned.contains(&hex_id_of(nq, nr)));
+            assert!(is_adjacent, "border ({q},{r}) not adjacent to owned land");
+        }
+    }
+
+    #[test]
+    fn pick_border_points_strides_two_ends() {
+        // Single-hex frontier → exactly one spawn point.
+        assert_eq!(pick_border_points(&[(3, 4)]), vec![(3, 4)]);
+        // Two hexes → both, no stride gap.
+        assert_eq!(pick_border_points(&[(0, 2), (2, 0)]), vec![(0, 2), (2, 0)]);
+        // Large frontier → two points: first + stride end.
+        let five: Vec<(i32, i32)> = (0..5).map(|i| (i, 0)).collect();
+        assert_eq!(pick_border_points(&five), vec![(0, 0), (3, 0)]);
+        assert_eq!(pick_border_points(&[]), Vec::<(i32, i32)>::new());
     }
 }

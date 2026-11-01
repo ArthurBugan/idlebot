@@ -29,10 +29,12 @@ mob_tick (1s)   ─┬→ mob step/engagement (melee structures → capital)
     wrappers, per the `scheduled_plant_growth` pattern).
   - New item constants: `ITEM_CAPITAL_CORE`, `ITEM_METAL_PART`, `ITEM_BONE`,
     `ITEM_ARROW_TOWER`, `ITEM_BALLISTA`, `ITEM_BONE_BARRICADE` (hotbar-held placables).
-  - Mechanics constants: `CAPITAL_HP_BASE=100`, `MIN_CAPITAL_SPACING=8`,
-    `CLAIM_RADIUS_BASE=2`, `CLAIM_COST` (5 Wood + 3 Stone),
+  - Mechanics constants: `CAPITAL_HP_BASE=100`, `MIN_CAPITAL_SPACING=24`,
+    `CLAIM_RADIUS_BASE=8` (rev5: ~10× territory disc, 217 hexes; cap 15),
+    `CLAIM_COST` (5 Wood + 3 Stone),
     `GRACE_FIRST_RAID_SECS=1800`, `GRACE_REBUILD_SECS=86400`,
-    `WAVE_MAX_MOBS=12`, `WAVE_REATTACK_SECS=600`, `WAVE_TIMEOUT_SECS=900`,
+    `WAVE_MAX_MOBS=12`, `WAVE_SIZE_DIVISOR=16` (REV6: old /2 saturated the
+    cap at 12 claims on the rev5-sized territory), `WAVE_REATTACK_SECS=600`,
     `MOB_TICK=1s`, `RAID_TICK=30s`.
   - Mob & structure stat tables (kinds → hp/dps/drop) as pure structs/constants
     — unit-testable without SpacetimeDB.

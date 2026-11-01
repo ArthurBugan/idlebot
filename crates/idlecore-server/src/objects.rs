@@ -11,10 +11,10 @@ use crate::economy::{add_xp, find_player};
 use crate::types::{
     match_recipe, object_removed, player, player_item, world_object, BENCH_LOG_COST,
     CRAFT_XP, GATHER_XP, GRASS_GROWTH_SECS, GRASS_PER_TUFT, HARVEST_TREE_XP, ITEM_AXE, ITEM_GRASS,
-    ITEM_LOG, ITEM_SEED, ITEM_STONE, ITEM_WOOD, ITEM_WORKBENCH, MAX_OBJECTS_PER_HEX, OBJ_CRAFT_BENCH,
+    ITEM_LOG, ITEM_METAL_PART, ITEM_SEED, ITEM_STONE, ITEM_WOOD, ITEM_WORKBENCH, MAX_OBJECTS_PER_HEX, OBJ_CRAFT_BENCH,
     OBJ_GRASS,
     OBJ_LOG,
-    OBJ_ROCK, OBJ_TREE, STONE_PER_ROCK, TREE_GROWTH_SECS, WOOD_PER_TREE,
+    OBJ_ROCK, OBJ_TREE, mined_metal_part, STONE_PER_ROCK, TREE_GROWTH_SECS, WOOD_PER_TREE,
 };
 use crate::world::ensure_hex;
 use idlecore_core::terrain::TerrainType;
@@ -388,6 +388,11 @@ pub fn gather_object(
             ctx.db.world_object().object_id().delete(object_id);
             consume_slot(ctx, obj.hex_id, obj.slot);
             add_item(ctx, &p.address, ITEM_STONE, STONE_PER_ROCK);
+            // Spec 023 §3.3: rocks carry a 25% Metal Part find — the
+            // early hook into the defense economy before raid drops.
+            if mined_metal_part(object_id) {
+                add_item(ctx, &p.address, ITEM_METAL_PART, 1);
+            }
             add_xp(ctx, &mut p, GATHER_XP + 1, "mine");
             tracing::info!("MINE {address}: rock @hex {}", obj.hex_id);
         }
@@ -761,6 +766,18 @@ use crate::types::WorldObject as WorldObjectRow;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rock_metal_part_is_a_deterministic_25pct_band() {
+        assert!(mined_metal_part(0));
+        assert!(mined_metal_part(24));
+        assert!(!mined_metal_part(25));
+        assert!(!mined_metal_part(99));
+        assert!(mined_metal_part(124), "band repeats per hundred");
+        // Out of 100 consecutive ids, exactly 25 hit.
+        let hits = (0..100u64).filter(|&id| mined_metal_part(id)).count();
+        assert_eq!(hits, 25);
+    }
 
     #[test]
     fn natural_spawns_never_include_trees_and_respect_biomes() {

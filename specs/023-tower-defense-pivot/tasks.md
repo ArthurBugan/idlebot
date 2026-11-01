@@ -4,6 +4,87 @@
 > building → raids → combat → e2e. Check off progressively,
 > **bindings regeneration after every server delivery**.
 
+## Progress notes (session 4, rev6)
+
+Acceptance-criteria gap audit against the spec (no playtest input yet):
+(1) §3.3 rock Metal Part drop was missing — `mine_rock` now credits 1
+MetalPart on a deterministic 25%-per-object band (`types.rs::mined_metal_part`,
+pattern matches the grass seed roll; unit test added). (2) §3.9 minimap
+territory **border** only had a fill tint — owned hexes touching unowned or
+rival land now draw a dark outline (mine-gold / rival-violet) via
+`BorderColor` on the tile nodes. (3) REV6 wave-pressure rebalance:
+`wave_size` divisor 2 → 16 (`WAVE_SIZE_DIVISOR`) — the rev5 10× territory
+saturated the 12-mob cap at 12 claimed hexes; the cap is now reached at 160
+claimed hexes so pressure escalates over the disc. Spec §3.5 + plan.md
+updated to the `/16` formula. REV6b: the "next raid in Xm" suffix left the
+bottom-left line — a proper game UI widget now owns it (top-right corner,
+draggable later if needed): gold NEXT RAID label, bold mm:ss countdown
+draining locally between server syncs (`TdView.next_wave_sync_utc` +
+`next_wave_total` for the window length → correct drain bar fraction),
+thin gold progress bar; flashes red with "RAID NOW" while a wave is open.
+Bottom-left capital panel now shows just "Capital L2 · HP 98". Client-only
+— no server republish needed. REV6c: the whole cluster moved top-left and a
+stats panel joined under it — the raid widget at 20,20, and a dark rounded
+panel at 20,122 with Gold row (⛁ / gold tint), XP row (✦ / sky-blue), and a
+Capital row (⛨ L chip + full-width HP bar green→amber→red + "hp / max"
+count, ratio from `capital_max_hp(level)`); values are the server-synced
+`ClientPlayer.gold/xp`; `fmt_short` (k/M) keeps big numbers inside the 176
+px panel (2 unit tests). `update_td_hud` refit to two `ParamSet`s (5 node
+writers, 6 span writers) instead of the Without matrix. REV6d: bottom-left
+panels deleted — the idle gains panel (idle.rs module removed; offline
+approval toast in hud.rs untouched) and the capital status line were
+duplicates of the server-synced stats cluster; top-left cluster is now the
+single HUD home for gold / XP and the raid countdown. REV6e: Minecraft-style
+XP bar lives on the hotbar — thin dark trough (full hotbar width, 1px
+border) with a #80ff20-green fill for the current level ring, green level
+number centered above it; driven by server-synced `ClientPlayer.xp` via the
+new core helper `progression::level_progress(total_xp) → (level, into,
+needed, frac)` (+2 core tests, 373). Top-left cluster dropped its ✦ XP row
+(no duplicate), keeping gold + capital. REV6f: XP ring numbers added —
+"xp / needed" readout (from `level_progress`'s into/needed) pinned to the
+bar header's right edge in 11px off-white; header row legalized (both the
+level and the count are root `Text` nodes — the first-cut `TextSpan` had no
+`Text` root and would not have rendered); count/level writers merged into a
+2-query `ParamSet`. REV6g: countdown stuck at `--:--` root-caused — the
+raid-widget and stats-panel writers still queried `TextSpan` while those
+entities are root `Text` nodes (zero matches → initial string never
+replaced); writers now mutate `Text`. Also: stats panel always-visible
+(sits `Flex` from update; gold shows before a capital exists), and the
+label scales with the window — `mm:ss` under 10 min, `12m04` to 2 h,
+`22h12m` beyond (`fmt_countdown` pure fn + 1 test, client net_tests 3+
+... 16 total). REV6h (WORKING TREE, unpublished): debug panel (F1/Z)
+rebuilt — buttons never had an `Interaction` component at all (the
+hud_buttons query matched nothing) AND the old 10,10 panel sat under the
+new raid widget/stats cluster. New panel = the Spec 023 top-left-cluster
+pattern (dark 0.85 alpha, 1.5px blue border, radius 9, FiraSans "🛠 DEBUG
+(F1 to hide)" header) at bottom-left 20,20, full-width buttons with
+hover/press tint (`hud_button_tint`). REV7 (WORKING TREE): buildable-area
+ground layer redone + real buildings menu — (1) new procedural pointy-top
+hexagon texture (`TdHexTex`, rim α≈0.95 over fill α≈0.30) replaces the
+pinhead SLOT_SIZE squares for BOTH the per-hex build hints and the gold /
+violet ownership `TdOverlay`, colors retuned to teal (build), gold
+(capital-place), azure (claim) at ~0.9 tint; (2) B no longer blind-cycles —
+it opens the `🛠 BUILDINGS` menu (centered above the hotbar, cluster-panel
+language: dark, 1.5px teal border, radius 9) with one full-width row per
+`BUILDABLES` kind: `ImageNode` icon from `TdTextures`, display name,
+static cost string; clicking a row arms `TdBuildMode`, closes the menu and
+reports costs via toast; armed row highlights teal (border+bg, `td_build_row_tint`,
+`mode.is_changed`-gated), ESC/B close + disarm, E-flow and TdBuildMode
+unchanged for plugin.rs. Published to `db.nestfeed.app` (constants +
+rock-drop only — no schema change). NO commit yet — waiting for the
+owner's go-ahead.
+
+## Progress notes (session 4, rev5)
+
+Playtest-driven tuning: (1) capital territory ~10× bigger — claim disc base
+19 → 217 hexes (`CLAIM_RADIUS_BASE` 2 → 8, +1/level cap 5 → 15) with the
+placement spacing scaled to match (8 → 24 rings). (2) minimap capital
+markers — a diamond per live capital anywhere on the map, gold = mine,
+violet = other players', flashing red while a raid wave is open (new
+`TdTerritory.wave_targets` cache fed from open `raid_wave` rows).
+(3) T3.2 scheduler tests at the pure-helper level (see T3.2 notes).
+NO commit/publish yet — waiting for the owner's go-ahead.
+
 ## Progress notes (session 3, D5 complete)
 Client layer + e2e are green: core 372 / server 67 / client 13; the real
 client boots (B0001 fixed — `Without`-disjoint UI queries in
@@ -54,8 +135,12 @@ self-cleaning through the destruction cascade.
 - [x] **T3.1** — `scheduler.rs` + `mobs.rs::spawn_wave`: eligibility (grace
       windows, one active wave, offline-protection per user rev2 — removed),
       border spawn hexes, pressure-based `wave_size` (cap 12).
-- [ ] **T3.2** — Scheduler tests: grace suppression, single-wave invariant,
-      border-hex selection (reducer-level; needs mock-host harness).
+- [x] **T3.2** — Scheduler tests: grace suppression, single-wave invariant,
+      border-hex selection. REV5: landed at the pure-helper level —
+      `wave_eligible` (grace/reattack/single-wave gate) and `frontier_hexes` +
+      `pick_border_points` (deterministic frontier, water/unmaterialized
+      skipping) extracted from `raid_tick`/`spawn_wave`; 6 new tests. Full
+      reducer-level runs still need a mock-host harness.
 - [x] **T3.3** — Client: raid banner (top-center, display toggles from the
       open-wave cache, raider count), minimap capital hex flashes red while
       a wave is open; ownership overlays breathe during raids.
