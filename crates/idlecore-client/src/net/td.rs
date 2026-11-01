@@ -638,9 +638,10 @@ fn sync_td_entities(
         let max = cfg::capital_max_hp(row.level);
         let ratio = clamp_ratio(row.hp as f32, max as f32);
         // The house is 128×112 — bottom-anchored so the base sits inside the
-        // hex instead of floating; hash-hex building scale reads as "city".
+        // hex instead of floating. ~11 wu tall = twice a person (5.5), the
+        // size a city hall reads at hex scale (17.3 wu wide).
         let aspect = td_tex.capital.1;
-        let height = 4.8;
+        let height = 11.0;
         let pos = Vec3::new(cx, cy + 0.8, prop_depth(cy) + 18.0);
         commands.spawn((
             TdCapitalMarker(row.owner.clone()),
@@ -656,10 +657,10 @@ fn sync_td_entities(
         .with_child((
             Sprite {
                 color: bar_color(ratio),
-                custom_size: Some(Vec2::new(4.4 * ratio, 0.34)),
+                custom_size: Some(Vec2::new(6.6 * ratio, 0.4)),
                 ..default()
             },
-            Transform::from_xyz(0.0, height + 0.35, 0.05),
+            Transform::from_xyz(0.0, height + 0.5, 0.05),
         ));
     }
 
