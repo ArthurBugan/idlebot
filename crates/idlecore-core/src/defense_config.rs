@@ -424,6 +424,115 @@ pub fn boss_wave(wave_index: u64, capital_level: u32) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// REV3 §14 — named threat patterns (hand-tuned ladders per wave index)
+// ---------------------------------------------------------------------------
+
+/// Build a pattern composition for `size` mobs from `eligible` kinds: named
+/// picks fall back to the first eligible kind when gated out, and the wave
+/// never empties or over-fills.
+fn pattern_kinds(
+    counts: &[(&'static str, usize)],
+    eligible: &[&'static str],
+    size: usize,
+) -> Vec<&'static str> {
+    let fallback = *eligible.first().unwrap_or(&"Slime");
+    let mut out = Vec::with_capacity(size);
+    for (name, want) in counts {
+        if eligible.contains(name) {
+            for _ in 0..*want {
+                if out.len() < size {
+                    out.push(*name);
+                }
+            }
+        }
+    }
+    while out.len() < size {
+        out.push(fallback);
+    }
+    out
+}
+
+/// Named pattern for one wave (deterministic, integer). Cadences pick the
+/// first match: Scout(s) opening, then Demolition > Volley > Sap Team >
+/// Swarm, each gated by its minimum capital level. `None` keeps the plain
+/// cycle from [`mob_kinds_for_level`] (§3 "cycle"); the boss cadence
+/// ([`boss_wave`]) stays independent of patterns, per §4.
+pub fn wave_pattern(
+    wave_index: u64,
+    size: usize,
+    capital_level: u32,
+) -> Option<(&'static str, Vec<&'static str>)> {
+    let eligible = eligible_names(capital_level);
+
+    // Scout Line (§14): wave 0 of a ladder — pure fodder, teaches the loop.
+    if wave_index % 8 == 0 {
+        let shields = size / 2;
+        return Some((
+            "Scout Line",
+            pattern_kinds(
+                &[("Slime", size - shields), ("Blue Slime", shields)],
+                &eligible,
+                size,
+            ),
+        ));
+    }
+    // Demolition: the bomb line breaks a passive wall funnel (≥ L3).
+    if wave_index % 7 == 5 && capital_level >= 3 {
+        let bombs = size.min(2);
+        return Some((
+            "Demolition",
+            pattern_kinds(
+                &[("Bomb Goblin", bombs), ("Spear Goblin", size - bombs)],
+                &eligible,
+                size,
+            ),
+        ));
+    }
+    // Volley: ranged pressure that outruns slow towers (≥ L2).
+    if wave_index % 5 == 2 && capital_level >= 2 {
+        let archers = ((size + 2) / 3).max(1).min(size);
+        return Some((
+            "Volley",
+            pattern_kinds(
+                &[("Archer Goblin", archers), ("Blue Slime", size - archers)],
+                &eligible,
+                size,
+            ),
+        ));
+    }
+    // Sap Team: the wall-chew line makes barricades matter (≥ L2).
+    if wave_index % 4 == 1 && capital_level >= 2 {
+        let spears = size / 2 + size % 2;
+        return Some((
+            "Sap Team",
+            pattern_kinds(
+                &[("Spear Goblin", spears), ("Slime", size - spears)],
+                &eligible,
+                size,
+            ),
+        ));
+    }
+    // Swarm: dense fodder for focus-fire practice (every 3rd wave).
+    if wave_index % 3 == 2 {
+        let out: Vec<&str> = (0..size)
+            .map(|i| if i % 2 == 1 { "Blue Slime" } else { "Slime" })
+            .map(|name| {
+                if eligible.contains(&name) { name } else { *eligible.first().unwrap_or(&"Slime") }
+            })
+            .collect();
+        return Some(("Swarm", out));
+    }
+    None
+}
+
+fn eligible_names(level: u32) -> Vec<&'static str> {
+    mob_kinds_for_level(level)
+        .into_iter()
+        .map(|k| k.name)
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Defense structures
 // ---------------------------------------------------------------------------
 
@@ -610,6 +719,75 @@ mod tests {
         let all = wave_composition(15, 5);
         assert!(all.contains(&"Myconid Red"), "{all:?}");
         assert!(all.contains(&"Venom Bloom"), "{all:?}");
+    }
+
+    #[test]
+    fn wave_patterns_fire_on_cadence_and_preserve_size() {
+        // Wave 0: Scout Line opener, pure fodder.
+        let (name, comp) = wave_pattern(0, 5, 1).unwrap();
+        assert_eq!(name, "Scout Line");
+        assert_eq!(comp.len(), 5);
+        assert!(comp.iter().all(|k| *k == "Slime" || *k == "Blue Slime"));
+        // Scout repeats every 8.
+        assert_eq!(wave_pattern(8, 3, 1).unwrap().0, "Scout Line");
+        // Sap Team on %4 == 1 at L2+, gated at L1.
+        assert_eq!(wave_pattern(1, 4, 2).unwrap().0, "Sap Team");
+        assert!(wave_pattern(1, 4, 1).is_none(), "gated at L1");
+        // An index that matches Sap (%4==1) but not the higher-priority
+        // cadences (Demolition %7==5, Volley %5==2).
+        let (name, comp) = wave_pattern(9, 4, 3).unwrap();
+        assert_eq!(name, "Sap Team");
+        assert_eq!(comp.len(), 4);
+        // Volley on %5 == 2, level-gated (at L1 that index falls back to
+        // the Swarm cadence instead, which is ungated).
+        assert_eq!(wave_pattern(2, 7, 2).unwrap().0, "Volley");
+        assert_ne!(
+            wave_pattern(2, 7, 1).unwrap().0,
+            "Volley",
+            "gated at L1 — falls back to a lower cadence, never Volley"
+        );
+        // Demolition on %7 == 5, ≥ L3; bombs capped at 2.
+        let (name, comp) = wave_pattern(12, 4, 3).unwrap();
+        assert_eq!(name, "Demolition");
+        assert_eq!(comp.iter().filter(|k| **k == "Bomb Goblin").count(), 2);
+        // Swarm fodder on %3 == 2 (index, at L1, avoiding every
+        // higher-priority cadence: 11 hits Scout? no — Demolition/Volley/
+        // Sap all miss, Swarm is the only match).
+        let (name, comp) = wave_pattern(11, 3, 1).unwrap();
+        assert_eq!(name, "Swarm");
+        assert!(comp.iter().all(|k| k.ends_with("Slime") || k.ends_with("Blue Slime")));
+        // Boss cadence is untouched by patterns.
+        assert!(boss_wave(3, 4));
+        assert!(!boss_wave(3, 3));
+    }
+
+    #[test]
+    fn wave_patterns_never_emit_locked_kinds() {
+        // A pattern must never emit a kind the capital cannot field: every
+        // kind in every composition of indices 0..24 exists in the roster
+        // and meets min_capital_level for that level.
+        for level in 1..=5u32 {
+            for idx in 0..24u64 {
+                if let Some((name, comp)) = wave_pattern(idx, 5, level) {
+                    assert!(
+                        matches!(
+                            name,
+                            "Scout Line" | "Sap Team" | "Volley" | "Demolition" | "Swarm"
+                        ),
+                        "{name} not in the named set"
+                    );
+                    for kind in &comp {
+                        let k = mob_kind(kind)
+                            .unwrap_or_else(|| panic!("{name} emitted unknown kind {kind}"));
+                        assert!(
+                            k.min_capital_level <= level,
+                            "{name} emitted {kind} (needs L{}), {level}",
+                            k.min_capital_level
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

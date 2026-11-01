@@ -19,6 +19,8 @@ pub mod chest_withdraw_reducer;
 pub mod claim_idle_gains_reducer;
 pub mod claim_land_reducer;
 pub mod clean_reducer;
+pub mod combat_event_table;
+pub mod combat_event_type;
 pub mod cosmetic_owned_type;
 pub mod craft_reducer;
 pub mod debug_force_wave_reducer;
@@ -64,6 +66,8 @@ pub mod raid_wave_type;
 pub mod release_escrow_reducer;
 pub mod remove_defense_reducer;
 pub mod renew_listing_reducer;
+pub mod scheduled_combat_cleanup_table;
+pub mod scheduled_combat_cleanup_type;
 pub mod scheduled_eco_maintenance_table;
 pub mod scheduled_eco_maintenance_type;
 pub mod scheduled_idle_gains_table;
@@ -110,6 +114,8 @@ pub use chest_withdraw_reducer::chest_withdraw;
 pub use claim_idle_gains_reducer::claim_idle_gains;
 pub use claim_land_reducer::claim_land;
 pub use clean_reducer::clean;
+pub use combat_event_table::*;
+pub use combat_event_type::CombatEvent;
 pub use cosmetic_owned_type::CosmeticOwned;
 pub use craft_reducer::craft;
 pub use debug_force_wave_reducer::debug_force_wave;
@@ -155,6 +161,8 @@ pub use raid_wave_type::RaidWave;
 pub use release_escrow_reducer::release_escrow;
 pub use remove_defense_reducer::remove_defense;
 pub use renew_listing_reducer::renew_listing;
+pub use scheduled_combat_cleanup_table::*;
+pub use scheduled_combat_cleanup_type::ScheduledCombatCleanup;
 pub use scheduled_eco_maintenance_table::*;
 pub use scheduled_eco_maintenance_type::ScheduledEcoMaintenance;
 pub use scheduled_idle_gains_table::*;
@@ -658,6 +666,7 @@ impl __sdk::Reducer for Reducer {
 pub struct DbUpdate {
     capital: __sdk::TableUpdate<Capital>,
     chest_item: __sdk::TableUpdate<ChestItem>,
+    combat_event: __sdk::TableUpdate<CombatEvent>,
     defense_structure: __sdk::TableUpdate<DefenseStructure>,
     eco_transaction: __sdk::TableUpdate<EcoTransaction>,
     hex_tile: __sdk::TableUpdate<HexTile>,
@@ -670,6 +679,7 @@ pub struct DbUpdate {
     player_item: __sdk::TableUpdate<PlayerItem>,
     player_vehicle: __sdk::TableUpdate<VehicleOwned>,
     raid_wave: __sdk::TableUpdate<RaidWave>,
+    scheduled_combat_cleanup: __sdk::TableUpdate<ScheduledCombatCleanup>,
     scheduled_eco_maintenance: __sdk::TableUpdate<ScheduledEcoMaintenance>,
     scheduled_idle_gains: __sdk::TableUpdate<ScheduledIdleGains>,
     scheduled_log: __sdk::TableUpdate<ScheduledLog>,
@@ -696,6 +706,9 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
                 "chest_item" => db_update
                     .chest_item
                     .append(chest_item_table::parse_table_update(table_update)?),
+                "combat_event" => db_update
+                    .combat_event
+                    .append(combat_event_table::parse_table_update(table_update)?),
                 "defense_structure" => db_update
                     .defense_structure
                     .append(defense_structure_table::parse_table_update(table_update)?),
@@ -732,6 +745,9 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
                 "raid_wave" => db_update
                     .raid_wave
                     .append(raid_wave_table::parse_table_update(table_update)?),
+                "scheduled_combat_cleanup" => db_update.scheduled_combat_cleanup.append(
+                    scheduled_combat_cleanup_table::parse_table_update(table_update)?,
+                ),
                 "scheduled_eco_maintenance" => db_update.scheduled_eco_maintenance.append(
                     scheduled_eco_maintenance_table::parse_table_update(table_update)?,
                 ),
@@ -800,6 +816,9 @@ impl __sdk::DbUpdate for DbUpdate {
         diff.chest_item = cache
             .apply_diff_to_table::<ChestItem>("chest_item", &self.chest_item)
             .with_updates_by_pk(|row| &row.key);
+        diff.combat_event = cache
+            .apply_diff_to_table::<CombatEvent>("combat_event", &self.combat_event)
+            .with_updates_by_pk(|row| &row.event_id);
         diff.defense_structure = cache
             .apply_diff_to_table::<DefenseStructure>("defense_structure", &self.defense_structure)
             .with_updates_by_pk(|row| &row.structure_id);
@@ -836,6 +855,12 @@ impl __sdk::DbUpdate for DbUpdate {
         diff.raid_wave = cache
             .apply_diff_to_table::<RaidWave>("raid_wave", &self.raid_wave)
             .with_updates_by_pk(|row| &row.wave_id);
+        diff.scheduled_combat_cleanup = cache
+            .apply_diff_to_table::<ScheduledCombatCleanup>(
+                "scheduled_combat_cleanup",
+                &self.scheduled_combat_cleanup,
+            )
+            .with_updates_by_pk(|row| &row.scheduled_id);
         diff.scheduled_eco_maintenance = cache
             .apply_diff_to_table::<ScheduledEcoMaintenance>(
                 "scheduled_eco_maintenance",
@@ -903,6 +928,9 @@ impl __sdk::DbUpdate for DbUpdate {
                 "chest_item" => db_update
                     .chest_item
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "combat_event" => db_update
+                    .combat_event
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "defense_structure" => db_update
                     .defense_structure
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
@@ -938,6 +966,9 @@ impl __sdk::DbUpdate for DbUpdate {
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "raid_wave" => db_update
                     .raid_wave
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "scheduled_combat_cleanup" => db_update
+                    .scheduled_combat_cleanup
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "scheduled_eco_maintenance" => db_update
                     .scheduled_eco_maintenance
@@ -994,6 +1025,9 @@ impl __sdk::DbUpdate for DbUpdate {
                 "chest_item" => db_update
                     .chest_item
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "combat_event" => db_update
+                    .combat_event
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "defense_structure" => db_update
                     .defense_structure
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
@@ -1029,6 +1063,9 @@ impl __sdk::DbUpdate for DbUpdate {
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "raid_wave" => db_update
                     .raid_wave
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "scheduled_combat_cleanup" => db_update
+                    .scheduled_combat_cleanup
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "scheduled_eco_maintenance" => db_update
                     .scheduled_eco_maintenance
@@ -1083,6 +1120,7 @@ impl __sdk::DbUpdate for DbUpdate {
 pub struct AppliedDiff<'r> {
     capital: __sdk::TableAppliedDiff<'r, Capital>,
     chest_item: __sdk::TableAppliedDiff<'r, ChestItem>,
+    combat_event: __sdk::TableAppliedDiff<'r, CombatEvent>,
     defense_structure: __sdk::TableAppliedDiff<'r, DefenseStructure>,
     eco_transaction: __sdk::TableAppliedDiff<'r, EcoTransaction>,
     hex_tile: __sdk::TableAppliedDiff<'r, HexTile>,
@@ -1095,6 +1133,7 @@ pub struct AppliedDiff<'r> {
     player_item: __sdk::TableAppliedDiff<'r, PlayerItem>,
     player_vehicle: __sdk::TableAppliedDiff<'r, VehicleOwned>,
     raid_wave: __sdk::TableAppliedDiff<'r, RaidWave>,
+    scheduled_combat_cleanup: __sdk::TableAppliedDiff<'r, ScheduledCombatCleanup>,
     scheduled_eco_maintenance: __sdk::TableAppliedDiff<'r, ScheduledEcoMaintenance>,
     scheduled_idle_gains: __sdk::TableAppliedDiff<'r, ScheduledIdleGains>,
     scheduled_log: __sdk::TableAppliedDiff<'r, ScheduledLog>,
@@ -1122,6 +1161,11 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
     ) {
         callbacks.invoke_table_row_callbacks::<Capital>("capital", &self.capital, event);
         callbacks.invoke_table_row_callbacks::<ChestItem>("chest_item", &self.chest_item, event);
+        callbacks.invoke_table_row_callbacks::<CombatEvent>(
+            "combat_event",
+            &self.combat_event,
+            event,
+        );
         callbacks.invoke_table_row_callbacks::<DefenseStructure>(
             "defense_structure",
             &self.defense_structure,
@@ -1158,6 +1202,11 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
             event,
         );
         callbacks.invoke_table_row_callbacks::<RaidWave>("raid_wave", &self.raid_wave, event);
+        callbacks.invoke_table_row_callbacks::<ScheduledCombatCleanup>(
+            "scheduled_combat_cleanup",
+            &self.scheduled_combat_cleanup,
+            event,
+        );
         callbacks.invoke_table_row_callbacks::<ScheduledEcoMaintenance>(
             "scheduled_eco_maintenance",
             &self.scheduled_eco_maintenance,
@@ -1876,6 +1925,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
     fn register_tables(client_cache: &mut __sdk::ClientCache<Self>) {
         capital_table::register_table(client_cache);
         chest_item_table::register_table(client_cache);
+        combat_event_table::register_table(client_cache);
         defense_structure_table::register_table(client_cache);
         eco_transaction_table::register_table(client_cache);
         hex_tile_table::register_table(client_cache);
@@ -1888,6 +1938,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
         player_item_table::register_table(client_cache);
         player_vehicle_table::register_table(client_cache);
         raid_wave_table::register_table(client_cache);
+        scheduled_combat_cleanup_table::register_table(client_cache);
         scheduled_eco_maintenance_table::register_table(client_cache);
         scheduled_idle_gains_table::register_table(client_cache);
         scheduled_log_table::register_table(client_cache);
@@ -1904,6 +1955,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
     const ALL_TABLE_NAMES: &'static [&'static str] = &[
         "capital",
         "chest_item",
+        "combat_event",
         "defense_structure",
         "eco_transaction",
         "hex_tile",
@@ -1916,6 +1968,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
         "player_item",
         "player_vehicle",
         "raid_wave",
+        "scheduled_combat_cleanup",
         "scheduled_eco_maintenance",
         "scheduled_idle_gains",
         "scheduled_log",

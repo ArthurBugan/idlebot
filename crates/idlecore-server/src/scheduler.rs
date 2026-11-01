@@ -4,8 +4,8 @@
 //! server-side exclusively.
 
 use spacetimedb::{ReducerContext, ScheduleAt, Table, TimeDuration};
-use crate::types::{player, hex_tile, scheduled_idle_gains, scheduled_plant_growth, scheduled_voice_cleanup, scheduled_market_cleanup, scheduled_eco_maintenance, 
-    now_secs, scheduled_log, ScheduledLog,
+use crate::types::{player, hex_tile, scheduled_idle_gains, scheduled_plant_growth, scheduled_voice_cleanup, scheduled_market_cleanup, scheduled_eco_maintenance,
+    now_secs, scheduled_log, ScheduledLog, combat_event,
 };
 use std::time::Duration;
 
@@ -98,6 +98,23 @@ pub fn voice_cleanup_tick_body(ctx: &ReducerContext) {
 pub fn market_cleanup_tick_body(ctx: &ReducerContext) {
     crate::market::cleanup(ctx);
     audit(ctx, "market_cleanup", "listings swept");
+}
+
+/// Spec 025 REV3 §10: every 30 s, scrub combat_event rows older than 30 s.
+pub fn combat_cleanup_tick_body(ctx: &ReducerContext) {
+    let now = now_secs(ctx);
+    let stale: Vec<u64> = ctx
+        .db
+        .combat_event()
+        .iter()
+        .filter(|e| e.tick_at + 30 < now)
+        .map(|e| e.event_id)
+        .collect();
+    let n = stale.len();
+    for id in stale {
+        ctx.db.combat_event().event_id().delete(id);
+    }
+    audit(ctx, "combat_cleanup", format!("scrubbed {n} fx rows"));
 }
 
 /// Hourly: eco decay + pollution re-spread + daily vehicle maintenance.

@@ -13,8 +13,9 @@ use idlecore_core::grid::TileCoord;
 use crate::capital::destroy_capital;
 use crate::objects::add_item;
 use crate::types::{
-    capital, defense_structure, tile_center, hex_coords_of, tile_distance, tile_id_of,
-    hex_tile, mob, now_secs, raid_wave, territory, Capital, DefenseStructure, Mob, RaidWave,
+    capital, combat_event, defense_structure, tile_center, hex_coords_of, tile_distance,
+    tile_id_of, hex_tile, mob, now_secs, raid_wave, territory, Capital, DefenseStructure, Mob,
+    RaidWave, CE_BOMB, CE_CAPITAL_HIT, CE_MELEE, CE_SHOT, CE_SPLASH, CE_STRUCT_FELL,
 };
 
 const MOB_TICK_AUDIT: &str = "mob_tick";
@@ -120,7 +121,6 @@ fn spawn_wave(ctx: &ReducerContext, capital: &Capital, now: u64) -> bool {
         .filter(&capital.owner)
         .count();
     let size = cfg::wave_size(claimed, capital.level);
-    let composition = cfg::wave_composition(size, capital.level);
     // Boss cadence (Spec 025 §4): every 4th wave leads with a Big Slime.
     let wave_index = ctx
         .db
@@ -128,9 +128,19 @@ fn spawn_wave(ctx: &ReducerContext, capital: &Capital, now: u64) -> bool {
         .wave_by_capital()
         .filter(capital.capital_id)
         .count() as u64;
-    let mut composition: Vec<&'static str> = composition;
+    // REV3 §14: named threat pattern first (hand-tuned ladder), plain
+    // kind-cycle fallback when the index fires no pattern; the boss rule
+    // still overrides the lead slot.
+    let mut composition: Vec<&'static str> =
+        cfg::wave_pattern(wave_index, size, capital.level)
+            .map(|(_, comp)| comp)
+            .unwrap_or_else(|| cfg::wave_composition(size, capital.level));
     if cfg::boss_wave(wave_index, capital.level) {
-        composition[0] = "Big Slime";
+        if composition.is_empty() {
+            composition.push("Big Slime");
+        } else {
+            composition[0] = "Big Slime";
+        }
     }
     // Rooted blooms (Spec 025 §4) sprout inside the territory, at ≤2 hexes
     // from their capital, instead of marching over the frontier.
@@ -307,6 +317,146 @@ pub fn raid_tick(ctx: &ReducerContext) {
 // 1s combat simulation
 // ---------------------------------------------------------------------------
 
+/// Slot sentinel (REV3 §10 fx table): the event lands at the hex center,
+/// not on one of the 4-per-tile slot cells.
+const SLOT_CENTER_X: i32 = -1;
+const SLOT_CENTER_Y: i32 = -1;
+
+/// Public one-liner for the tower-fire tracer event (REV3 §10): the tick
+/// loop is the only caller, kept on `mobs` to reuse the same table.
+pub(crate) fn emit_tower_event(
+    ctx: &ReducerContext,
+    tower: &crate::types::DefenseStructure,
+    target_hex_id: u64,
+    now: u64,
+) {
+    let wave_id = ctx
+        .db
+        .raid_wave()
+        .wave_by_capital()
+        .filter(tower.capital_id)
+        .find(|w| w.ended_at.is_none())
+        .map(|w| w.wave_id)
+        .unwrap_or(0);
+    ctx.db.combat_event().insert(crate::types::CombatEvent {
+        event_id: 0,
+        capital_id: tower.capital_id,
+        wave_id,
+        tick_at: now,
+        kind: CE_SHOT.to_string(),
+        attacker_mob: 0, // 0 = tower shot (client discriminator)
+        target_hex_id,
+        target_slot_x: SLOT_CENTER_X,
+        target_slot_y: SLOT_CENTER_Y,
+        detail: "tower".to_string(),
+    });
+}
+
+/// Event tag per attacker (§13 fx table): the bomb lobs, ranged kinds shoot
+/// their column, everyone else melees.
+fn attack_kind_tag(kind: &cfg::MobKind, target_is_wall: bool) -> &'static str {
+    let _ = target_is_wall;
+    if kind.splash {
+        CE_BOMB
+    } else if kind.range_hexes > 1 {
+        CE_SHOT
+    } else {
+        CE_MELEE
+    }
+}
+
+/// Write one combat_event row (Spec 025 REV3 §10): the client's fx feed.
+/// Fire-and-forget — never part of a simulation result.
+fn emit_event(
+    ctx: &ReducerContext,
+    capital_id: u64,
+    wave_id: u64,
+    now: u64,
+    kind: &str,
+    attacker_mob: u64,
+    target_hex_id: u64,
+    target_slot: (i32, i32),
+    detail: &str,
+) {
+    ctx.db.combat_event().insert(crate::types::CombatEvent {
+        event_id: 0,
+        capital_id,
+        wave_id,
+        tick_at: now,
+        kind: kind.to_string(),
+        attacker_mob,
+        target_hex_id,
+        target_slot_x: target_slot.0,
+        target_slot_y: target_slot.1,
+        detail: detail.to_string(),
+    });
+}
+
+/// Ring offsets for melee encircle spots (§12) — deterministic order around
+/// a target tile, wind-rose with corners first.
+const ENCIRCLE_RING: [(i32, i32); 8] = [
+    (-1, -1),
+    (1, -1),
+    (-1, 1),
+    (1, 1),
+    (-1, 0),
+    (1, 0),
+    (0, -1),
+    (0, 1),
+];
+
+/// Pure encircle pick (§12): the `rank`-th melee attacker of one target
+/// takes the `rank`-th ring tile (wrapping) — a swarm reads as surrounding
+/// the target instead of stacking into one pixel.
+pub fn encircle_spot(rank: u32) -> (i32, i32) {
+    ENCIRCLE_RING[(rank % ENCIRCLE_RING.len() as u32) as usize]
+}
+
+/// Pure blocked-aware greedy step (REV3 §11): of the candidate neighbors,
+/// tiles in `blocked` (standing walls, the capital hex) are unpas­sable; of
+/// the rest the one nearest the target wins, and ONLY strictly-closing
+/// steps count (a fully walled ring returns `None` → the caller chews the
+/// nearest wall instead of bubbling around the plaza forever).
+pub fn step_toward_hex_avoiding(
+    q: i32,
+    r: i32,
+    target_q: i32,
+    target_r: i32,
+    blocked: &std::collections::HashSet<(i32, i32)>,
+) -> Option<(i32, i32)> {
+    let cur = tile_distance(q, r, target_q, target_r);
+    TileCoord::new(q, r)
+        .neighbors()
+        .into_iter()
+        .filter(|&(nq, nr)| !blocked.contains(&(nq, nr)))
+        .filter(|&(nq, nr)| tile_distance(nq, nr, target_q, target_r) < cur)
+        .min_by_key(|&(nq, nr)| tile_distance(nq, nr, target_q, target_r))
+}
+
+/// Pure nearest-wall pick (§11): when every greedy step is blocked, the mob
+/// attacks the wall hex nearest to it within `max_dist` (ties → nearest to
+/// its march target → lowest structure id). Fully integer, no RNG. A `max`
+/// of 1 keeps the chew in melee reach — nothing chews from afar.
+pub fn nearest_wall_target(
+    walls: &[(u64, i32, i32)], // (structure_id, hex q, hex r)
+    from: (i32, i32),
+    target: (i32, i32),
+    max_dist: i32,
+) -> Option<u64> {
+    walls
+        .iter()
+        .copied()
+        .filter(|&(_, wq, wr)| tile_distance(from.0, from.1, wq, wr) <= max_dist)
+        .min_by_key(|&(sid, wq, wr)| {
+            (
+                tile_distance(from.0, from.1, wq, wr),
+                tile_distance(wq, wr, target.0, target.1),
+                sid,
+            )
+        })
+        .map(|(sid, _, _)| sid)
+}
+
 /// Pure engagement pick (Spec 023 §3.5 + Spec 025 §4, unit-testable): the
 /// nearest structure within the mob's attack `range` wins the mob's
 /// attention; otherwise the capital when within range; otherwise both are
@@ -386,6 +536,9 @@ pub fn tick(ctx: &ReducerContext) {
             .min_by_key(|m| (tile_distance(m.hex_q, m.hex_r, tq, tr), m.mob_id));
         if let Some(target) = target {
             *mob_damage.entry(target.mob_id).or_insert(0) += dps;
+            // Tracer fx (REV3 §10/§13): towers shoot too; the client tells
+            // tower shots from mob shots by attacker_mob == 0.
+            crate::mobs::emit_tower_event(ctx, tower, target.hex_id, now);
         }
     }
 
@@ -419,6 +572,61 @@ pub fn tick(ctx: &ReducerContext) {
         })
         .collect();
 
+    // Standing walls are impassable (Spec 025 REV3 §11): a march step onto a
+    // wall hex is rejected and the mob chews that wall instead. The capital
+    // hex is blocked too — attackers stop on the ring, not on the roof.
+    let blocked: std::collections::HashSet<(i32, i32)> = tower_hexes
+        .values()
+        .filter(|(_, _, w)| *w)
+        .map(|(hq, hr, _)| (*hq, *hr))
+        .chain(
+            /* riding the capital hex looks wrong */
+            capitals.values().map(|c| {
+                let (q, r) = hex_coords_of(c.hex_id);
+                (q, r)
+            }),
+        )
+        .collect();
+    let walls: Vec<(u64, i32, i32)> = tower_hexes
+        .iter()
+        .filter(|(_, (_, _, w))| *w)
+        .map(|(sid, (hq, hr, _))| (*sid, *hq, *hr))
+        .collect();
+
+    // Pass 1 — engagement ranks for the encircle ring (REV3 §12): melee
+    // attackers of one target take deterministic ring spots by mob id.
+    let mut rings: HashMap<u64, u32> = HashMap::new();
+    {
+        let mut counts: HashMap<(u64, bool), u32> = HashMap::new();
+        for mob in mob_rows
+            .iter()
+            .filter(|m| !mob_damage.contains_key(&m.mob_id))
+        {
+            let Some(kind) = cfg::mob_kind(&mob.kind) else { continue };
+            if kind.range_hexes != 1 {
+                continue; // ranged kinds hold their stand-off, no ring
+            }
+            let Some(capital) = capitals.get(&mob.capital_id) else { continue };
+            if capital.destroyed {
+                continue;
+            }
+            let (cq, cr) = hex_coords_of(capital.hex_id);
+            let nearby: Vec<(u64, i32)> = tower_hexes
+                .iter()
+                .map(|(sid, (hq, hr, _))| (*sid, tile_distance(mob.hex_q, mob.hex_r, *hq, *hr)))
+                .collect();
+            let (target_structure, attacking_capital) =
+                engagement_target(&nearby, tile_distance(mob.hex_q, mob.hex_r, cq, cr), 1);
+            if target_structure.is_none() && !attacking_capital {
+                continue;
+            }
+            let key = (target_structure.unwrap_or(0), attacking_capital);
+            let rank = counts.get(&key).copied().unwrap_or(0);
+            counts.insert(key, rank + 1);
+            rings.insert(mob.mob_id, rank);
+        }
+    }
+
     for mob in mob_rows.iter() {
         if mob_damage.contains_key(&mob.mob_id) {
             continue; // fell to tower fire this tick
@@ -445,24 +653,104 @@ pub fn tick(ctx: &ReducerContext) {
         let (target_structure, attacking_capital) =
             engagement_target(&nearby, capital_dist, kind.range_hexes);
 
+        // Attack-event metadata (REV3 §10): which fx kind + payload detail.
+        let event = |kind_tag: &str, detail: &str, tgt: (u64, (i32, i32))| {
+            emit_event(
+                ctx,
+                capital.capital_id,
+                mob.wave_id,
+                now,
+                kind_tag,
+                mob.mob_id,
+                tgt.0,
+                tgt.1,
+                detail,
+            );
+        };
+
         if let Some(sid) = target_structure {
             // Sapper (Spec 025 §4): +wall_dps while chewing a wall.
             let is_wall = tower_hexes.get(&sid).is_some_and(|(_, _, w)| *w);
             let dmg = engagement_dps(kind, is_wall);
             *struct_damage.entry(sid).or_insert(0) += dmg;
+            let (tq, tr) = tower_hexes
+                .get(&sid)
+                .map(|&(hq, hr, _)| (hq, hr))
+                .unwrap_or((mob.hex_q, mob.hex_r));
+            event(
+                attack_kind_tag(kind, is_wall),
+                kind.name,
+                (tile_id_of(tq, tr), (SLOT_CENTER_X, SLOT_CENTER_Y)),
+            );
             // Bomb (Spec 025 §4): splash half dps onto every OTHER structure
             // adjacent to the mob.
             if kind.splash {
                 let splash = (kind.dps / 2).max(1);
                 for other in splash_targets(sid, &nearby) {
                     *struct_damage.entry(other).or_insert(0) += splash;
+                    let (sq2, sr2) = tower_hexes
+                        .get(&other)
+                        .map(|&(hq, hr, _)| (hq, hr))
+                        .unwrap_or((mob.hex_q, mob.hex_r));
+                    event(
+                        CE_SPLASH,
+                        kind.name,
+                        (tile_id_of(sq2, sr2), (SLOT_CENTER_X, SLOT_CENTER_Y)),
+                    );
                 }
             }
         } else if attacking_capital {
             *capital_damage.entry(capital.capital_id).or_insert(0) += kind.dps;
+            event(
+                attack_kind_tag(kind, false),
+                kind.name,
+                (capital.hex_id, (SLOT_CENTER_X, SLOT_CENTER_Y)),
+            );
         } else if kind.step_interval_secs > 0 {
-            // Rooted kinds (Venom Bloom, step 0) never march.
-            march(ctx, mob, kind.step_interval_secs, cq, cr);
+            // Rooted kinds (Venom Bloom, step 0) never march. Otherwise
+            // march; a fully walled-in mob chews the nearest wall (REV3 §11).
+            match march(ctx, mob, kind.step_interval_secs, cq, cr, &blocked) {
+                MarchOutcome::Stepped => {}
+                MarchOutcome::WalledIn(Some(sid)) => {
+                    *struct_damage.entry(sid).or_insert(0) += engagement_dps(kind, true);
+                    event(
+                        CE_MELEE,
+                        kind.name,
+                        (mob.hex_id, (SLOT_CENTER_X, SLOT_CENTER_Y)),
+                    );
+                }
+                MarchOutcome::WalledIn(None) => {}
+            }
+        }
+        // Encircle reposition (REV3 §12): melee attackers within one step of
+        // their ring spot take it (the client glides). Only marching melee
+        // kinds get ringed; ranged hold their stand-off.
+        if let Some(rank) = rings.get(&mob.mob_id).copied() {
+            let (tq, tr) = if attacking_capital {
+                (cq, cr)
+            } else if let Some(sid) = target_structure {
+                tower_hexes
+                    .get(&sid)
+                    .map(|&(hq, hr, _)| (hq, hr))
+                    .unwrap_or((mob.hex_q, mob.hex_r))
+            } else {
+                (mob.hex_q, mob.hex_r)
+            };
+            let (spotx, spoty) = encircle_spot(rank);
+            let (sq, sr) = (tq + spotx, tr + spoty);
+            if (mob.hex_q, mob.hex_r) != (sq, sr)
+                && tile_distance(mob.hex_q, mob.hex_r, sq, sr) <= 1
+                && kind.step_interval_secs > 0
+            {
+                let mut row = mob.clone();
+                row.hex_id = tile_id_of(sq, sr);
+                row.hex_q = sq;
+                row.hex_r = sr;
+                let (mx, my) = tile_center(sq, sr);
+                row.position_x = mx;
+                row.position_y = my;
+                ctx.db.mob().mob_id().update(row);
+            }
         }
     }
 
@@ -496,6 +784,18 @@ pub fn tick(ctx: &ReducerContext) {
                     }
                 }
                 tracing::info!("STRUCTURE-FELL structure#{sid}");
+                // Rubble crumble fx (REV3 §13 "struct_fell").
+                emit_event(
+                    ctx,
+                    s.capital_id,
+                    0,
+                    now,
+                    CE_STRUCT_FELL,
+                    0,
+                    s.hex_id,
+                    (s.slot_x, s.slot_y),
+                    &s.kind,
+                );
             }
         }
     }
@@ -508,6 +808,18 @@ pub fn tick(ctx: &ReducerContext) {
                 s.hp -= dmg;
 
                 ctx.db.capital().capital_id().update(s);
+                // Capital flash + shake + wave toast (REV3 §13 "capital_hit").
+                emit_event(
+                    ctx,
+                    cid,
+                    0,
+                    now,
+                    CE_CAPITAL_HIT,
+                    0,
+                    caprow.hex_id,
+                    (SLOT_CENTER_X, SLOT_CENTER_Y),
+                    "hit",
+                );
             } else {
                 destroy_capital(ctx, caprow.clone(), now);
             }
@@ -596,22 +908,64 @@ fn kill_or_wound(
 /// March one hex toward the capital every `interval` seconds (greedy axial
 /// descent), pinning the position to the destination hex center so the
 /// client glides between centers like it does for remote players.
-fn march(ctx: &ReducerContext, mob: &Mob, interval: u32, target_q: i32, target_r: i32) {
+///
+/// REV3 §11: standing walls and the capital hex are impassable — a step
+/// onto a blocked hex never happens. When NO strictly-closing step stays
+/// open the mob is walled in: the caller chews the nearest wall instead of
+/// bubbling (so a wall line funnels raiders and the sapper bonus matters).
+enum MarchOutcome {
+    Stepped,
+    /// Fully walled in — `Some(sid)` names the nearest wall to chew.
+    WalledIn(Option<u64>),
+}
+
+fn march(
+    ctx: &ReducerContext,
+    mob: &Mob,
+    interval: u32,
+    target_q: i32,
+    target_r: i32,
+    blocked: &std::collections::HashSet<(i32, i32)>,
+) -> MarchOutcome {
     let mut row = mob.clone();
     row.step_accum_secs += 1;
     if row.step_accum_secs < interval {
         ctx.db.mob().mob_id().update(row);
-        return;
+        return MarchOutcome::Stepped;
     }
-    let next = step_toward_hex(mob.hex_q, mob.hex_r, target_q, target_r);
-    let (x, y) = tile_center(next.0, next.1);
-    row.hex_q = next.0;
-    row.hex_r = next.1;
-    row.hex_id = tile_id_of(next.0, next.1);
-    row.position_x = x;
-    row.position_y = y;
     row.step_accum_secs = 0;
+    let next = step_toward_hex_avoiding(mob.hex_q, mob.hex_r, target_q, target_r, blocked);
+    if let Some(next) = next {
+        let (x, y) = tile_center(next.0, next.1);
+        row.hex_q = next.0;
+        row.hex_r = next.1;
+        row.hex_id = tile_id_of(next.0, next.1);
+        row.position_x = x;
+        row.position_y = y;
+        ctx.db.mob().mob_id().update(row);
+        return MarchOutcome::Stepped;
+    }
+    // Every strictly-closing step is a standing wall: name the wall to chew
+    // (REV3 §11, deterministic tie-break by distance then structure id).
+    // The chew keeps the mob's march cadence — one chew per interval.
+    let walls: Vec<(u64, i32, i32)> = ctx
+        .db
+        .defense_structure()
+        .iter()
+        .filter(|s| cfg::defense_kind(&s.kind).is_some_and(|k| k.is_wall))
+        .map(|s| {
+            let (q, r) = hex_coords_of(s.hex_id);
+            (s.structure_id, q, r)
+        })
+        .collect();
+    let chewed = nearest_wall_target(
+        &walls,
+        (mob.hex_q, mob.hex_r),
+        (target_q, target_r),
+        1,
+    );
     ctx.db.mob().mob_id().update(row);
+    MarchOutcome::WalledIn(chewed)
 }
 
 /// Pure one-hex greedy step toward a target (unit-tested: distance must
@@ -735,6 +1089,68 @@ mod tests {
         // Diagonal approach from another direction also closes.
         let (mq, mr) = step_toward_hex(-3, 4, 0, 0);
         assert!(tile_distance(mq, mr, 0, 0) < tile_distance(-3, 4, 0, 0));
+    }
+
+    #[test]
+    fn march_steps_around_walls_and_report_walled_in() {
+        use std::collections::HashSet;
+        // REV3 §11: a wall dead ahead is stepped AROUND when another
+        // strictly-closing tile exists; a full wall ring is WalledIn(None).
+        let mut blocked = HashSet::new();
+        blocked.insert((4, 0));
+        // March (5,0) → (0,0) with the direct hex walled: the path closes via
+        // (4,±1) or (4,1)... any strictly-closing open tile wins.
+        let mut q = 5;
+        let mut r = 0;
+        for _ in 0..5 {
+            let before = tile_distance(q, r, 0, 0);
+            let next = step_toward_hex_avoiding(q, r, 0, 0, &blocked);
+            let (nq, nr) = next.expect("an open strictly-closing tile exists");
+            assert!(tile_distance(nq, nr, 0, 0) < before);
+            assert!(
+                !blocked.contains(&(nq, nr)),
+                "march never steps onto a wall"
+            );
+            q = nq;
+            r = nr;
+        }
+        assert_eq!((q, r), (0, 0));
+        // Full funnel ring: every closing tile blocked ⇒ None (chew rule).
+        let mut wallring = HashSet::new();
+        for dq in -1..=1 {
+            for dr in -1..=1 {
+                if (dq, dr) != (0, 0) {
+                    wallring.insert((dq, dr));
+                }
+            }
+        }
+        assert_eq!(step_toward_hex_avoiding(0, 0, 0, 5, &wallring), None);
+        // Nearest-wall pick: within chew range 1 only; ties by structure id.
+        let walls = [(42u64, 1, 0), (7u64, 1, 0), (99u64, 3, 0)];
+        assert_eq!(nearest_wall_target(&walls, (0, 0), (0, 5), 1), Some(7));
+        assert_eq!(
+            nearest_wall_target(&walls, (0, 0), (0, 5), 2),
+            Some(7),
+            "3 out is beyond chew range even when nearest overall"
+        );
+        // No wall in reach at all → None.
+        assert_eq!(nearest_wall_target(&walls, (0, 0), (0, 5), 0), None);
+    }
+
+    #[test]
+    fn encircle_ring_spots_are_deterministic_by_rank() {
+        // REV3 §12: rank r of the attackers always takes the r-th ring tile,
+        // wrapping after 8; the ring itself is the wind-rose with corners
+        // lead — a swarm surrounds its target instead of pixel-stackking.
+        assert_eq!(encircle_spot(0), (-1, -1));
+        assert_eq!(encircle_spot(1), (1, -1));
+        assert_eq!(encircle_spot(7), (0, 1));
+        assert_eq!(encircle_spot(8), (-1, -1), "wraps");
+        assert_eq!(encircle_spot(16), (-1, -1), "wraps plurally");
+        for rank in 0..16u32 {
+            let (dx, dy) = encircle_spot(rank);
+            assert_eq!(dx.abs().max(dy.abs()), 1, "spot {rank} is ring-adjacent");
+        }
     }
 
     // -- T3.2: scheduler invariants ----------------------------------------

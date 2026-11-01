@@ -29,7 +29,7 @@ pub mod eco;
 pub mod scheduler;
 
 use spacetimedb::{reducer, ReducerContext, ScheduleAt, TimeDuration, Table};
-use crate::types::{scheduled_idle_gains, scheduled_plant_growth, scheduled_voice_cleanup, scheduled_market_cleanup, scheduled_eco_maintenance, scheduled_mob_tick, scheduled_raid_tick };
+use crate::types::{scheduled_idle_gains, scheduled_plant_growth, scheduled_voice_cleanup, scheduled_market_cleanup, scheduled_eco_maintenance, scheduled_mob_tick, scheduled_raid_tick, scheduled_combat_cleanup };
 use std::time::Duration;
 
 /// Identity → address helper used by every reducre.
@@ -93,6 +93,14 @@ pub fn init(ctx: &ReducerContext) {
     }
     if ctx.db.scheduled_raid_tick().iter().next().is_none() {
         ctx.db.scheduled_raid_tick().insert(crate::types::ScheduledRaidTick {
+            scheduled_id: 0,
+            scheduled_at: ScheduleAt::Interval(TimeDuration::from_duration(Duration::from_secs(30))),
+            payload: 0,
+        });
+    }
+    // Combat-event fx scrub (Spec 025 REV3 §10).
+    if ctx.db.scheduled_combat_cleanup().iter().next().is_none() {
+        ctx.db.scheduled_combat_cleanup().insert(crate::types::ScheduledCombatCleanup {
             scheduled_id: 0,
             scheduled_at: ScheduleAt::Interval(TimeDuration::from_duration(Duration::from_secs(30))),
             payload: 0,

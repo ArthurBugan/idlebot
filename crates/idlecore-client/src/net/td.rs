@@ -59,6 +59,7 @@ impl Plugin for TdPlugin {
             .init_resource::<TdTextures>()
             .init_resource::<TdView>()
             .init_resource::<TdTracker>()
+            .init_resource::<TdFx>()
             .init_resource::<TdBuildMode>()
             .init_resource::<TdBuildMenu>()
             .init_resource::<TdHexTex>()
@@ -71,6 +72,7 @@ impl Plugin for TdPlugin {
                     sync_td_entities,
                     glide_td_markers,
                     animate_mobs,
+                    combat_fx_tick,
                     td_pulse,
                     td_place_hints,
                     td_build_keys,
@@ -116,6 +118,9 @@ pub struct TdView {
     /// Client unix seconds when `next_wave_in` was captured — the widget
     /// drains the countdown locally between server syncs.
     pub next_wave_sync_utc: u64,
+    /// REV3 §14: open wave's 0-based index + pattern name ("Wave 3: Sap
+    /// Team") for the raid banner. `None` when no open wave/pattern.
+    pub wave_banner: Option<(u64, &'static str)>,
 }
 
 #[derive(Clone)]
@@ -169,6 +174,70 @@ pub struct TdTracker {
 }
 
 // ---------------------------------------------------------------------------
+// Combat fx (Spec 025 REV3 §10/§13) — client reactions to combat_event rows
+// ---------------------------------------------------------------------------
+
+/// Transient state for combat fx: what the last snapshot already consumed
+/// and what is still animating.
+#[derive(Resource, Default)]
+pub struct TdFx {
+    /// Highest combat_event id consumed (dedup across rebuilds).
+    pub last_event_id: u64,
+    /// mob_id → seconds left posing (attack cursor, §13 wiring).
+    pub posing: HashMap<u64, f32>,
+    /// capital_id → seconds left on hit flash + shake.
+    pub capital_hit: HashMap<u64, f32>,
+    /// Waves whose "under attack" toast already fired (first hit only).
+    pub toasted_waves: HashSet<u64>,
+}
+
+/// One fx sprite in flight — the ballistic tracer (arrow/bomb/spore).
+#[derive(Component)]
+pub struct TdBolt {
+    pub t: f32,
+    pub ttl: f32,
+    pub from: Vec2,
+    pub to: Vec2,
+}
+
+/// A short-lived pop: impact star, splash echo, dust puff.
+#[derive(Component)]
+pub struct TdImpact {
+    pub t: f32,
+    pub ttl: f32,
+    pub size: f32,
+}
+
+/// A floating world-space notice (e.g. "Capital under attack!").
+#[derive(Component)]
+pub struct TdWorldToast {
+    pub t: f32,
+}
+
+/// Pure fx plan (unit-pinned exhaustively §13): every server event kind gets
+/// exactly one visual treatment. `None` = unknown kind → no fx.
+fn fx_plan(kind: &str) -> Option<FxBirth> {
+    match kind {
+        "shot" => Some(FxBirth::Bolt([0.95, 0.95, 1.0])),
+        "melee" => Some(FxBirth::Impact([1.0, 0.85, 0.4])),
+        "bomb" => Some(FxBirth::Bolt([1.0, 0.55, 0.1])),
+        "spore" => Some(FxBirth::Bolt([0.75, 0.5, 0.95])),
+        "splash" => Some(FxBirth::Impact([1.0, 0.55, 0.1])),
+        "struct_fell" => Some(FxBirth::Impact([0.7, 0.7, 0.7])),
+        "capital_hit" => Some(FxBirth::CapitalHit),
+        _ => None,
+    }
+}
+
+/// What a processed event births.
+enum FxBirth {
+    Bolt([f32; 3]),
+    Impact([f32; 3]),
+    /// Capital flash + shake + wave toast, no sprite.
+    CapitalHit,
+}
+
+// ---------------------------------------------------------------------------
 // Components
 // ---------------------------------------------------------------------------
 
@@ -188,9 +257,10 @@ pub struct TdMobAnim {
 #[derive(Component)]
 pub struct TdStructureMarker;
 
-/// World marker for a placed capital (address of the row owner).
+/// World marker for a placed capital (owner address + capital id, for the
+/// REV3 §13 hit flash keyed by capital).
 #[derive(Component)]
-pub struct TdCapitalMarker(#[allow(dead_code)] pub String);
+pub struct TdCapitalMarker(pub String, pub u64);
 
 /// Claimed-hex ownership overlay (gold = mine, violet = another player).
 #[derive(Component)]
@@ -368,7 +438,20 @@ struct TdSnapshot {
     waves: Vec<WaveRow>,
     structures: Vec<StructRow>,
     mobs: Vec<MobRow>,
+    /// REV3 §10: combat events since `TdFx::last_event_id` — the fx feed.
+    events: Vec<FxEventRow>,
     now: u64,
+}
+
+struct FxEventRow {
+    event_id: u64,
+    capital_id: u64,
+    wave_id: u64,
+    kind: String,
+    attacker_mob: u64,
+    target_hex_id: u64,
+    slot_x: i32,
+    slot_y: i32,
 }
 
 fn unix_now_secs() -> u64 {
@@ -416,6 +499,7 @@ fn sync_td_entities(
     mut territory: ResMut<TdTerritory>,
     mut tdview: ResMut<TdView>,
     mut tracker: ResMut<TdTracker>,
+    mut fx: ResMut<TdFx>,
     extent: Res<crate::plugins::camera::ViewExtent>,
     td_tex: Res<TdTextures>,
     hex_tex: Res<TdHexTex>,
@@ -496,6 +580,21 @@ fn sync_td_entities(
                 hp: m.hp,
             })
             .collect();
+        let events: Vec<FxEventRow> = conn
+            .db
+            .combat_event()
+            .iter()
+            .map(|e| FxEventRow {
+                event_id: e.event_id,
+                capital_id: e.capital_id,
+                wave_id: e.wave_id,
+                kind: e.kind.clone(),
+                attacker_mob: e.attacker_mob,
+                target_hex_id: e.target_hex_id,
+                slot_x: e.target_slot_x,
+                slot_y: e.target_slot_y,
+            })
+            .collect();
         (
             address,
             TdSnapshot {
@@ -504,6 +603,7 @@ fn sync_td_entities(
                 waves,
                 structures,
                 mobs,
+                events,
                 now: unix_now_secs(),
             },
         )
@@ -541,6 +641,7 @@ fn sync_td_entities(
     tdview.incoming = None;
     tdview.next_wave_in = None;
     tdview.next_wave_sync_utc = unix_now_secs();
+    tdview.wave_banner = None;
     if let Some(cap) = my_capital_row {
         // Open wave on my capital → count its living raiders.
         if let Some(wave) = snap
@@ -554,6 +655,22 @@ fn sync_td_entities(
                 .filter(|m| m.wave_id == wave.wave_id)
                 .count() as u32;
             tdview.incoming = Some(count);
+            // REV3 §14 banner: 0-based wave index = how many waves this
+            // capital already fought; pattern name from the same integer
+            // cadence the server spawns from (size-independent).
+            let index = snap
+                .waves
+                .iter()
+                .filter(|w| w.capital_id == wave.capital_id && !w.open && w.wave_id < wave.wave_id)
+                .count() as u64;
+            let name = if cfg::boss_wave(index, cap.level) {
+                "Big Slime Boss"
+            } else {
+                cfg::wave_pattern(index, 1, cap.level)
+                    .map(|(name, _)| name)
+                    .unwrap_or("Scout Line")
+            };
+            tdview.wave_banner = Some((index + 1, name));
         } else {
             // Next wave clock only counts while no wave is open.
             let reattack = cap.last_raid.saturating_add(cfg::WAVE_REATTACK_SECS);
@@ -574,7 +691,7 @@ fn sync_td_entities(
         }
     }
 
-    // ---- rebuild: TD entities despawn then respawn (rows are few) ----
+        // ---- rebuild: TD entities despawn then respawn (rows are few) ----
     for e in mobs.iter() {
         commands.entity(e).despawn();
     }
@@ -640,7 +757,7 @@ fn sync_td_entities(
         let height = 11.0;
         let pos = Vec3::new(cx, cy + 0.8, prop_depth(cy) + 18.0);
         commands.spawn((
-            TdCapitalMarker(row.owner.clone()),
+            TdCapitalMarker(row.owner.clone(), row.capital_id),
             Sprite {
                 image: td_tex.capital.0.clone(),
                 color: Color::srgb(1.0, 0.9, 0.6),
@@ -761,6 +878,9 @@ fn sync_td_entities(
             Transform::from_xyz(0.0, 1.1, 0.04),
         ));
     }
+
+    // ---- combat fx feed (REV3 §10/§13) ----
+    process_combat_events(&snap, &mut fx, &mut commands);
 }
 
 /// Glide every TD marker toward its replicated server position.
@@ -791,6 +911,7 @@ fn animate_mobs(
     time: Res<Time>,
     td_tex: Res<TdTextures>,
     mut tracker: ResMut<TdTracker>,
+    fx: Res<TdFx>,
     mut mobs: Query<(&TdMobAnim, &TdMove, &mut Sprite), With<TdMobMarker>>,
 ) {
     let dt = time.delta_secs();
@@ -801,6 +922,10 @@ fn animate_mobs(
     let walk_flip = (time.elapsed_secs() / 0.25) as usize % 2;
     for (anim, mv, mut sprite) in &mut mobs {
         let ms = mob_sprite_kind(&td_tex, &anim.kind);
+        // REV3 §13 attack cursor: while the fx timer is hot, the mob flashes
+        // between its idle frame and a bright pose tint, so every hit it
+        // lands on a structure/capital visibly reads as *its* act.
+        let attacking = fx.posing.contains_key(&anim.mob_id);
         let image = if mv.speed > 0.05 {
             ms.walk[walk_flip].clone()
         } else {
@@ -812,8 +937,202 @@ fn animate_mobs(
         let flash_on = tracker.flash.contains_key(&anim.mob_id);
         let color = if flash_on {
             Color::srgb(1.0, 0.3, 0.25)
+        } else if attacking {
+            // 0.12 s white pulse while attacking (the sheet ships no attack
+            // frames; the bright pulse is the agreed fallback, §13).
+            let pulse = (time.elapsed_secs() / 0.12) as usize % 2 == 0;
+            if pulse {
+                Color::srgb(1.5, 1.35, 0.9)
+            } else {
+                Color::srgb(1.0, 0.78, 0.5)
+            }
         } else {
             Color::WHITE
+        };
+        if sprite.color != color {
+            sprite.color = color;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Combat fx systems (REV3 §13) — consume combat_event rows, animate visuals
+// ---------------------------------------------------------------------------
+
+/// Consume fresh `combat_event` rows once each and birth visuals: tracers
+/// fly from the shooter, impacts pop on the target, capitals flash, the
+/// wave's first capital hit toasts "under attack".
+fn process_combat_events(snap: &TdSnapshot, fx: &mut TdFx, commands: &mut Commands) {
+    for row in &snap.events {
+        if row.event_id <= fx.last_event_id {
+            continue;
+        }
+        fx.last_event_id = fx.last_event_id.max(row.event_id);
+        let Some(plan) = fx_plan(&row.kind) else { continue };
+        // Attack cursor: any mob-sourced event arms the attack pose (§13).
+        if row.attacker_mob > 0 {
+            fx.posing.insert(row.attacker_mob, 0.55);
+        }
+        let (tx, ty) = fx_target_pos(row);
+        match plan {
+            FxBirth::Bolt(color) => {
+                // From the shooter when known (mob rows); tower shots (attacker
+                // 0) get an impact flash on the target instead — the cause is
+                // still attached to the right hex.
+                let from = (row.attacker_mob != 0)
+                    .then(|| snap.mobs.iter().find(|m| m.mob_id == row.attacker_mob))
+                    .flatten()
+                    .map(|m| Vec2::new(m.x, m.y - 0.4));
+                if let Some(from) = from {
+                    let dist = (Vec2::new(tx, ty) - from).length();
+                    commands.spawn((
+                        TdBolt {
+                            t: 0.0,
+                            ttl: (dist / 22.0).clamp(0.15, 0.6),
+                            from,
+                            to: Vec2::new(tx, ty),
+                        },
+                        Sprite {
+                            color: Color::srgb(color[0], color[1], color[2]),
+                            custom_size: Some(Vec2::new(0.7, 0.18)),
+                            ..default()
+                        },
+                        Transform::from_xyz(from.x, from.y, prop_depth(ty) + 41.0),
+                    ));
+                    // Impact lands a beat after the bolt.
+                    commands.spawn((
+                        TdImpact { t: -0.3, ttl: 0.3, size: 0.9 },
+                        Sprite {
+                            color: Color::srgba(color[0], color[1], color[2], 0.9),
+                            custom_size: Some(Vec2::splat(0.4)),
+                            ..default()
+                        },
+                        Transform::from_xyz(tx, ty, prop_depth(ty) + 42.0),
+                    ));
+                } else {
+                    impact_sprite(commands, color, tx, ty, 0.9);
+                }
+            }
+            FxBirth::Impact(color) => {
+                let size = if row.kind == "struct_fell" { 1.6 } else { 1.0 };
+                impact_sprite(commands, color, tx, ty, size);
+            }
+            FxBirth::CapitalHit => {
+                fx.capital_hit.insert(row.capital_id, 0.5);
+                if row.wave_id != 0 && fx.toasted_waves.insert(row.wave_id) {
+                    commands.spawn((
+                        TdWorldToast { t: 0.0 },
+                        Text2d::new("⚑ Capital under attack!"),
+                        TextFont { font_size: 22.0.into(), ..default() },
+                        TextColor(Color::srgb(1.0, 0.35, 0.3)),
+                        TextShadow {
+                            color: Color::BLACK,
+                            offset: Vec2::new(1.0, 1.0),
+                        },
+                        Transform::from_xyz(tx, ty + 2.0, prop_depth(ty) + 60.0),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Spawn one standard impact bloom at a world position.
+fn impact_sprite(commands: &mut Commands, color: [f32; 3], x: f32, y: f32, size: f32) {
+    commands.spawn((
+        TdImpact { t: 0.0, ttl: 0.38, size },
+        Sprite {
+            color: Color::srgba(color[0], color[1], color[2], 0.85),
+            custom_size: Some(Vec2::splat(0.5)),
+            ..default()
+        },
+        Transform::from_xyz(x, y, prop_depth(y) + 42.0),
+    ));
+}
+
+/// World position where one event's fx lands: the target hex center, or the
+/// exact slot cell when the event names one.
+fn fx_target_pos(row: &FxEventRow) -> (f32, f32) {
+    if row.slot_x >= 0 && row.slot_y >= 0 {
+        let (x, y) = idlecore_core::slots::slot_center(row.slot_x, row.slot_y);
+        return (x, y);
+    }
+    let c = TileCoord::from_id(row.target_hex_id);
+    hex_center(c.x, c.y)
+}
+
+/// Per-frame fx animation: bolt flight, impact bloom + fade, capital hit
+/// flash, mob attack-pose timers, world toast float.
+fn combat_fx_tick(
+    time: Res<Time>,
+    mut fx: ResMut<TdFx>,
+    mut commands: Commands,
+    mut bolts: Query<(Entity, &mut TdBolt, &mut Transform)>,
+    mut impacts: Query<(Entity, &mut TdImpact, &mut Sprite)>,
+    mut toasts: Query<(Entity, &mut TdWorldToast, &mut TextColor)>,
+    mut capitals: Query<(Entity, &TdCapitalMarker, &mut Sprite)>,
+) {
+    let dt = time.delta_secs();
+    fx.posing.retain(|_, left| {
+        *left -= dt;
+        *left > 0.0
+    });
+    fx.capital_hit.retain(|_, left| {
+        *left -= dt;
+        *left > 0.0
+    });
+
+    // Tracers: fly from → to with a slight arc, then die (the impact sprite
+    // they left behind carries the landing).
+    for (entity, mut bolt, mut transform) in bolts.iter_mut() {
+        bolt.t += dt;
+        if bolt.t >= bolt.ttl {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let k = (bolt.t / bolt.ttl).clamp(0.0, 1.0);
+        let pos = bolt.from.lerp(bolt.to, k);
+        transform.translation.x = pos.x;
+        transform.translation.y = pos.y + 0.25 * (k * std::f32::consts::PI).sin();
+    }
+
+    // Impacts: bloom out, fade, die.
+    for (entity, mut impact, mut sprite) in impacts.iter_mut() {
+        impact.t += dt;
+        if impact.t < 0.0 {
+            sprite.color.set_alpha(0.0);
+            continue;
+        }
+        if impact.t >= impact.ttl {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let k = (impact.t / impact.ttl).clamp(0.0, 1.0);
+        sprite.custom_size = Some(Vec2::splat(impact.size * (0.5 + k)));
+        let base = sprite.color.to_srgba();
+        sprite.color.set_alpha(0.85 * (1.0 - k));
+        let _ = base;
+    }
+
+    // World toasts: fade over ~2 s (the text static-up is enough).
+    for (entity, mut toast, mut text_color) in toasts.iter_mut() {
+        toast.t += dt;
+        if toast.t >= 2.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        text_color.0.set_alpha((1.0 - toast.t / 2.0).max(0.0));
+    }
+
+    // Capital hit: red flicker while the timer runs, idle gold otherwise.
+    for (_entity, marker, mut sprite) in capitals.iter_mut() {
+        let flash = fx.capital_hit.get(&marker.1).copied().unwrap_or(0.0);
+        let color = if flash > 0.0 && (flash * 18.0) as usize % 2 == 0 {
+            Color::srgb(1.0, 0.25, 0.2)
+        } else if flash > 0.0 {
+            Color::srgb(1.0, 0.65, 0.4)
+        } else {
+            Color::srgb(1.0, 0.9, 0.6)
         };
         if sprite.color != color {
             sprite.color = color;
@@ -1833,7 +2152,12 @@ fn update_td_hud(
     if tdview.incoming.is_some() {
         if let Ok(mut text) = spans.p0().single_mut() {
             let count = tdview.incoming.unwrap_or(0);
-            **text = format!("⚔ RAID! {count} raiders marching on your capital");
+            **text = match tdview.wave_banner {
+                Some((n, pattern)) => {
+                    format!("⚔ Wave {n} — {pattern}: {count} raiders march on your capital")
+                }
+                None => format!("⚔ RAID! {count} raiders marching on your capital"),
+            };
         }
     }
 
@@ -2060,5 +2384,68 @@ mod tests_cull_radii {
         assert!(t >= 133.0 * 133.0, "territory must cover the viewport: {t}");
         let (_, t) = cull_radii(&crate::plugins::camera::ViewExtent { half_diagonal: 10_000.0 });
         assert_eq!(t, MAX_CULL_RADIUS * MAX_CULL_RADIUS, "hard cap");
+    }
+}
+
+#[cfg(test)]
+mod tests_fx {
+    use super::*;
+
+    /// REV3 §13 (exhaustive): every combat_event kind the server can write
+    /// (types.rs CE_* set) maps to exactly one fx plan — unknown kinds are
+    /// dropped, never crash the client.
+    #[test]
+    fn fx_plan_covers_every_server_event_kind() {
+        let server_kinds = [
+            "shot",
+            "melee",
+            "bomb",
+            "spore",
+            "splash",
+            "struct_fell",
+            "capital_hit",
+        ];
+        for kind in server_kinds {
+            assert!(
+                fx_plan(kind).is_some(),
+                "kind {kind} must map to an fx plan"
+            );
+        }
+        assert!(fx_plan("unknown-later").is_none());
+        assert!(matches!(fx_plan("capital_hit"), Some(FxBirth::CapitalHit)));
+        for kind in ["shot", "bomb", "spore"] {
+            assert!(matches!(fx_plan(kind), Some(FxBirth::Bolt(_))));
+        }
+        for kind in ["melee", "splash", "struct_fell"] {
+            assert!(matches!(fx_plan(kind), Some(FxBirth::Impact(_))));
+        }
+    }
+
+    /// REV3 §14: the banner name derivable on the client matches the
+    /// server's pattern pick cadence (size-independent).
+    #[test]
+    fn wave_banner_names_follow_the_server_cadence() {
+        // Same integer inputs → same names as the server spawn.
+        for level in 1..=5u32 {
+            for idx in 0..24u64 {
+                let client = if cfg::boss_wave(idx, level) {
+                    "Big Slime Boss"
+                } else {
+                    cfg::wave_pattern(idx, 1, level)
+                        .map(|(name, _)| name)
+                        .unwrap_or("Scout Line")
+                };
+                let server = match cfg::wave_pattern(idx, 5, level) {
+                    Some((name, _)) => name,
+                    None => "Scout Line",
+                };
+                let expected = if cfg::boss_wave(idx, level) {
+                    "Big Slime Boss"
+                } else {
+                    server
+                };
+                assert_eq!(client, expected, "banner cadence diverged: L{level} idx{idx}");
+            }
+        }
     }
 }

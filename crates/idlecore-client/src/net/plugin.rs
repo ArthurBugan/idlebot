@@ -459,6 +459,7 @@ fn register_net_callbacks(
     td_bump!(defense_structure);
     td_bump!(mob);
     td_bump!(raid_wave);
+    td_bump!(combat_event);
 
     conn.subscription_builder()
         .on_error({

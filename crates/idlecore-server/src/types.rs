@@ -413,6 +413,18 @@ pub struct ScheduledVoiceCleanup {
     pub payload: u64,
 }
 
+/// Combat-event scrub — every 30 s (Spec 025 REV3 §10): deletes
+/// `combat_event` rows older than 30 s so the table stays tiny.
+#[derive(Clone, Debug)]
+#[spacetimedb::table(scheduled(combat_cleanup_tick), public, accessor = scheduled_combat_cleanup)]
+pub struct ScheduledCombatCleanup {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: ScheduleAt,
+    pub payload: u64,
+}
+
 /// Marketplace listing expiration + renewal — every 1 hour (Spec 015 FR4).
 #[derive(Clone, Debug)]
 #[spacetimedb::table(scheduled(market_cleanup_tick), public, accessor = scheduled_market_cleanup)]
@@ -674,6 +686,48 @@ pub struct RaidWave {
 }
 
 // ---------------------------------------------------------------------------
+// 12. combat_event — one row per visible combat act (Spec 025 REV3 §10).
+// Fire-and-forget: written by the 1s tick, scrubbed > 30 s. The client maps
+// each row to fx (tracers, puffs, capital flash, wave banner).
+// ---------------------------------------------------------------------------
+
+/// Event `kind` values — the client match must be exhaustive over exactly
+/// this set (unit-pinned on both sides).
+pub const CE_SHOT: &str = "shot"; // ranged attack (mob or tower)
+pub const CE_MELEE: &str = "melee"; // melee hit (also the wall-chew)
+pub const CE_BOMB: &str = "bomb"; // Bomb Goblin lob
+pub const CE_SPLASH: &str = "splash"; // bomb AoE echo on an extra target
+pub const CE_STRUCT_FELL: &str = "struct_fell"; // structure destroyed
+pub const CE_CAPITAL_HIT: &str = "capital_hit"; // capital HP took damage
+
+#[derive(Clone, Debug)]
+#[spacetimedb::table(
+    accessor = combat_event,
+    public,
+    index(accessor = event_by_capital, btree(columns = [capital_id])),
+    index(accessor = event_by_tick, btree(columns = [tick_at]))
+)]
+pub struct CombatEvent {
+    #[primary_key]
+    #[auto_inc]
+    pub event_id: u64,
+    pub capital_id: u64,
+    /// 0 when no wave context (e.g. ammo-less tower fire with no raid).
+    pub wave_id: u64,
+    pub tick_at: u64,
+    pub kind: String,
+    /// The mob row; 0 for structure sources (tower fire).
+    pub attacker_mob: u64,
+    pub target_hex_id: u64,
+    /// Slot on the target hex (structures / parked defenders); -1 for the
+    /// hex center (capital body, tracers).
+    pub target_slot_x: i32,
+    pub target_slot_y: i32,
+    /// Cosmetic variant (e.g. "arrow" | "spore" | "tower").
+    pub detail: String,
+}
+
+// ---------------------------------------------------------------------------
 // Game constants (shared with the reducers)
 // ---------------------------------------------------------------------------
 
@@ -883,6 +937,11 @@ pub fn idle_gains_tick(ctx: &ReducerContext, _row: ScheduledIdleGains) {
 #[reducer]
 pub fn plant_growth_tick(ctx: &ReducerContext, _row: ScheduledPlantGrowth) {
     crate::scheduler::plant_growth_tick_body(ctx);
+}
+
+#[reducer]
+pub fn combat_cleanup_tick(ctx: &ReducerContext, _row: ScheduledCombatCleanup) {
+    crate::scheduler::combat_cleanup_tick_body(ctx);
 }
 
 #[reducer]

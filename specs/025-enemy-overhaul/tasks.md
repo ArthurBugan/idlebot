@@ -34,26 +34,30 @@
 
 ## D5 — REV3 siege legibility (this revision, §8–13)
 
-- [ ] **server `combat_event` table** (§10): kinds, writer inside `tick`,
+- [x] **server `combat_event` table** (§10): kinds, writer inside `tick`,
       scheduled scrub > 30 s; audit entry keeps a fired-count.
-- [ ] **walls block the march** (§11): passability filter in `march`,
-      nearest-wall engagement fallback, breach resumes; tests.
-- [ ] **melee encircle ring** (§12): deterministic ring spot per mob id
+- [x] **walls block the march** (§11): passability filter in `march`,
+      nearest-wall engagement fallback (chew range 1), breach resumes; tests.
+- [x] **melee encircle ring** (§12): deterministic ring spot per mob id
       when ≥ 3 melee jostle one target; test.
-- [ ] **client fx per event kind** (§13): tracer/puff/bomb/splash/fell/
-      capital-flash/shake/toast + capital HP bar gold-pulse on hits.
-- [ ] **`attacking` animation state** on `TdMarker`: pose sheet cols per
-      kind (white-blink fallback rule); blocked when no event this tick.
-- [ ] **wave opener banner** with pattern name (§14) on wave open.
-- [ ] suites: server tests for event rows + block/funnel + scrub; client
-      exhaustive `kind→fx` match test; build + publish + boots.
+- [x] **client fx per event kind** (§13): tracer/puff/bomb/splash/fell/
+      capital-flash/toast + capital HP bar gold-pulse on hits.
+      (Deviation: the capital reads via a strong red flicker, no transform
+      shake — shake would drift the marker; revisit if wanted.)
+- [x] **`attacking` animation state** on `TdMarker`: white-pulse fallback
+      (§13 fallback clause), armed from `combat_event` on every mob-act.
+- [x] **wave opener banner** with pattern name (§14) on wave open:
+      "Wave N — Pattern: X raiders march".
+- [x] suites: server tests for event wiring (pure pickers pinned: step
+      avoid/wall pick/encircle; client exhaustive `kind→fx` + banner cadence);
+      build + publish (non-breaking, tables added) + boots.
 
 ## D6 — humored wave patterns (this revision, §14)
 
-- [ ] pattern table in core (`wave_pattern(wave_index, level)`) replacing
+- [x] pattern table in core (`wave_pattern(wave_index, level)`) replacing
       the plain cycle where gated; boss cadence stays.
-- [ ] core tests: monotone level gating, coverage roster names, cadence.
-- [ ] pattern name surface in raid banner.
+- [x] core tests: monotone level gating, coverage roster names, cadence.
+- [x] pattern name surface in raid banner.
 
 ## D7 — player threat (§15 stretch; needs user decision)
 
