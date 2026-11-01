@@ -16,7 +16,8 @@ use bevy::input::mouse::MouseWheel;
 use bevy::math::Rot2;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::ui::widget::ImageNode;
-use idlecore_core::hex::world_pos_to_hex;
+use idlecore_core::hex::{world_pos_to_hex, HexCoord};
+use idlecore_core::hex_grid::HexGrid;
 use idlecore_core::minimap::{map_pixel_to_world, world_to_map_pixel, RotationMode};
 use idlecore_core::world_gen::{HexCell, WorldGenConfig};
 use std::collections::{HashMap, HashSet};
@@ -333,6 +334,17 @@ pub struct WaypointNode;
 /// A navigation marker node.
 #[derive(Component)]
 pub struct NavMarkerNode;
+
+/// A diamond marker for a placed capital (Spec 023); entity map keys it by
+/// capital hex id.
+#[derive(Component)]
+pub struct CapitalMarkerNode;
+
+/// Track capital-marker entities by capital hex id for in-place updates.
+#[derive(Resource, Default)]
+pub struct CapitalMarkerEntityMap {
+    pub entities: HashMap<u64, Entity>,
+}
 
 /// A dot representing a remote player on the minimap.
 #[derive(Component)]
@@ -917,7 +929,7 @@ pub fn render_visible_tiles(
     map_content_query: Query<Entity, With<MapContent>>,
     mut minimap_assets: ResMut<MinimapAssets>,
     mut images: ResMut<Assets<Image>>,
-    mut tile_query: Query<(&mut Node, &mut ImageNode), With<MapTileNode>>,
+    mut tile_query: Query<(&mut Node, &mut ImageNode, &mut BorderColor), With<MapTileNode>>,
     mut next_render: Local<f64>,
     time: Res<Time>,
     // Spec 023: claimed-land tint + raid pulse (net::td cache).
@@ -1002,7 +1014,7 @@ td_view: Res<crate::net::td::TdView>,
         );
 
         if let Some(&entity) = hex_entity_map.hex_entities.get(&hex_id) {
-            if let Ok((mut node, mut image)) = tile_query.get_mut(entity) {
+            if let Ok((mut node, mut image, mut border)) = tile_query.get_mut(entity) {
                 node.left = Val::Px(tile_left);
                 node.top = Val::Px(tile_top);
                 node.width = Val::Px(tile_w);
@@ -1011,9 +1023,16 @@ td_view: Res<crate::net::td::TdView>,
                 // Spec 023: claimed hexes tint (gold = mine, violet = other);
                 // the capital hex flashes red while a wave is open.
                 image.color = td_tile_tint(hex_id, &net_td, &td_view, net.address.clone());
+                // Spec 023 §3.9: territory edges get an outline so borders
+                // read at a glance on 200+-hex discs.
+                *border = BorderColor::all(
+                    td_tile_border(hex_id, &net_td, net.address.as_deref())
+                        .unwrap_or(Color::NONE),
+                );
             }
         } else {
             let color = td_tile_tint(hex_id, &net_td, &td_view, net.address.clone());
+            let border = td_tile_border(hex_id, &net_td, net.address.as_deref());
             let entity = commands.spawn((
                 Name::new("minimap-tile"),
                 MapTileNode,
@@ -1023,6 +1042,7 @@ td_view: Res<crate::net::td::TdView>,
                     top: Val::Px(tile_top),
                     width: Val::Px(tile_w),
                     height: Val::Px(tile_h),
+                    border: UiRect::all(Val::Px(2.0)),
                     ..default()
                 },
                 ImageNode {
@@ -1030,6 +1050,7 @@ td_view: Res<crate::net::td::TdView>,
                     color,
                     ..default()
                 },
+                BorderColor::all(border.unwrap_or(Color::NONE)),
             )).id();
             commands.entity(entity).insert(ChildOf(map_content_entity));
             hex_entity_map.hex_entities.insert(hex_id, entity);
@@ -1094,6 +1115,39 @@ fn td_tile_tint(
         Some(_) => Color::srgb(0.7, 0.55, 1.0),
         None => Color::WHITE,
     }
+}
+
+/// Spec 023 §3.9: the territory border — an owned hex that touches an
+/// unowned hex (or a rival's) draws an outline, dark mine-gold or dark
+/// rival-violet. `None` = no border (interior hexes / unowned hexes).
+fn td_tile_border(
+    hex_id: u64,
+    net_td: &crate::net::td::TdTerritory,
+    address: Option<&str>,
+) -> Option<Color> {
+    let owner = net_td.owners.get(&hex_id)?;
+    let is_mine = address == Some(owner.as_str());
+    let (q, r) = {
+        let c = HexCoord::from_id(hex_id);
+        (c.q, c.r)
+    };
+    let is_border = HexCoord::new(q, r)
+        .neighbors()
+        .iter()
+        .any(|&(nq, nr)| {
+            net_td
+                .owners
+                .get(&HexCoord::new(nq, nr).to_id())
+                .map(|other| other != owner)
+                .unwrap_or(true)
+        });
+    is_border.then(|| {
+        if is_mine {
+            Color::srgb(0.55, 0.4, 0.0)
+        } else {
+            Color::srgb(0.35, 0.2, 0.5)
+        }
+    })
 }
 
 /// Create or update the fog-of-war overlay texture.
@@ -1246,6 +1300,134 @@ pub fn render_nav_markers(
         commands.entity(entity).insert(ChildOf(map_content_entity));
     }
 }
+
+// ============================================================================
+// Capital Marker Rendering
+// ============================================================================
+
+/// Spec 023 markers on the map: a diamond per placed capital.
+/// Colors — gold = my capital, violet = another player's; red flash while
+/// any wave is open against it. Returns `(fill, border)`.
+pub fn capital_marker_color(is_mine: bool, raided: bool) -> (Color, Color) {
+    if raided {
+        (
+            Color::srgb(1.0, 0.35, 0.3),
+            Color::srgb(0.6, 0.12, 0.08),
+        )
+    } else if is_mine {
+        (
+            Color::srgb(1.0, 0.78, 0.15),
+            Color::srgb(0.55, 0.4, 0.0),
+        )
+    } else {
+        (
+            Color::srgb(0.8, 0.5, 1.0),
+            Color::srgb(0.45, 0.28, 0.6),
+        )
+    }
+}
+
+/// Spawn/update/despawn capital markers (one diamond per live capital).
+/// In-place diff keyed by capital hex id, mirroring `render_waypoints`.
+pub fn render_capital_markers(
+    mut commands: Commands,
+    minimap_state: Res<MinimapState>,
+    td: Res<crate::net::td::TdTerritory>,
+    net: Res<crate::net::plugin::Net>,
+    mut entity_map: ResMut<CapitalMarkerEntityMap>,    map_content_query: Query<Entity, With<MapContent>>,
+    mut marker_query: Query<(
+        &CapitalMarkerNode,
+        &mut Node,
+        &mut BackgroundColor,
+        &mut BorderColor,
+    )>,
+) {
+    let Some(player_pos) = minimap_state.player_pos else { return };
+    let Ok(map_content_entity) = map_content_query.single() else { return };
+
+    let pixel_scale = minimap_state.pixel_scale();
+    let mm_center = minimap_state.mm_size() / 2.0;
+    let rotation = minimap_state.rotation.map_rotation(minimap_state.facing_angle);
+    let mm_w = minimap_state.mm_size() + 64.0;
+
+    // Live capitals visible on the map, with ownership + raid flags.
+    let active: HashMap<u64, (Color, Color)> = td
+        .capitals
+        .iter()
+        .map(|&hex_id| {
+            let is_mine = net
+                .address
+                .as_deref()
+                .map(|me| td.owners.get(&hex_id).map(|o| o == me).unwrap_or(false))
+                .unwrap_or(false);
+            let colors =
+                capital_marker_color(is_mine, td.wave_targets.contains(&hex_id));
+            (hex_id, colors)
+        })
+        .collect();
+
+    for (&hex_id, &(fill, border_color)) in &active {
+        let c = HexCoord::from_id(hex_id);
+        let (wx, wy) = HexGrid::axial_to_world(c.q, c.r, HEX_SIZE);
+        let (x, y) = world_to_map_pixel(
+            (wx, wy),
+            (player_pos.x, player_pos.y),
+            pixel_scale,
+            mm_center,
+            rotation,
+        );
+        if x < -64.0 || x > mm_w || y < -64.0 || y > mm_w {
+            continue; // off-map: keep the spot in `entity_map` for re-entry
+        }
+
+        if let Some(&entity) = entity_map.entities.get(&hex_id) {
+            if let Ok((_, mut node, mut bg, mut border)) = marker_query.get_mut(entity) {
+                node.left = Val::Px(x - MARKER_SIZE / 2.0);
+                node.top = Val::Px(y - MARKER_SIZE / 2.0);
+                bg.0 = fill;
+                *border = BorderColor::all(border_color);
+            }
+        } else {
+            let entity = commands
+                .spawn((
+                    Name::new("capital-marker"),
+                    CapitalMarkerNode,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(x - MARKER_SIZE / 2.0),
+                        top: Val::Px(y - MARKER_SIZE / 2.0),
+                        width: Val::Px(MARKER_SIZE),
+                        height: Val::Px(MARKER_SIZE),
+                        border: UiRect::all(Val::Px(2.0)),
+                        ..default()
+                    },
+                    // 45° tilt turns the node into a diamond.
+                    UiTransform::from_rotation(Rot2::radians(std::f32::consts::FRAC_PI_4)),
+                    BackgroundColor(fill),
+                    BorderColor::all(border_color),
+                    ChildOf(map_content_entity),
+                ))
+                .id();
+            entity_map.entities.insert(hex_id, entity);
+        }
+    }
+
+    // Destroyed / vacated capitals lose their marker.
+    let removed: Vec<u64> = entity_map
+        .entities
+        .keys()
+        .filter(|id| !active.contains_key(id))
+        .cloned()
+        .collect();
+    for hex_id in removed {
+        if let Some(entity) = entity_map.entities.remove(&hex_id) {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+/// Approximate marker width; the diamond reads at every zoom level.
+const MARKER_SIZE: f32 = 12.0;
 
 // ============================================================================
 // Resize / Visibility

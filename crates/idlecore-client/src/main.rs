@@ -16,7 +16,7 @@ use crate::player::{Player, PlayerTransform, PLAYER_SIZE};
 use plugins::camera::CameraZoom;
 
 mod player;
-mod idle;
+
 mod inventory;
 mod minimap;
 mod time_ext;
@@ -84,6 +84,7 @@ fn main() {
         .insert_resource(minimap::HexEntityMap::default())
         .insert_resource(minimap::ExploredHexes::default())
         .insert_resource(minimap::WaypointEntityMap::default())
+        .insert_resource(minimap::CapitalMarkerEntityMap::default())
         .insert_resource(minimap::ChunkLoadState::default())
         .insert_resource(world_floor::FloorTiles::default())
         .insert_resource(world_floor::WaterTextures::default())
@@ -107,7 +108,6 @@ fn main() {
         .add_plugins(inventory::InventoryPlugin)
         .add_plugins(touch::TouchPlugin)
         .insert_resource(PlayerTransform::default())
-        .insert_resource(idle::IdleGainsState::default())
         .insert_resource(world_floor::FloorPlantState::default())
         .insert_resource(world_floor::PlotFloorState::default())
         .insert_resource(world_floor::WorldObjectState::default())
@@ -116,7 +116,6 @@ fn main() {
             setup,
             assets::load_all_assets,
             minimap::spawn_minimap_ui,
-            idle::spawn_idle_panel,
             world_floor::spawn_action_box,
             world_floor::init_city_textures,
         ))
@@ -129,6 +128,9 @@ fn main() {
             minimap::render_visible_tiles
                 .after(minimap::load_nearby_chunks),
             minimap::render_waypoints
+                .after(minimap::render_visible_tiles)
+                .after(minimap::handle_input),
+            minimap::render_capital_markers
                 .after(minimap::render_visible_tiles)
                 .after(minimap::handle_input),
             minimap::render_nav_markers
@@ -145,7 +147,6 @@ fn main() {
             minimap::restore_explored_on_login,
             minimap::autosave_explored,
             minimap::save_explored_on_exit,
-            idle::update_idle_gains_panel,
             world_floor::update_plant_visuals,
             world_floor::update_plot_visuals,
             world_floor::update_world_object_visuals,

@@ -43,6 +43,8 @@ pub struct NameEdit {
 
 const TEXT_COLOR: Color = Color::srgb(0.9, 0.95, 1.0);
 const BUTTON_COLOR: Color = Color::srgb(0.15, 0.3, 0.55);
+const BUTTON_HOVER_COLOR: Color = Color::srgb(0.22, 0.42, 0.75);
+const BUTTON_PRESSED_COLOR: Color = Color::srgb(0.08, 0.18, 0.35);
 
 pub struct NetHudPlugin;
 
@@ -68,7 +70,13 @@ impl Plugin for NetHudPlugin {
             .add_systems(Startup, spawn_hud)
             .add_systems(
                 Update,
-                (update_hud_text, hud_buttons, name_input, cycle_character_keyboard),
+                (
+                    update_hud_text,
+                    hud_buttons,
+                    hud_button_tint,
+                    name_input,
+                    cycle_character_keyboard,
+                ),
             );
     }
 }
@@ -89,46 +97,81 @@ struct HudStatsText;
 #[derive(Component)]
 struct HudLogText;
 
-fn button_style(width: f32, height: f32) -> Node {
-    Node {
-        width: Val::Px(width),
-        height: Val::Px(height),
-        justify_content: JustifyContent::Center,
-        align_items: AlignItems::Center,
-        margin: UiRect::all(Val::Px(2.0)),
-        ..default()
-    }
-}
+/// Markup for every panel action button — drives the hover/press tint.
+#[derive(Component)]
+struct HudButton;
 
-fn spawn_hud(mut commands: Commands) {
+/// Debug panel (F1/Z) — bottom-left, modeled on the Spec 023 top-left
+/// cluster: dark translucent panel, 1.5px border, rounded corners, FiraSans
+/// header. Parked bottom-left so it never fights the raid widget, stats
+/// cluster or minimap for clicks.
+fn spawn_hud(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let font: bevy::text::FontSource = asset_server.load("fonts/FiraSans-Bold.ttf").into();
     commands.insert_resource(DebugHudVisible(false));
     let mut root = commands.spawn((
+        Name::new("debug-hud"),
         DebugHudRoot,
         Node {
             position_type: PositionType::Absolute,
-            left: Val::Px(10.0),
-            top: Val::Px(10.0),
+            left: Val::Px(20.0),
+            bottom: Val::Px(20.0),
+            width: Val::Px(240.0),
             flex_direction: FlexDirection::Column,
-            padding: UiRect::all(Val::Px(8.0)),
+            align_items: AlignItems::Center,
+            padding: UiRect::all(Val::Px(10.0)),
+            row_gap: Val::Px(4.0),
+            border: UiRect::all(Val::Px(1.5)),
+            border_radius: BorderRadius::all(Val::Px(9.0)),
             display: Display::None,
             ..default()
         },
         BackgroundColor(Color::srgba(0.05, 0.08, 0.15, 0.85)),
+        BorderColor::all(Color::srgb(0.3, 0.55, 0.7)),
     ));
     root.with_children(|parent| {
+        parent.spawn(((
+            Text::new("🛠 DEBUG (F1 to hide)"),
+            TextFont {
+                font: font.clone(),
+                font_size: FontSize::Px(12.0),
+                ..default()
+            },
+            TextColor(Color::srgb(0.45, 0.82, 1.0)),
+            TextShadow {
+                color: Color::BLACK,
+                offset: Vec2::new(1.0, 1.0),
+            },
+        ),));
         parent.spawn((
             Text::new("Connecting..."),
-            TextFont { font_size: 13.0.into(), ..default() },
+            TextFont {
+                font: font.clone(),
+                font_size: FontSize::Px(11.0),
+                ..default()
+            },
             TextColor(TEXT_COLOR),
+            TextShadow {
+                color: Color::BLACK,
+                offset: Vec2::new(1.0, 1.0),
+            },
             HudStatusText,
         ));
+        // One-line stat readout; multiline details stay on the minimap/other
+        // panels. Full-width so wrapping is the caller's problem.
         parent.spawn((
             Text::new(""),
-            TextFont { font_size: 13.0.into(), ..default() },
+            TextFont {
+                font: font.clone(),
+                font_size: FontSize::Px(11.0),
+                ..default()
+            },
             TextColor(TEXT_COLOR),
+            TextShadow {
+                color: Color::BLACK,
+                offset: Vec2::new(1.0, 1.0),
+            },
             HudStatsText,
         ));
-
         for (label, action) in [
             ("Connect & Login", HudAction::Connect),
             ("Harvest (15G)", HudAction::Harvest),
@@ -144,25 +187,60 @@ fn spawn_hud(mut commands: Commands) {
         ] {
             parent
                 .spawn((
+                    Name::new(format!("debug-btn-{label}")),
                     Button,
-                    button_style(150.0, 30.0),
+                    // The click target: without an Interaction component the
+                    // hud_buttons query matches nothing (this is why the old
+                    // 150×30 buttons never reacted).
+                    Interaction::default(),
+                    Node {
+                        width: Val::Percent(100.0),
+                        height: Val::Px(24.0),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        border: UiRect::all(Val::Px(1.0)),
+                        border_radius: BorderRadius::all(Val::Px(5.0)),
+                        ..default()
+                    },
                     BackgroundColor(BUTTON_COLOR),
+                    BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.6)),
                     action,
+                    HudButton,
                 ))
                 .with_child((
                     Text::new(label),
-                    TextFont { font_size: 13.0.into(), ..default() },
+                    TextFont {
+                        font: font.clone(),
+                        font_size: FontSize::Px(12.0),
+                        ..default()
+                    },
                     TextColor(TEXT_COLOR),
+                    TextShadow {
+                        color: Color::BLACK,
+                        offset: Vec2::new(1.0, 1.0),
+                    },
                 ));
         }
-
         parent.spawn((
             Text::new(""),
-            TextFont { font_size: 12.0.into(), ..default() },
-            TextColor(TEXT_COLOR),
+            TextFont { font_size: 10.0.into(), ..default() },
+            TextColor(Color::srgba(0.75, 0.82, 0.9, 0.9)),
             HudLogText,
         ));
     });
+}
+
+/// Hover/press tint for the debug buttons (Interaction → background color).
+fn hud_button_tint(
+    interactions: Query<(&Interaction, &mut BackgroundColor), (With<HudButton>, Changed<Interaction>)>,
+) {
+    for (interaction, mut bg) in interactions {
+        **bg = match interaction {
+            Interaction::Pressed => BUTTON_PRESSED_COLOR,
+            Interaction::Hovered => BUTTON_HOVER_COLOR,
+            Interaction::None => BUTTON_COLOR,
+        };
+    }
 }
 
 /// Refresh status/stats/log text every frame from `Net` + `ClientPlayer`.

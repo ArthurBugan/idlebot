@@ -78,6 +78,8 @@ pub fn load_item_icons(
 }
 
 const SLOT_SIZE: f32 = 48.0;
+/// Full hotbar row width (9 slots + the 2px horizontal margins each).
+const HOTBAR_W: f32 = SLOT_SIZE * 9.0 + 4.0 * 9.0;
 const CELL_SIZE: f32 = 44.0;
 const HOTBAR_BASE: usize = 27;
 const TOTAL_SLOTS: usize = 36;
@@ -88,6 +90,7 @@ const CRAFT_BORDER: Color = Color::srgb(1.0, 0.8, 0.4);
 const ACTIVE_BORDER: Color = Color::srgb(1.0, 0.95, 0.6);
 const PICKED_BORDER: Color = Color::srgb(1.0, 0.7, 0.1);
 const PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.10, 0.96);
+const TEXT_COLOR: Color = Color::srgb(0.9, 0.95, 1.0);
 
 /// Inventory state: arrangement, active hotbar slot, panel/pick state and
 /// live counts mirrored from the `player_item` table.
@@ -167,6 +170,15 @@ struct SlotCount;
 #[derive(Component)]
 struct InventoryPanel;
 
+/// Floating hover tooltip: the hovered slot's item (`name ×count`), parked
+/// just off the cursor. One entity for all slots.
+#[derive(Component)]
+struct SlotTooltip;
+
+/// Entity of the tooltip node, filled by [`spawn_inventory_panel`].
+#[derive(Resource, Default)]
+struct TooltipRoot(Option<Entity>);
+
 /// Entity of the inventory panel root, filled by [`spawn_inventory_panel`].
 #[derive(Resource, Default)]
 struct PanelRoot(Option<Entity>);
@@ -225,6 +237,7 @@ impl Plugin for InventoryPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Inventory>()
             .init_resource::<PanelRoot>()
+            .init_resource::<TooltipRoot>()
             .init_resource::<InventoryCraftGrid>()
             .init_resource::<DragState>()
             .add_systems(Startup, (spawn_hotbar, spawn_inventory_panel))
@@ -234,6 +247,7 @@ impl Plugin for InventoryPlugin {
                     load_item_icons,
                     sync_inventory,
                     update_slot_uis,
+                    update_slot_tooltip,
                     handle_inventory_input,
                     handle_slot_clicks,
                     update_drag_ghost,
@@ -242,6 +256,7 @@ impl Plugin for InventoryPlugin {
                     update_inv_craft_ui,
                     handle_inv_craft_clicks,
                     handle_world_click,
+                    update_hotbar_xp_bar,
                 ),
             );
     }
@@ -333,6 +348,79 @@ fn spawn_hotbar(mut commands: Commands, asset_server: Res<AssetServer>) {
                 },
                 TextColor(Color::srgb(0.9, 0.95, 1.0)),
             ));
+            // Minecraft-style XP header row above the bar: green level
+            // number centered, small "xp / needed" readout at the right.
+            bar.spawn((
+                Name::new("hotbar-xp-header"),
+                Node {
+                    width: Val::Px(HOTBAR_W),
+                    height: Val::Px(16.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+            ))
+            .with_children(|header| {
+                header.spawn((
+                    Text::new("1"),
+                    TextFont {
+                        font: FontSource::Handle(font.clone()),
+                        font_size: 15.0.into(),
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.5, 1.0, 0.2)),
+                    TextShadow {
+                        color: Color::srgb(0.1, 0.25, 0.05),
+                        offset: Vec2::new(1.0, 1.0),
+                    },
+                    XpLevelText,
+                ));
+                header.spawn((
+                    Text::new("0 / 100"),
+                    TextFont {
+                        font: FontSource::Handle(font.clone()),
+                        font_size: 11.0.into(),
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.92, 0.95, 0.85)),
+                    TextShadow {
+                        color: Color::BLACK,
+                        offset: Vec2::new(1.0, 1.0),
+                    },
+                    Node {
+                        position_type: PositionType::Absolute,
+                        right: Val::Px(0.0),
+                        top: Val::Px(2.0),
+                        ..default()
+                    },
+                    XpNeededText,
+                ));
+            });
+            // Minecraft-style XP bar: thin dark trough with a green fill,
+            // hugs the hotbar's full width.
+            bar.spawn((
+                Name::new("hotbar-xp-bar"),
+                Node {
+                    width: Val::Px(HOTBAR_W),
+                    height: Val::Px(5.0),
+                    border: UiRect::all(Val::Px(1.0)),
+                    border_radius: BorderRadius::all(Val::Px(2.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.75)),
+                BorderColor::all(Color::srgb(0.25, 0.25, 0.3)),
+            ))
+            .with_children(|trough| {
+                trough.spawn((
+                    Node {
+                        width: Val::Percent(0.0),
+                        height: Val::Percent(100.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.5, 1.0, 0.2)),
+                    XpBarFill,
+                ));
+            });
             bar.spawn((Node {
                 display: Display::Flex,
                 justify_content: JustifyContent::Center,
@@ -345,6 +433,53 @@ fn spawn_hotbar(mut commands: Commands, asset_server: Res<AssetServer>) {
                 }
             });
         });
+}
+
+/// Green level number atop the hotbar XP bar (Minecraft-style).
+#[derive(Component)]
+struct XpLevelText;
+
+/// Small "xp into level / xp needed" readout at the bar's right end.
+#[derive(Component)]
+struct XpNeededText;
+
+/// Hotbar XP bar fill (width = XP progress through the current level).
+#[derive(Component)]
+struct XpBarFill;
+
+/// Refresh the hotbar XP bar from the server-synced player: green level
+/// number, `xp / needed` readout, fill fraction across the current level
+/// ring. Throttled because both the bar width and the numbers churn the UI.
+fn update_hotbar_xp_bar(
+    player: Query<&ClientPlayer>,
+    time: Res<Time>,
+    mut throttle: Local<f32>,
+    mut fills: Query<&mut Node, With<XpBarFill>>,
+    // Two Text writers — ParamSet avoids the Without dance.
+    mut texts: ParamSet<(
+        Query<&mut Text, With<XpLevelText>>,
+        Query<&mut Text, With<XpNeededText>>,
+    )>,
+) {
+    *throttle += time.delta_secs();
+    if *throttle < 0.25 {
+        return;
+    }
+    let Ok(player) = player.single() else {
+        return;
+    };
+    *throttle = 0.0;
+
+    let (level, into, needed, frac) = idlecore_core::progression::level_progress(player.xp);
+    if let Ok(mut fill) = fills.single_mut() {
+        fill.width = Val::Percent(100.0 * frac.clamp(0.0, 1.0));
+    }
+    if let Ok(mut level_text) = texts.p0().single_mut() {
+        level_text.0 = level.to_string();
+    }
+    if let Ok(mut needed_text) = texts.p1().single_mut() {
+        needed_text.0 = format!("{into} / {needed}");
+    }
 }
 
 fn spawn_inventory_panel(mut commands: Commands, asset_server: Res<AssetServer>) {
@@ -510,6 +645,90 @@ fn spawn_inventory_panel(mut commands: Commands, asset_server: Res<AssetServer>)
 
     commands.entity(wrapper).add_child(panel_id);
     commands.insert_resource(PanelRoot(Some(panel_id)));
+
+    // Floating slot tooltip — top-level so it never inherits panel clipping.
+    let tip_id = commands
+        .spawn((
+            Name::new("slot-tooltip"),
+            SlotTooltip,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(5.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.05, 0.08, 0.15, 0.95)),
+            BorderColor::all(Color::srgb(0.3, 0.5, 0.65)),
+            Text::new(""),
+            TextFont { font: FontSource::Handle(font.clone()), font_size: 11.0.into(), ..default() },
+            TextColor(TEXT_COLOR),
+            TextShadow { color: Color::BLACK, offset: Vec2::new(1.0, 1.0) },
+            Visibility::Hidden,
+        ))
+        .id();
+    commands.insert_resource(TooltipRoot(Some(tip_id)));
+}
+
+/// Hover a slot → the tooltip follows the cursor with `name ×count`.
+/// (Spec 024 polish: without it you have to click a slot to identify it.)
+fn update_slot_tooltip(
+    inv: Res<Inventory>,
+    tooltip: Res<TooltipRoot>,
+    mut tip: Query<(&mut Text, &mut Node, &mut Visibility), With<SlotTooltip>>,
+    hot_q: Query<(&Interaction, &HotbarSlot)>,
+    inv_q: Query<(&Interaction, &InvSlot)>,
+    windows: Query<&Window>,
+) {
+    let Some(entity) = tooltip.0 else { return };
+    let Ok((mut text, mut node, mut vis)) = tip.get_mut(entity) else {
+        return;
+    };
+    let hovered = hot_q
+        .iter()
+        .find(|(i, _)| **i == Interaction::Hovered)
+        .map(|(_, s)| HOTBAR_BASE + s.0)
+        .or_else(|| {
+            inv_q
+                .iter()
+                .find(|(i, _)| **i == Interaction::Hovered)
+                .map(|(_, s)| s.0)
+        });
+
+    let show = hovered
+        .and_then(|idx| inv.slots[idx].as_ref())
+        .map(|item| {
+            let count = inv.counts.get(item.as_str()).copied().unwrap_or(0);
+            format!("{} ×{}", normalize_item_name(item), count)
+        });
+    let cursor = windows.single().ok().and_then(|w| w.cursor_position());
+    match (show, cursor) {
+        (Some(label), Some(cursor)) => {
+            if text.0 != label {
+                text.0 = label;
+            }
+            let want = Visibility::Visible;
+            if *vis != want {
+                *vis = want;
+            }
+            let left = Val::Px(cursor.x + 14.0);
+            let top = Val::Px(cursor.y + 10.0);
+            if node.left != left {
+                node.left = left;
+            }
+            if node.top != top {
+                node.top = top;
+            }
+        }
+        _ => {
+            let want = Visibility::Hidden;
+            if *vis != want {
+                *vis = want;
+            }
+        }
+    }
 }
 
 // ============================================================================

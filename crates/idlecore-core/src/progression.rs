@@ -35,6 +35,24 @@ pub fn xp_remaining_for_next_level(level: u32, total_xp: u64) -> u64 {
     xp_needed.saturating_sub(xp_used_at_level)
 }
 
+/// One stop for HUD bars (Spec 023 hotbar XP): returns
+/// `(level, xp_into_level, xp_for_next_level, fill_fraction)`.
+/// `fill_fraction` is 1.0 exactly at the threshold boundary (the caller
+/// will always see the higher level in the same tuple, so the bar shows the
+/// just-emptied next ring).
+pub fn level_progress(total_xp: u64) -> (u32, u64, u64, f32) {
+    let mut level = 1u32;
+    let mut remaining = total_xp;
+    let mut needed = xp_for_next_level(1);
+    while remaining >= needed {
+        remaining -= needed;
+        level += 1;
+        needed = xp_for_next_level(level);
+    }
+    let frac = remaining as f32 / needed as f32;
+    (level, remaining, needed, frac.min(1.0))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -102,5 +120,20 @@ mod additional_tests {
         // Level 3 needs 900 XP; with 600 total (100 past the 500 threshold),
         // 800 remain.
         assert_eq!(xp_remaining_for_next_level(3, 600), 800);
+    }
+
+    #[test]
+    fn level_progress_tracks_the_ring_fill() {
+        assert_eq!(level_progress(0), (1, 0, 100, 0.0));
+        assert_eq!(level_progress(99), (1, 99, 100, 0.99));
+        // 300 total = 200 into the L2 ring of 400 → half full.
+        let (level, used, needed, frac) = level_progress(300);
+        assert_eq!((level, used, needed), (2, 200, 400));
+        assert!((frac - 0.5).abs() < 1e-6);
+        // Exactly at the L3 threshold: level 3, fresh ring of 900.
+        assert_eq!(level_progress(500), (3, 0, 900, 0.0));
+        // Over the threshold: level already bumped, remainder fills the ring.
+        let (level, used, needed, _) = level_progress(560);
+        assert_eq!((level, used, needed), (3, 60, 900));
     }
 }
