@@ -15,6 +15,10 @@ use bevy::input::mouse::MouseButton;
 use spacetimedb_sdk::Table;
 use crate::net::gen::player_item_table::PlayerItemTableAccess;
 use crate::net::gen::player_vehicle_table::PlayerVehicleTableAccess;
+use crate::net::gen::defense_structure_table::DefenseStructureTableAccess;
+use crate::net::gen::chest_item_table::ChestItemTableAccess;
+use crate::net::gen::chest_deposit_reducer::chest_deposit;
+use crate::net::gen::chest_withdraw_reducer::chest_withdraw;
 use crate::net::hud::{reducer_report, send_reducer};
 use crate::net::gen::equip_vehicle_reducer::equip_vehicle;
 use crate::net::gen::place_craft_bench_reducer::place_craft_bench;
@@ -179,6 +183,31 @@ struct SlotTooltip;
 #[derive(Resource, Default)]
 struct TooltipRoot(Option<Entity>);
 
+/// The chest the player is standing on (`structure_id`), or None when not
+/// near an own StorageChest — drives the inventory panel's chest tab
+/// (Spec 024 §2.3).
+#[derive(Resource, Default)]
+pub struct ChestNear(pub Option<u64>);
+
+#[derive(Component)]
+struct ChestTabRoot;
+
+/// The rows-carrying node — `update_chest_tab` rebuilds its children.
+#[derive(Component)]
+struct ChestRowList;
+
+#[derive(Component)]
+struct ChestRow {
+    chest_id: u64,
+    item: String,
+    count: u64,
+}
+
+/// "Deposit all" button inside the chest tab → chest_deposit of the
+/// active hotbar item's full stack.
+#[derive(Component)]
+struct ChestDepositBtn;
+
 /// Entity of the inventory panel root, filled by [`spawn_inventory_panel`].
 #[derive(Resource, Default)]
 struct PanelRoot(Option<Entity>);
@@ -238,6 +267,7 @@ impl Plugin for InventoryPlugin {
         app.init_resource::<Inventory>()
             .init_resource::<PanelRoot>()
             .init_resource::<TooltipRoot>()
+            .init_resource::<ChestNear>()
             .init_resource::<InventoryCraftGrid>()
             .init_resource::<DragState>()
             .add_systems(Startup, (spawn_hotbar, spawn_inventory_panel))
@@ -248,6 +278,10 @@ impl Plugin for InventoryPlugin {
                     sync_inventory,
                     update_slot_uis,
                     update_slot_tooltip,
+                    update_chest_near,
+                    update_chest_tab,
+                    chest_row_clicks,
+                    chest_deposit_click,
                     handle_inventory_input,
                     handle_slot_clicks,
                     update_drag_ghost,
@@ -645,6 +679,61 @@ fn spawn_inventory_panel(mut commands: Commands, asset_server: Res<AssetServer>)
 
     commands.entity(wrapper).add_child(panel_id);
     commands.insert_resource(PanelRoot(Some(panel_id)));
+    // Chest tab (Spec 024 §2.3): hidden until standing on an own chest.
+    let chest_id = commands
+        .spawn((
+            Name::new("chest-tab"),
+            ChestTabRoot,
+            Node {
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(3.0),
+                margin: UiRect::top(Val::Px(6.0)),
+                border: UiRect::top(Val::Px(1.0)),
+                display: Display::None,
+                ..default()
+            },
+        ))
+        .with_children(|tab| {
+            tab.spawn((
+                Text::new("🛡 CHEST — standing on it"),
+                TextFont { font: FontSource::Handle(font.clone()), font_size: 11.0.into(), ..default() },
+                TextColor(Color::srgb(0.85, 0.66, 0.28)),
+            ));
+            tab.spawn((
+                Button,
+                Interaction::default(),
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(22.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    border: UiRect::all(Val::Px(1.0)),
+                    border_radius: BorderRadius::all(Val::Px(5.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.16, 0.32, 0.2)),
+                BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+                ChestDepositBtn,
+            ))
+            .with_child((
+                Text::new("Deposit all (active item)"),
+                TextFont { font: FontSource::Handle(font.clone()), font_size: 11.0.into(), ..default() },
+                TextColor(TEXT_COLOR),
+            ));
+            // Chest rows live here — rebuilt by `update_chest_tab`.
+            tab.spawn((
+                Name::new("chest-rows"),
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(2.0),
+                    width: Val::Percent(100.0),
+                    ..default()
+                },
+                ChestRowList,
+            ));
+        })
+        .id();
+    commands.entity(panel_id).add_child(chest_id);
 
     // Floating slot tooltip — top-level so it never inherits panel clipping.
     let tip_id = commands
@@ -672,8 +761,174 @@ fn spawn_inventory_panel(mut commands: Commands, asset_server: Res<AssetServer>)
     commands.insert_resource(TooltipRoot(Some(tip_id)));
 }
 
-/// Hover a slot → the tooltip follows the cursor with `name ×count`.
+/// Which chest sits on the player's current hex (0.25 s). None when the
+/// hex has no own StorageChest — hides the inventory chest tab.
+fn update_chest_near(
+    net: Res<crate::net::plugin::Net>,
+    player: Query<&ClientPlayer>,
+    mut chest: ResMut<ChestNear>,
+) {
+    let mut next = None;
+    if let (Some(addr), Ok(p)) = (&net.address, player.single()) {
+        if let Some(cur) = &p.current_hex {
+            let token = (cur.q, cur.r);
+            let guard = net.conn.lock().unwrap();
+            if let Some(conn) = guard.as_ref() {
+                for s in conn.db.defense_structure().iter() {
+                    if s.kind != "StorageChest" || s.owner != **addr {
+                        continue;
+                    }
+                    let c = idlecore_core::hex::HexCoord::from_id(s.hex_id);
+                    if (c.q, c.r) == token {
+                        next = Some(s.structure_id);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if chest.0 != next {
+        chest.0 = next;
+    }
+}
+
+/// Rebuild the chest rows every 0.25 s while the tab is open: one
+/// "Take" button per stored stack (Spec 024 §2.3).
+fn update_chest_tab(
+    mut commands: Commands,
+    net: Res<crate::net::plugin::Net>,
+    chest: Res<ChestNear>,
+    time: Res<Time>,
+    mut throttle: Local<f32>,
+    mut tabs: Query<&mut Node, With<ChestTabRoot>>,
+    lists: Query<Entity, With<ChestRowList>>,
+    existing: Query<Entity, With<ChestRow>>,
+) {
+    *throttle += time.delta_secs();
+    if *throttle < 0.25 {
+        return;
+    }
+    *throttle = 0.0;
+    let open = chest.0.is_some();
+    if let Ok(mut node) = tabs.single_mut() {
+        node.display = if open { Display::Flex } else { Display::None };
+    }
+    // No chest around → the stale rows vanish with the tab.
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    let Some(chest_id) = chest.0 else { return };
+    let guard = net.conn.lock().unwrap();
+    let Some(conn) = guard.as_ref() else { return };
+    let rows: Vec<(String, u64)> = conn
+        .db
+        .chest_item()
+        .iter()
+        .filter(|i| i.structure_id == chest_id)
+        .map(|i| (i.item.clone(), i.count))
+        .collect();
+    drop(guard);
+    let Ok(list) = lists.single() else { return };
+    for (item, count) in rows {
+        let row_entity = commands
+            .spawn((
+                Button,
+                Interaction::default(),
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(20.0),
+                    justify_content: JustifyContent::SpaceBetween,
+                    align_items: AlignItems::Center,
+                    padding: UiRect::horizontal(Val::Px(6.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    border_radius: BorderRadius::all(Val::Px(4.0)),
+                    ..default()
+                },
+                BackgroundColor(SLOT_BG),
+                BorderColor::all(SLOT_BORDER),
+                ChestRow {
+                    chest_id,
+                    item: item.clone(),
+                    count,
+                },
+            ))
+            .with_children(|row| {
+                row.spawn((
+                    Text::new(format!("{item} ×{count}")),
+                    TextFont { font_size: 11.0.into(), ..default() },
+                    TextColor(TEXT_COLOR),
+                ));
+                row.spawn((
+                    Text::new("TAKE →"),
+                    TextFont { font_size: 10.0.into(), ..default() },
+                    TextColor(Color::srgb(1.0, 0.85, 0.4)),
+                ));
+            })
+            .id();
+        commands.entity(list).add_child(row_entity);
+    }
+}
+
+/// Click a chest row → withdraw the whole stack into the inventory.
+fn chest_row_clicks(
+    mut net: ResMut<crate::net::plugin::Net>,
+    rows: Query<(&Interaction, &ChestRow), Changed<Interaction>>,
+) {
+    for (interaction, row) in &rows {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        let chest_id = row.chest_id;
+        let item = row.item.clone();
+        let count = row.count;
+        let tx = net.sender();
+        send_reducer(&mut net, |r| {
+            r.chest_withdraw_then(
+                chest_id,
+                item,
+                count,
+                reducer_report("chest_withdraw", tx.clone(), 0),
+            )
+        });
+    }
+}
+
+/// Click "Deposit all" → send the active hotbar item's full stack in.
+fn chest_deposit_click(
+    mut net: ResMut<crate::net::plugin::Net>,
+    inv: Res<Inventory>,
+    chest: Res<ChestNear>,
+    buttons: Query<(&Interaction, &ChestDepositBtn), Changed<Interaction>>,
+) {
+    for (interaction, _) in &buttons {
+        if *interaction != Interaction::Pressed || chest.0.is_none() {
+            continue;
+        }
+        let Some(item) = inv.active_item().cloned() else {
+            let _ = net.sender().send(crate::net::plugin::NetEvent::ServerMessage(
+                "Chest: select an item in the hotbar first".to_string(),
+            ));
+            continue;
+        };
+        let count = inv.counts.get(item.as_str()).copied().unwrap_or(0);
+        if count == 0 {
+            continue;
+        }
+        let chest_id = chest.0.unwrap();
+        let tx = net.sender();
+        send_reducer(&mut net, |r| {
+            r.chest_deposit_then(
+                chest_id,
+                item,
+                count,
+                reducer_report("chest_deposit", tx.clone(), 0),
+            )
+        });
+    }
+}
+
 /// (Spec 024 polish: without it you have to click a slot to identify it.)
+/// Hover a slot → the tooltip follows the cursor with `name ×count`.
 fn update_slot_tooltip(
     inv: Res<Inventory>,
     tooltip: Res<TooltipRoot>,

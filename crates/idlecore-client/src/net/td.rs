@@ -24,8 +24,9 @@ use super::plugin::{Net, NetEvent};
 // use the headless `ui_widgets::Button` widget like the rest of the HUD.
 use bevy::ui_widgets::Button;
 use crate::player::PlayerTransform;
+use crate::player::ClientPlayer;
 use crate::world_floor::{atlas, prop_depth};
-use idlecore_core::slots::SLOT_SIZE;
+use super::hud::{reducer_report, send_reducer};
 // Procedural hexagon sprite textures (buildable-area / ownership overlays).
 use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -61,6 +62,7 @@ impl Plugin for TdPlugin {
                     td_pulse,
                     td_place_hints,
                     td_build_keys,
+                    td_upgrade_keys,
                     td_build_row_clicks,
                     td_build_row_tint,
                     td_build_icons,
@@ -1020,8 +1022,7 @@ fn td_place_hints(
     }
 }
 
-/// Build-mode keys (Spec 023 §3.4, rev7): **B** opens/closes the buildings
-/// menu (no more blind cycling); **ESC** closes it and disarms. Armed mode
+/// Build-mode keys (Spec 023 §3.4, rev7): **B** opens/closes the buildings/// menu (no more blind cycling); **ESC** closes it and disarms. Armed mode
 /// turns the owned hexes teal and every **E** books a build there
 /// (materials consumed server-side — no tower item is needed).
 fn td_build_keys(
@@ -1057,8 +1058,70 @@ fn td_build_keys(
     net.mark_td_dirty();
 }
 
-fn close_menu(menu: &mut TdBuildMenu, root: &mut Query<&mut Node, With<TdBuildMenuRoot>>) {
-    menu.open = false;
+/// Pure pick of the XP-transfer target: the nearest OWN structure within 1
+/// hex of the player (Spec 024 "transfer XP into your buildings").
+fn choose_upgrade_target(
+    owner: &str,
+    player_hex: HexCoord,
+    rows: &[(u64, String, i32, i32)], // (structure_id, owner, q, r)
+) -> Option<u64> {
+    rows.iter()
+        .filter(|(_, o, _, _)| o == owner)
+        .map(|&(id, _, q, r)| (HexCoord::new(q, r).distance(&player_hex), id))
+        .filter(|(d, _)| *d <= 1)
+        .min_by_key(|&(d, id)| (d, id))
+        .map(|(_, id)| id)
+}
+
+/// **U** — invest spare player XP into the structure standing next to you
+/// (Spec 024 §2.2). The server answers through the HUD log with the fresh
+/// level/bucket state.
+fn td_upgrade_keys(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut net: ResMut<Net>,
+    player: Query<&ClientPlayer>,
+) {
+    if !keys.just_pressed(KeyCode::KeyU) {
+        return;
+    }
+    let Some(address) = net.address.clone() else {
+        net.push(NetEvent::ServerMessage("U: connect first".to_string()));
+        return;
+    };
+    let Ok(p) = player.single() else { return };
+    let Some(cur) = &p.current_hex else {
+        net.push(NetEvent::ServerMessage("U: you are not on a hex".to_string()));
+        return;
+    };
+    let player_hex = HexCoord::new(cur.q, cur.r);
+    let rows: Vec<(u64, String, i32, i32)> = {
+        let guard = net.conn.lock().unwrap();
+        let Some(conn) = guard.as_ref() else {
+            net.push(NetEvent::ServerMessage("U: not connected".to_string()));
+            return;
+        };
+        conn.db
+            .defense_structure()
+            .iter()
+            .map(|s| (s.structure_id, s.owner.clone(), HexCoord::from_id(s.hex_id).q, HexCoord::from_id(s.hex_id).r))
+            .collect()
+    };
+    let Some(target) = choose_upgrade_target(&address, player_hex, &rows) else {
+        net.push(NetEvent::ServerMessage(
+            "U: stand next to one of your structures to invest XP".to_string(),
+        ));
+        return;
+    };
+    let tx = net.sender();
+    send_reducer(&mut net, |r| {
+        r.transfer_building_xp_then(
+            target,
+            reducer_report("transfer_building_xp", tx.clone(), 0),
+        )
+    });
+}
+
+fn close_menu(menu: &mut TdBuildMenu, root: &mut Query<&mut Node, With<TdBuildMenuRoot>>) {    menu.open = false;
     if let Ok(mut node) = root.single_mut() {
         node.display = Display::None;
     }
@@ -1814,6 +1877,26 @@ mod stat_tests {
             Some("L5"),
             "over-cap rows read as the top level"
         );
+    }
+
+    #[test]
+    fn upgrade_target_only_picks_own_neighbor_structures() {
+        // Player on (0,0): own structure there, an enemy one next door.
+        let rows = vec![
+            (7u64, "other".to_string(), 0, 1),
+            (11u64, "me".to_string(), 0, 1),       // 1 hex north
+            (12u64, "me".to_string(), 3, 0),       // 3 hexes east — out of reach
+            (13u64, "me".to_string(), 1, 0),       // 1 hex east — nearest
+        ];
+        let me = HexCoord::new(0, 0);
+        assert_eq!(
+            choose_upgrade_target("me", me, &rows),
+            Some(11),
+            "nearest own neighbor wins (tie → lowest id), enemies ignored"
+        );
+        // No own structure in reach → nothing to transfer into.
+        assert_eq!(choose_upgrade_target("me", HexCoord::new(9, 9), &rows), None);
+        assert_eq!(choose_upgrade_target("nobody", me, &rows), None);
     }
 
     #[test]

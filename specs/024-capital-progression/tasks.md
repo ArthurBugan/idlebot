@@ -24,19 +24,23 @@ the owner says so.
       refunded to the owner first), capital destruction refunds chests
 - [x] build placement inside-territory test (existing gates assert radius 26)
 
-## D2 — client
+## D2 — client (DONE except titles)
 
 - [x] inventory hover tooltip (`SlotTooltip`, cursor-following)
 - [x] building menu affordability (red cost, dim rows) via `TdBuildCost`
-- [ ] structure level pip over HP bar
-- [ ] transfer panel (owner building click → level-up send)
-- [ ] chest inventory tab
+- [x] structure level pip (`L2` 2d text above the HP bar, from L2)
+- [x] **U** invest-XP flow: nearest own structure within 1 hex →
+      `transfer_building_xp` (+ `choose_upgrade_target` unit test: nearest
+      own neighbor, tie → lowest id, out-of-range/enemy/empty → None)
+- [x] chest tab in the inventory panel: "Deposit all (active item)" button +
+      one `TAKE →` row per stored stack, rebuilt every 0.25 s while standing
+      on an own StorageChest (`update_chest_near` picks the hex)
 
 ## D3 — rebuild + publish (radius live)
 
 - [x] `spacetime build` + publish new wasm (radius/spacing constants live on
       `db.nestfeed.app` — existing hex-by-hex claim flow unchanged)
-- [ ] full-re publish when D1 columns land (schema add-safe)
+- [x] full publish with schema (DB wiped by go-ahead)
 
 ## Progress notes
 
@@ -51,8 +55,15 @@ the owner says so.
   schema (fresh world). Raid integration: leveled dps, leveled repair,
   half-level rubble respawn, chest refunds on tower/capital death.
 - PLAYTEST tomorrow: place a capital (fresh Core comes from `new_player`),
-  claim ring, build, force-wave, transfer XP via the new reducer (client
-  transfer panel pending — D2), deposit/withdraw chest items.
+  claim ring, build, force-wave, press **U** next to a tower to transfer XP,
+  open Tab next to a chest to deposit/withdraw stacks.
+
+## D4/D5 — tests & review
+
+- [x] core: 376 total (4 new scaling/curve/transfer, 4 radius/spacing)
+- [x] server: 76 total (+2 buildings pure tests)
+- [x] client: 18 net tests (+2: level pip, upgrade-target pick)
+- [ ] T5.x shared playtest → `review.md` (D5, gated)
 - rev7 (this session): claim radius L1 8→26 (~10×, 2107 hexes vs 217),
   growth +2/level, cap 34 (3487), spacing 60; tests updated in
   `defense_config.rs` + `capital.rs`. Client: `TdHexTex` procedural hexagon
