@@ -22,13 +22,16 @@ your realm, both at the capital and per structure.
 
 ### 2.1 Capital levels → grown soil
 
-- **Radius formula (live, rev7):** `claim_radius(level) = min(26 + 2·(level-1), 34)`.
-  L1 disc = **2107 hexes** (≈10× the previous 217), L5+ cap = 3487.
+- **Radius formula (live, rev8):** `claim_radius(level) = min(83 + 2·(level-1), 91)` —
+  rev8 raised the initial claimable AREA ×10 (radius 26/2107 hexes became
+  83/20 917 hexes; cap 34/3571 became 91/25 117).
+  L1 disc = **20 917 hexes** (rev8: 9.92× the rev7 2107; the original
+  radius-8 disc was 217), L5+ cap = 25 117.
 - **Radius growth grants reach, not land:** territory still spreads
   hex-by-hex (adjacent walk + resource cost per hex). Raising the radius
   raises the *boundary* of what you may claim around the capital.
-- **Placement spacing:** `MIN_CAPITAL_SPACING = 60` (two full L1 discs +
-  walking gap).
+- **Placement spacing:** `MIN_CAPITAL_SPACING = 200` (rev8: two full capped
+  discs + walking gap; was 60 at the radius-26 era)
 - **Capital levels up on XP** (`100·level²` curve; already consumed from
   raid kills via `CAPITAL_XP_PER_MOB` = 10):
   - L2+ waves add +15% wave size per level (already server-side).

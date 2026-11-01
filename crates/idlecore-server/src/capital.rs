@@ -387,20 +387,25 @@ mod tests {
 
     #[test]
     fn claim_radius_gates_far_hexes() {
-        // Ownership chain reaching distance 26, so the adjacency gate passes
-        // and the radius gate is the decisive rejection at L1.
-        let owned = vec![id(0, 0), id(0, 26)];
-        // Radius 26 at L1 — (0,27) is adjacent to owned (0,26) but distance
-        // 27 from the capital exceeds radius 26.
+        // REV8: L1 radius is 83, so the decisive far-hex sits past it: an
+        // ownership chain reaching distance 90 keeps the adjacency gate
+        // open, and (0,91) is beyond the L1 radius (90 in-reach at L1,
+        // 92+ rejected). L5 caps at 91.
+        let owned = vec![id(0, 0), id(0, 90)];
         assert_eq!(
-            claim_error(id(0, 27), false, &owned, id(0, 0), 1),
-            Some(ClaimError::OutOfRadius)
+            claim_error(id(0, 91), false, &owned, id(0, 0), 1),
+            Some(ClaimError::OutOfRadius),
+            "distance 91 > L1 radius 83"
         );
-        // L2 expands to 28: same candidate now legal.
-        assert_eq!(claim_error(id(0, 27), false, &owned, id(0, 0), 2), None);
-        // Distance-26 hex adjacent to an owned tail hex passes both gates.
+        // L4 radius 89 still rejects 91; the capped L5 radius 91 admits it
+        // as part of the ring boundary.
         assert_eq!(
-            claim_error(id(0, 26), false, &vec![id(0, 0), id(0, 25)], id(0, 0), 1),
+            claim_error(id(0, 91), false, &owned, id(0, 0), 5),
+            None
+        );
+        // A distance-83 hex adjacent to an owned tail hex passes both gates.
+        assert_eq!(
+            claim_error(id(0, 83), false, &vec![id(0, 0), id(0, 82)], id(0, 0), 1),
             None
         );
         // Water is never claimable, whatever the radius.
@@ -412,24 +417,27 @@ mod tests {
 
     #[test]
     fn claims_keep_minimum_distance_between_capitals() {
-        assert!(capital_spacing_ok(id(60, 0), &[id(0, 0)]));
-        assert!(capital_spacing_ok(id(30, 30), &[id(0, 0)]), "distance 60");
-        assert!(!capital_spacing_ok(id(59, 0), &[id(0, 0)]));
-        assert!(!capital_spacing_ok(id(30, 29), &[id(0, 0)]), "distance 59");
+        // REV8 spacing cap: 200 hexes between capitals (two full capped
+        // radius-91 discs + a walking gap).
+        assert!(capital_spacing_ok(id(200, 0), &[id(0, 0)]));
+        assert!(capital_spacing_ok(id(100, 100), &[id(0, 0)]), "distance 200");
+        assert!(!capital_spacing_ok(id(199, 0), &[id(0, 0)]));
+        assert!(!capital_spacing_ok(id(99, 100), &[id(0, 0)]), "distance 199");
         // Empty world accepts anything.
         assert!(capital_spacing_ok(id(0, 0), &[]));
         // Several capitals each enforce the gap.
-        let live = vec![id(0, 0), id(120, 0)];
-        assert!(!capital_spacing_ok(id(10, 0), &live));
-        assert!(!capital_spacing_ok(id(110, 0), &live), "10 hexes from (120,0)");
-        // (60,0): 60 from (0,0) and 60 from (120,0) — legal.
-        assert!(capital_spacing_ok(id(60, 0), &live));
-        // (130,0): 130 from (0,0) and 10 from (120,0)? no, 10 < 60 — denied.
-        assert!(!capital_spacing_ok(id(130, 0), &live), "10 hexes from (120,0)");
-        // (180,0): 180 from (0,0) and 60 from (120,0) — legal.
-        assert!(capital_spacing_ok(id(180, 0), &live));
-        // (100,0): 100 from origin, 20 from (120,0) — denied.
+        let live = vec![id(0, 0), id(400, 0)];
         assert!(!capital_spacing_ok(id(100, 0), &live));
+        assert!(
+            !capital_spacing_ok(id(390, 0), &live),
+            "10 hexes from (400,0)"
+        );
+        // (200,0): 200 from (0,0) and 200 from (400,0) — legal.
+        assert!(capital_spacing_ok(id(200, 0), &live));
+        // (210,0): 210 from origin, 190 from (400,0) — denied.
+        assert!(!capital_spacing_ok(id(210, 0), &live));
+        // (600,0): 600 from origin, 200 from (400,0) — legal.
+        assert!(capital_spacing_ok(id(600, 0), &live));
     }
 
     #[test]

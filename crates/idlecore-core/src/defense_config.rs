@@ -27,15 +27,15 @@ pub const CAPITAL_HP_PER_LEVEL: u32 = 25;
 /// Minimum hex distance between any two placed capitals. Scales with the
 /// territory size (see [`CLAIM_RADIUS_BASE`]) so a fresh capital can never
 /// sit inside a rival's effective claim disc: two full level-1 discs
-/// (radius 26) can span 52 hex tiles plus a walking gap.
-pub const MIN_CAPITAL_SPACING: i32 = 60;
+/// (max radius 91) can span 182 hex tiles plus a walking gap.
+pub const MIN_CAPITAL_SPACING: i32 = 200;
 /// Claimable ring around the capital at level 1; each level adds two.
-/// A hex disc of radius 26 holds 2107 hexes — ~10× the previous radius-8
-/// territory (217 hexes) that playtesting found cramped.
-pub const CLAIM_RADIUS_BASE: i32 = 26;
+/// REV8: initial claim AREA ×10 — radius 26 (2107 hexes) became 83
+/// (20 917 hexes, 9.92×) so a fresh capital has room to roam, not a stamp.
+pub const CLAIM_RADIUS_BASE: i32 = 83;
 /// Claim radius hard cap (prevents infinite territory): level 5+ plateaus
-/// at 34 hex tiles = 3487 hexes, still dense-city scale.
-pub const CLAIM_RADIUS_MAX: i32 = 34;
+/// at 91 hex tiles = 25 117 hexes (base + 2/level, same growth as ever).
+pub const CLAIM_RADIUS_MAX: i32 = 91;
 /// Land-claim cost per hex (consumed from the inventory).
 pub const CLAIM_WOOD_COST: u64 = 5;
 pub const CLAIM_STONE_COST: u64 = 3;
@@ -100,7 +100,7 @@ pub fn structure_transfer_xp(level: u8, bucket: u64, spendable: u64) -> (u8, u64
     (level, bucket, spent)
 }
 
-/// Max claim radius for a capital level (base 26, +2/level, capped at 34).
+/// Max claim radius for a capital level (base 83, +2/level, capped at 91).
 pub fn claim_radius(level: u32) -> i32 {
     CLAIM_RADIUS_BASE
         .saturating_add((level.saturating_sub(1) as i32).saturating_mul(2))
@@ -485,17 +485,17 @@ mod tests {
 
     #[test]
     fn claim_radius_grows_by_level_and_caps() {
-        assert_eq!(claim_radius(1), 26);
-        assert_eq!(claim_radius(2), 28);
-        assert_eq!(claim_radius(3), 30);
-        assert_eq!(claim_radius(5), 34);
-        assert_eq!(claim_radius(99), 34, "hard cap");
-        // Level-1 disc = 3r²+3r+1 hexes; 26 radius = 2107 ≈ 10× the previous
-        // radius-8 territory (217) playtesting found cramped.
+        assert_eq!(claim_radius(1), 83);
+        assert_eq!(claim_radius(2), 85);
+        assert_eq!(claim_radius(5), 91);
+        assert_eq!(claim_radius(99), 91, "hard cap");
+        // REV8: level-1 disc = 3r²+3r+1 hexes; radius 83 = 20 917 ≈ 10× the
+        // rev7 territory (radius 26 = 2107 hexes).
+        assert_eq!(3 * 83 * 83 + 3 * 83 + 1, 20_917);
         assert_eq!(3 * 26 * 26 + 3 * 26 + 1, 2107);
-        assert_eq!(3 * 8 * 8 + 3 * 8 + 1, 217);
-        // Capped disc (radius 34) stays dense-city scale: 3571 hexes.
-        assert_eq!(3 * 34 * 34 + 3 * 34 + 1, 3571);
+        assert_eq!(20_917 / 2107, 9, "initial claimable area ~×10 (9.92×)");
+        // Capped disc (radius 91): 25 117 hexes.
+        assert_eq!(3 * 91 * 91 + 3 * 91 + 1, 25_117);
     }
 
     #[test]
