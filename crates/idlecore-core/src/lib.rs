@@ -16,6 +16,7 @@ pub mod marketplace;
 pub mod plant;
 pub mod cosmetic;
 pub mod player;
+pub mod player_combat;
 pub mod progression;
 pub mod teleport;
 pub mod terrain;

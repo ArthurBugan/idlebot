@@ -20,6 +20,7 @@ mod player;
 mod inventory;
 mod minimap;
 mod time_ext;
+mod ui;
 mod plugins;
 mod skins;
 mod net;
@@ -53,6 +54,16 @@ fn main() {
                         ".".to_string()
                     } else {
                         format!("{}/assets", env!("CARGO_MANIFEST_DIR"))
+                    },
+                    // On web, Bevy 0.20's web asset reader fetches a
+                    // `<path>.meta` sidecar for every asset (asset-processor
+                    // metadata). We don't ship .meta files, so every texture
+                    // load 404s in the browser console. We never use meta
+                    // files, so skip the check there.
+                    meta_check: if cfg!(target_arch = "wasm32") {
+                        bevy::asset::AssetMetaCheck::Never
+                    } else {
+                        bevy::asset::AssetMetaCheck::default()
                     },
                     ..default()
                 })
@@ -106,6 +117,8 @@ fn main() {
         .add_plugins(net::hud::NetHudPlugin)
         .add_plugins(net::market::MarketPlugin)
         .add_plugins(net::craft::CraftPlugin)
+        .add_plugins(net::forge::ForgePlugin)
+        .add_plugins(ui::panel::PanelPlugin)
         .add_plugins(inventory::InventoryPlugin)
         .add_plugins(touch::TouchPlugin)
         .insert_resource(PlayerTransform::default())
@@ -236,6 +249,18 @@ fn setup(mut commands: Commands) {
             position_restored: false,
             last_action_seen: 0,
             action_cd_until_utc: 0,
+            // Spec 027 §3 combat mirror (populated by the player-row sync).
+            hp: 0,
+            weapon: 0,
+            weapons_owned: 0,
+            attack_cd_until_utc: 0,
+            dash_cd_until_utc: 0,
+            dash_until_utc: 0,
+            hostile_until_utc: 0,
+            death_until_utc: 0,
+            grace_until_utc: 0,
+            // Local dash burst (press → 0.4 s ahead of the server row).
+            dash_burst_secs: 0.0,
         },
     ));
 }

@@ -874,10 +874,10 @@ pub fn load_nearby_chunks(
 // ============================================================================
 
 /// Handle minimap input: zoom (mouse wheel), rotation (N), expand (M),
-/// waypoints (right-click). Left-click selects a hex for teleporting — on
-/// the minimap itself or anywhere on the world floor — and a double-click
-/// on the world floor fires the teleport immediately.
-#[allow(clippy::too_many_arguments)]
+/// waypoints (right-click). Left-click on the MINIMAP selects a hex for
+/// teleporting (double-click fires immediately). Spec 030: world-floor
+/// left clicks no longer select/teleport — they strike with the equipped
+/// weapon (net::td::td_combat_input).
 pub fn handle_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut scroll: MessageReader<MouseWheel>,
@@ -886,8 +886,6 @@ pub fn handle_input(
     time: Res<Time>,
     mut minimap_state: ResMut<MinimapState>,
     mut minimap_waypoints: ResMut<MinimapWaypoints>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
-    widgets: Query<&Interaction>,
     mut net: ResMut<crate::net::plugin::Net>,
     mut latency: ResMut<crate::net::plugin::ServerLatency>,
     mut zoom_budget: Local<f32>,
@@ -1005,36 +1003,10 @@ pub fn handle_input(
             minimap_state.selected_hex = Some((q, r));
             minimap_state.selected_px = Some(mm_pos);
             selected = true;
-        } else if let Some(cursor) = cursor {
-            // Click on the world floor: pick the hex under the camera.
-            // Never wipe an existing selection here — unrelated clicks (e.g.
-            // the Teleport button itself) used to race it away before the
-            // button handler could read it.
-            let over_widget = widgets
-                .iter()
-                .any(|i| matches!(i, Interaction::Hovered | Interaction::Pressed));
-            if !over_widget {
-                if let Ok((camera, cam_transform)) = cameras.single() {
-                    if let Ok(world) = camera.viewport_to_world_2d(cam_transform, cursor) {
-                        let (q, r) = world_pos_to_tile(world.x, world.y, WorldGenConfig::TILE_SIZE);
-                        minimap_state.selected_hex = Some((q, r));
-                        // Keep the selection ring on the minimap in sync.
-                        if let Some(player_pos) = minimap_state.player_pos {
-                            let (mx, my) = world_to_map_pixel(
-                                (world.x, world.y),
-                                (player_pos.x, player_pos.y),
-                                minimap_state.pixel_scale(),
-                                minimap_state.mm_size() / 2.0,
-                                minimap_state.rotation.map_rotation(minimap_state.facing_angle),
-                            );
-                            minimap_state.selected_px = Some((mx, my));
-                        }
-                        selected = true;
-                    }
-                }
-            }
         }
-        // A fresh selection on either surface: a second click within 450 ms
+        // Spec 030: clicks on the world floor belong to combat now — they
+        // never create a teleport selection here.
+        // A fresh selection on the minimap: a second click within 450 ms
         // and ~14 px of the first fires the teleport immediately.
         if selected {
             let now = Instant::now();
@@ -1055,6 +1027,13 @@ pub fn handle_input(
 }
 
 /// Convert screen cursor position to minimap-local pixel coordinates.
+/// Is the cursor over the minimap rect? (Publishes the private helper for
+/// combat input — Spec 030: world clicks vs minimap clicks must not both
+/// fire.)
+pub fn cursor_on_minimap(windows: &Query<&Window>, state: &MinimapState) -> bool {
+    get_minimap_mouse_pos(windows, state.mm_size()).is_some()
+}
+
 fn get_minimap_mouse_pos(windows: &Query<&Window>, mm_size: f32) -> Option<(f32, f32)> {
     let window = windows.single().ok()?;
     let cursor = window.cursor_position()?;

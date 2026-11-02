@@ -1339,6 +1339,18 @@ fn sync_remote_players(
                 p.usdt = row.usdt;
                 p.xp = row.total_xp;
                 p.level = row.level;                p.eco_points = row.eco_points as u64;
+                // Spec 027 §3: combat mirror. hp 0 without a death stamp is
+                // the server's "unseeded" encoding — death reads
+                // death_until_utc, never hp == 0.
+                p.hp = row.player_hp;
+                p.weapon = row.weapon;
+                p.weapons_owned = row.weapons_owned;
+                p.attack_cd_until_utc = row.attack_cd_until;
+                p.dash_cd_until_utc = row.dash_cd_until;
+                p.dash_until_utc = row.dash_until;
+                p.hostile_until_utc = row.hostile_until;
+                p.death_until_utc = row.death_until;
+                p.grace_until_utc = row.grace_until;
                 // Spec 006 T6.3: restore equipped vehicle from the authoritative row.
                 p.owned_vehicle = vehicle_from_str(&row.vehicle);
                 // Spec 014 FR4: avatar drives the local character's skin.

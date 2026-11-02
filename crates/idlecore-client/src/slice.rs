@@ -35,7 +35,7 @@ impl CropRect {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Pending {
     key: String,
-    path: &'static str,
+    path: String,
     rect: CropRect,
     handle: Handle<Image>,
 }
@@ -58,8 +58,22 @@ pub fn request(
     path: &'static str,
     rect: CropRect,
 ) {
-    let handle = asset_server.load::<Image>(path);
-    requests.0.push(Pending { key: key.to_string(), path, rect, handle });
+    request_dyn(requests, asset_server, key, path.to_string(), rect);
+}
+
+/// Same as [`request`], for dynamically built paths (Spec 033 — the
+/// material × weapon icon matrix).
+pub fn request_dyn(
+    requests: &mut SliceRequests,
+    asset_server: &AssetServer,
+    key: &str,
+    path: String,
+    rect: CropRect,
+) {
+    let handle = asset_server.load::<Image>(path.clone());
+    requests
+        .0
+        .push(Pending { key: key.to_string(), path, rect, handle });
 }
 
 /// Pump the pending requests: load sheets, crop ready ones, move results to

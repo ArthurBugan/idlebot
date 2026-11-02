@@ -22,12 +22,14 @@ use crate::net::gen::chest_deposit_reducer::chest_deposit;
 use crate::net::gen::chest_withdraw_reducer::chest_withdraw;
 use crate::net::hud::{reducer_report, send_reducer};
 use crate::net::gen::equip_vehicle_reducer::equip_vehicle;
+use crate::net::gen::equip_weapon_reducer::equip_weapon;
 use crate::net::gen::place_craft_bench_reducer::place_craft_bench;
 use crate::net::gen::gather_object_reducer::gather_object;
 use crate::net::gen::world_object_table::WorldObjectTableAccess;
 use crate::net::plugin::NetEvent;
 use crate::player::ClientPlayer;
 use crate::plugins::player::PhysicsBody;
+use crate::ui::panel::{CommandPanel, Tab, TabContent};
 use crate::world_floor::ActionTarget;
 
 /// Icon texture per item name, loaded once at startup.
@@ -71,6 +73,21 @@ pub fn load_item_icons(
     by_item.insert("CapitalCore".to_string(), td.icon_core.clone());
     by_item.insert("MetalPart".to_string(), td.icon_part.clone());
     by_item.insert("Bone".to_string(), td.icon_bone.clone());
+    // Spec 027 §14: real weapon icons + the proper arrow art (the tower
+    // "arrow" icon is a scarecrow crop — never an ammo pictogram).
+    by_item.insert("Arrow".to_string(), props.icon_arrow_item.clone());
+    // Spec 033: the whole material × weapon matrix + armor pieces, keyed by
+    // the exact item names the server grants.
+    for w in idlecore_core::player_combat::weapons() {
+        if let Some(icon) = props.weapon_icons.get(&w.name) {
+            by_item.insert(w.name.clone(), icon.clone());
+        }
+    }
+    for a in idlecore_core::player_combat::armors() {
+        if let Some(icon) = props.armor_icons.get(&a.name) {
+            by_item.insert(a.name.clone(), icon.clone());
+        }
+    }
     by_item.insert("BoneBarricade".to_string(), td.icon_barricade.clone());
     by_item.insert("ArrowTower".to_string(), td.icon_arrow.clone());
     by_item.insert("Ballista".to_string(), td.icon_ballista.clone());
@@ -91,10 +108,11 @@ const TOTAL_SLOTS: usize = 36;
 
 const SLOT_BG: Color = Color::srgba(0.10, 0.10, 0.14, 0.88);
 const SLOT_BORDER: Color = Color::srgb(0.35, 0.35, 0.40);
-const CRAFT_BORDER: Color = Color::srgb(1.0, 0.8, 0.4);
+// Spec 029: gold accents + the panel chrome now live in `ui::panel`; this
+// module imports instead of redefining them.
+const CRAFT_BORDER: Color = crate::ui::panel::ACCENT;
 const ACTIVE_BORDER: Color = Color::srgb(1.0, 0.95, 0.6);
 const PICKED_BORDER: Color = Color::srgb(1.0, 0.7, 0.1);
-const PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.10, 0.96);
 const TEXT_COLOR: Color = Color::srgb(0.9, 0.95, 1.0);
 
 /// Inventory state: arrangement, active hotbar slot, panel/pick state and
@@ -172,9 +190,6 @@ struct SlotIcon;
 #[derive(Component)]
 struct SlotCount;
 
-#[derive(Component)]
-struct InventoryPanel;
-
 /// Floating hover tooltip: the hovered slot's item (`name ×count`), parked
 /// just off the cursor. One entity for all slots.
 #[derive(Component)]
@@ -208,10 +223,6 @@ struct ChestRow {
 /// active hotbar item's full stack.
 #[derive(Component)]
 struct ChestDepositBtn;
-
-/// Entity of the inventory panel root, filled by [`spawn_inventory_panel`].
-#[derive(Resource, Default)]
-struct PanelRoot(Option<Entity>);
 
 /// Text above the hotbar flashing the active item's name.
 #[derive(Component)]
@@ -266,7 +277,6 @@ pub struct InventoryPlugin;
 impl Plugin for InventoryPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Inventory>()
-            .init_resource::<PanelRoot>()
             .init_resource::<TooltipRoot>()
             .init_resource::<ChestNear>()
             .init_resource::<InventoryCraftGrid>()
@@ -284,9 +294,11 @@ impl Plugin for InventoryPlugin {
                     chest_row_clicks,
                     chest_deposit_click,
                     handle_inventory_input,
+                    sync_inventory_from_panel,
                     handle_slot_clicks,
                     update_drag_ghost,
                     auto_unequip_on_deselect,
+                    auto_equip_weapon_on_select,
                     update_toast,
                     update_inv_craft_ui,
                     handle_inv_craft_clicks,
@@ -641,40 +653,22 @@ fn update_hotbar_cooldown(
 
 fn spawn_inventory_panel(mut commands: Commands, asset_server: Res<AssetServer>) {
     let font: Handle<Font> = asset_server.load("fonts/FiraSans-Bold.ttf");
-    // Full-screen wrapper does the centering (auto margins are unreliable).
-    let wrapper = commands
-        .spawn((Name::new("inventory-wrapper"), Node {
-            position_type: PositionType::Absolute,
-            left: Val::Px(0.0), right: Val::Px(0.0),
-            top: Val::Px(0.0), bottom: Val::Px(0.0),
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Start,
-            ..default()
-        },))
-        .id();
-
+    // Spec 029: the inventory is the Bag tab of the shared command panel —
+    // no own wrapper/root; the content root carries `TabContent` and is
+    // adopted + display-driven by `ui::panel`.
     let panel_id = commands
         .spawn((
-            Name::new("inventory-panel"),
-            InventoryPanel,
+            Name::new("inventory-tab"),
+            TabContent(Tab::Inventory),
             Node {
-                margin: UiRect::top(Val::Px(90.0)),
                 width: Val::Px(9.0 * (CELL_SIZE + 4.0) + 20.0),
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(4.0),
-                padding: UiRect::all(Val::Px(10.0)),
                 display: Display::None,
                 ..default()
             },
-            BackgroundColor(PANEL_BG),
         ))
         .with_children(|panel| {
-            panel.spawn((
-                Text::new("Inventory"),
-                TextFont { font: FontSource::Handle(font.clone()), font_size: 14.0.into(), ..default() },
-                TextColor(Color::srgb(0.85, 0.9, 1.0)),
-                Node { margin: UiRect::bottom(Val::Px(6.0)), ..default() },
-            ));
             for row in 0..4 {
                 panel
                     .spawn((Node {
@@ -695,7 +689,7 @@ fn spawn_inventory_panel(mut commands: Commands, asset_server: Res<AssetServer>)
             panel.spawn((
                 Text::new("[Tab] close · click two cells to move a stack"),
                 TextFont { font: FontSource::Handle(font.clone()), font_size: 10.0.into(), ..default() },
-                TextColor(Color::srgb(0.6, 0.65, 0.75)),
+                TextColor(crate::ui::panel::BODY_TEXT),
                 Node { margin: UiRect::top(Val::Px(6.0)), ..default() },
             ));
 
@@ -707,7 +701,7 @@ fn spawn_inventory_panel(mut commands: Commands, asset_server: Res<AssetServer>)
             panel.spawn((
                 Text::new("Crafting"),
                 TextFont { font: FontSource::Handle(font.clone()), font_size: 13.0.into(), ..default() },
-                TextColor(Color::srgb(0.85, 0.9, 1.0)),
+                TextColor(crate::ui::panel::HEAD_TEXT),
                 Node { margin: UiRect::top(Val::Px(10.0)), ..default() },
             ));
             panel
@@ -794,14 +788,12 @@ fn spawn_inventory_panel(mut commands: Commands, asset_server: Res<AssetServer>)
                 InvCraftStatus,
                 Text::new(""),
                 TextFont { font: FontSource::Handle(font.clone()), font_size: 10.0.into(), ..default() },
-                TextColor(Color::srgb(0.6, 0.65, 0.75)),
+                TextColor(crate::ui::panel::BODY_TEXT),
                 Node { margin: UiRect::top(Val::Px(2.0)), ..default() },
             ));
         })
         .id();
 
-    commands.entity(wrapper).add_child(panel_id);
-    commands.insert_resource(PanelRoot(Some(panel_id)));
     // Chest tab (Spec 024 §2.3): hidden until standing on an own chest.
     let chest_id = commands
         .spawn((
@@ -1116,7 +1108,6 @@ fn update_slot_tooltip(
 fn handle_inventory_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut inv: ResMut<Inventory>,
-    mut touch: ResMut<crate::touch::TouchControls>,
 ) {
     const DIGITS: [KeyCode; 9] = [
         KeyCode::Digit1,
@@ -1134,17 +1125,24 @@ fn handle_inventory_input(
             inv.active = i;
         }
     }
-    if keys.just_pressed(KeyCode::Tab) || keys.just_pressed(KeyCode::KeyI) {
-        inv.open = !inv.open;
-        inv.picked = None;
+    // Spec 029: Tab / I / ESC / the touch bag button are the command
+    // panel's keys now (`ui::panel` owns them); everything else — digits —
+    // stays here. The open flag + pick state sync from the shared shell
+    // in `sync_inventory_from_panel`.
+}
+
+/// Mirror the shared command panel into the legacy `Inventory.open` view
+/// (touch controls + world-click guards still read it). Closing the Bag tab
+/// also drops any in-flight stack pick.
+fn sync_inventory_from_panel(
+    panel: Res<CommandPanel>,
+    mut inv: ResMut<Inventory>,
+) {
+    let open = panel.is_open(Tab::Inventory);
+    if inv.open != open {
+        inv.open = open;
     }
-    if keys.just_pressed(KeyCode::Escape) && inv.open {
-        inv.open = false;
-        inv.picked = None;
-    }
-    if touch.inventory {
-        touch.inventory = false;
-        inv.open = !inv.open;
+    if !open && inv.picked.is_some() {
         inv.picked = None;
     }
 }
@@ -1262,6 +1260,47 @@ fn auto_unequip_on_deselect(
     *prev_active = active;
 }
 
+/// Selecting a WEAPON in the hotbar equips it (§14: the attack system uses
+/// the equipped tier). Fires once per selection change and only for a tier
+/// different from the already-equipped one; other items leave the current
+/// weapon in hand.
+fn auto_equip_weapon_on_select(
+    inv: Res<Inventory>,
+    player_q: Query<&ClientPlayer, With<crate::plugins::player::PhysicsBody>>,
+    mut net: ResMut<crate::net::plugin::Net>,
+    mut prev_active: Local<usize>,
+) {
+    let active = inv.active;
+    if *prev_active == active {
+        return;
+    }
+    *prev_active = active;
+    let name = match inv.slots[HOTBAR_BASE + active].as_deref() {
+        Some(n) => n,
+        None => return,
+    };
+    let Some(tier) = idlecore_core::player_combat::weapons()
+        .iter()
+        .find(|w| w.name == name)
+        .map(|w| w.id)
+    else {
+        return;
+    };
+    let already = player_q
+        .single()
+        .ok()
+        .map(|p| p.weapon == tier)
+        .unwrap_or(true);
+    if already || net.address.is_none() {
+        return;
+    }
+    let tx = net.sender();
+    send_reducer(
+        &mut net,
+        |r| r.equip_weapon_then(tier, reducer_report("equip_weapon", tx.clone(), 0)),
+    );
+}
+
 /// True when the bench can be placed: the 2x2 grid holds 4 Logs *and* the
 /// player carries >= 4 Logs, or the player already holds a picked-up
 /// Workbench item (either path satisfies `place_craft_bench`).
@@ -1271,7 +1310,6 @@ fn inv_craft_ready(grid: &InventoryCraftGrid, counts: &std::collections::HashMap
         && counts.get("Log").copied().unwrap_or(0) >= 4;
     has_bench || logs_ready
 }
-
 /// Refresh the inventory crafting grid: cell icons + result slot + status.
 #[allow(clippy::type_complexity)]
 fn update_inv_craft_ui(
@@ -1642,6 +1680,7 @@ fn handle_world_click(
     mouse: Res<ButtonInput<MouseButton>>,
     mut net: Option<ResMut<crate::net::plugin::Net>>,
     inv: Res<Inventory>,
+    panel: Res<CommandPanel>,
     target: Res<ActionTarget>,
     widgets: Query<&Interaction>,
 ) {
@@ -1649,7 +1688,8 @@ fn handle_world_click(
         return;
     }
     let Some(net) = net.as_deref_mut() else { return };
-    if net.address.is_none() || inv.open {
+    // UI open (any tab) keeps world clicks natural (Spec 029 §3.5).
+    if net.address.is_none() || inv.open || panel.open {
         return;
     }
     // Ignore clicks that land on a UI widget (panels, buttons, touch controls).
@@ -1705,8 +1745,6 @@ fn handle_world_click(
 fn update_slot_uis(
     inv: Res<Inventory>,
     icons: Option<Res<ItemIcons>>,
-    panel_root: Res<PanelRoot>,
-    mut panel_display: Query<&mut Node, With<InventoryPanel>>,
     hotbar_q: Query<(Entity, &HotbarSlot, &Children)>,
     inv_q: Query<(Entity, &InvSlot, &Children)>,
     mut icon_q: Query<(&mut ImageNode, &mut Visibility), With<SlotIcon>>,
@@ -1715,14 +1753,7 @@ fn update_slot_uis(
     mut borders: Query<&mut BorderColor, With<Button>>,
     mut active_label: Query<&mut Text, With<ActiveItemLabel>>,
 ) {
-    if let Some(entity) = panel_root.0 {
-        if let Ok(mut node) = panel_display.get_mut(entity) {
-            let want = if inv.open { Display::Flex } else { Display::None };
-            if node.display != want {
-                node.display = want;
-            }
-        }
-    }
+    // Panel visibility is owned by `ui::panel` now (Spec 029).
 
     // Active item name above the hotbar.
     if let Ok(mut label) = active_label.single_mut() {

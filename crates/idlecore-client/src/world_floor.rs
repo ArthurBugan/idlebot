@@ -213,6 +213,12 @@ pub struct PropTextures {
     pub icon_watering_can: Handle<Image>,
     /// Car (and other vehicles) inventory icon — a city bus.
     pub icon_car: Handle<Image>,
+    /// Spec 027 §14: weapon-forge inventory icons (one per tier + arrows).
+    pub icon_arrow_item: Handle<Image>,
+    /// Spec 033: the material × weapon icon matrix, keyed by the exact item
+    /// name ("Gold Sword", …); armor pieces in armor_icons.
+    pub weapon_icons: std::collections::HashMap<String, Handle<Image>>,
+    pub armor_icons: std::collections::HashMap<String, Handle<Image>>,
     /// Stardew plot tiles + wheat growth frames (per-slot farming).
     pub plot_tilled: Handle<Image>,
     pub plot_wet: Handle<Image>,
@@ -338,6 +344,10 @@ pub mod atlas {
     pub const ICON_BONE_BARRICADE: &str = "icon_bone_barricade";
     pub const ICON_ARROW_TOWER: &str = "icon_arrow_tower";
     pub const ICON_BALLISTA: &str = "icon_ballista";
+    // Spec 027 §14: real weapon + ammo icons (whole 16×16 left cells of the
+    // two-cell RPG icon sheets — plain variant, not the outlined duplicate;
+    // crops verified against the rendered sheet).
+    pub const ICON_ARROW_ITEM: &str = "icon_arrow_item";
     // REV4 build-menu icons (same crops as the world arts).
     pub const ICON_WOOD_WALL: &str = "icon_wood_wall";
     pub const ICON_IRON_WALL: &str = "icon_iron_wall";
@@ -500,6 +510,12 @@ pub mod atlas {
     pub const CRIT_BEE_3: &str = "crit_bee_3";
 }
 
+/// Permanently allocate a dynamic path string (Spec 033 crop matrix paths
+/// are built once at startup; the count is bounded by ~110 icons).
+fn leak_path(path: String) -> &'static str {
+    Box::leak(path.into_boxed_str())
+}
+
 /// Queue every sprite crop the game needs, against the new EmanuelleDev art.
 /// Runs once at startup; `slice::pump_slices` fulfils them as sheets stream
 /// in. Classic paths (`models/Tiny */...`) are gone.
@@ -611,6 +627,48 @@ pub fn enqueue_model_slices(
     r(atlas::ICON_BONE_BARRICADE, "models/Objects/Exterior/Fence and Bridge/Fence Stone.png", 8, 20, 32, 18);
     r(atlas::ICON_ARROW_TOWER, "models/Objects/Exterior/Scarescrow.png", 4, 0, 24, 32);
     r(atlas::ICON_BALLISTA, "models/Objects/Exterior/Hay Bales.png", 0, 0, 16, 16);
+    // Spec 027 §14 weapon-forge icons (single 16×16 plain cells).
+    r(atlas::ICON_ARROW_ITEM, "models/Icons/RPG icons/Weapons and Armor/1. Wood/Arrow.png", 0, 0, 16, 16);
+    // Spec 033: the material × weapon matrix — every `Weapons and Armor`
+    // folder (Wood…Obsidian) × every icon file. Single 16×16 plain cells,
+    // verified against the rendered sheets (REV4). Keys mirror the core
+    // item names: `wae_{mat}_{file}` with the material index and the
+    // lowercase, space-stripped file stem.
+    {
+        use idlecore_core::player_combat::{WEA_KINDS, WEA_MATERIALS};
+        let dirs = WEA_MATERIALS.iter().map(|(_, d)| *d).collect::<Vec<_>>();
+        for (mi, dir) in dirs.iter().enumerate() {
+            for ki in 0..WEA_KINDS.len() {
+                let stem = WEA_KINDS[ki].name;
+                let path = format!("models/Icons/RPG icons/Weapons and Armor/{dir}/{stem}.png");
+                r(
+                    &format!("wae_{mi}_{ki}"),
+                    leak_path(path),
+                    0,
+                    0,
+                    16,
+                    16,
+                );
+            }
+        }
+    }
+    // Armor icons: Helmet/Chestplate/Leggings/Boots per material.
+    {
+        use idlecore_core::player_combat::{ARMOR_PIECES, WEA_MATERIALS};
+        for (mi, (_, dir)) in WEA_MATERIALS.iter().enumerate() {
+            for (pi, (piece, _)) in ARMOR_PIECES.iter().enumerate() {
+                let path = format!("models/Icons/RPG icons/Weapons and Armor/{dir}/{piece}.png");
+                r(
+                    &format!("wae_armor_{mi}_{pi}"),
+                    leak_path(path),
+                    0,
+                    0,
+                    16,
+                    16,
+                );
+            }
+        }
+    }
     // REV4 buildables — verified crops (world art = icon art).
     r(atlas::TD_WOOD_WALL, "models/Objects/Exterior/Fence and Bridge/Fence Wood.png", 48, 0, 32, 32);
     r(atlas::TD_IRON_WALL, "models/Objects/Exterior/Fence and Bridge/Fence Iron.png", 0, 0, 16, 32);
@@ -888,6 +946,25 @@ pub fn init_prop_textures(
     let Some(icon_hoe) = atlas.items.get(atlas::ICON_HOE).cloned() else { return };
     let Some(icon_watering_can) = atlas.items.get(atlas::ICON_WATERING_CAN).cloned() else { return };
     let Some(icon_car) = atlas.items.get(atlas::ICON_CAR).cloned() else { return };
+    let Some(icon_arrow_item) = atlas.items.get(atlas::ICON_ARROW_ITEM).cloned() else { return };
+    // Spec 033: the matrix slips in only once every crop landed.
+    let mut weapon_icons = std::collections::HashMap::new();
+    let mut armor_icons = std::collections::HashMap::new();
+    {
+        use idlecore_core::player_combat::{ARMOR_PIECES, WEA_KINDS, WEA_MATERIALS};
+        for (mi, (mat, _)) in WEA_MATERIALS.iter().enumerate() {
+            for (ki, kind) in WEA_KINDS.iter().enumerate() {
+                let key = format!("wae_{mi}_{ki}");
+                let Some(handle) = atlas.items.get(&key).cloned() else { return };
+                weapon_icons.insert(format!("{mat} {}", kind.name), handle);
+            }
+            for (pi, (piece, _)) in ARMOR_PIECES.iter().enumerate() {
+                let key = format!("wae_armor_{mi}_{pi}");
+                let Some(handle) = atlas.items.get(&key).cloned() else { return };
+                armor_icons.insert(format!("{mat} {piece}"), handle);
+            }
+        }
+    }
     let Some(plot_tilled) = atlas.items.get(atlas::PLOT_TILLED).cloned() else { return };
     let Some(plot_wet) = atlas.items.get(atlas::PLOT_WET).cloned() else { return };
     let Some(crop_stage_1) = atlas.items.get(atlas::CROP_STAGE_1).cloned() else { return };
@@ -919,6 +996,9 @@ pub fn init_prop_textures(
     props.icon_hoe = icon_hoe;
     props.icon_watering_can = icon_watering_can;
     props.icon_car = icon_car;
+    props.icon_arrow_item = icon_arrow_item;
+    props.weapon_icons = weapon_icons;
+    props.armor_icons = armor_icons;
     props.plot_tilled = plot_tilled;
     props.plot_wet = plot_wet;
     props.crop_stages = [crop_stage_1, crop_stage_2, crop_stage_mature];
@@ -1061,7 +1141,7 @@ pub fn init_deco_textures(
     if !deco.by_terrain.is_empty() || deco.built {
         return;
     }
-    let mut need = |keys: &[&str]| keys.iter().all(|k| atlas.items.contains_key(*k));
+    let need = |keys: &[&str]| keys.iter().all(|k| atlas.items.contains_key(*k));
     if !need(&[
         atlas::DECO_WHEAT, atlas::DECO_WHEAT2, atlas::DECO_CARROT,
         atlas::DECO_BROCCOLI, atlas::DECO_POTATO, atlas::DECO_ONION,

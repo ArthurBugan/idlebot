@@ -3,6 +3,7 @@
 
 pub mod gen;
 pub mod craft;
+pub mod forge;
 pub mod hud;
 pub mod login;
 pub mod market;

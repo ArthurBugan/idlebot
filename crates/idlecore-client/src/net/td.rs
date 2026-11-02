@@ -10,7 +10,7 @@
 
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use idlecore_core::defense_config as cfg;
 use idlecore_core::grid::TileCoord;
@@ -25,6 +25,7 @@ use super::plugin::{Net, NetEvent};
 use bevy::ui_widgets::Button;
 use crate::player::PlayerTransform;
 use crate::player::ClientPlayer;
+use crate::ui::panel::{CommandPanel, Tab, TabContent};
 use crate::world_floor::{atlas, prop_depth};
 use super::hud::{reducer_report, send_reducer};
 // Procedural hexagon sprite textures (buildable-area / ownership overlays).
@@ -61,21 +62,40 @@ impl Plugin for TdPlugin {
             .init_resource::<TdTracker>()
             .init_resource::<TdFx>()
             .init_resource::<TdBuildMode>()
-            .init_resource::<TdBuildMenu>()
+            .init_resource::<TdSelect>()
+            .init_resource::<TdStructRows>()
             .init_resource::<TdHexTex>()
             .add_systems(Startup, spawn_td_hud)
+            .add_systems(Startup, spawn_td_wellness)
+            // Bevy's system-tuple variadics cap at 20 — the tail splits out.
             .add_systems(
                 Update,
                 (
                     init_td_textures,
                     init_td_hex_tex,
                     sync_td_entities,
+                    sync_struct_rows,
+                    td_combat_input,
+                    update_combat_hud,
                     glide_td_markers,
                     animate_mobs,
+                    mob_spawn_pop,
+                    mob_fade_tick,
                     combat_fx_tick,
                     td_pulse,
                     td_place_hints,
+                    td_structure_pick,
+                    td_structure_hover,
+                    td_selection_fx,
+                    update_select_panel,
+                    update_select_refund,
+                    td_select_buttons,
                     td_build_keys,
+                ),
+            )
+            .add_systems(
+                Update,
+                (
                     td_upgrade_keys,
                     td_build_row_clicks,
                     td_build_row_tint,
@@ -179,12 +199,11 @@ pub struct MobSprite {
     pub aspect: f32,
 }
 
-/// Last replicated mob positions (mob_id → position + observed time) used to
-/// derive glide speeds: the server simulates on 1s ticks, so consecutive
-/// snapshots give each mob a march velocity to animate between.
+/// Mob-side tracker: damage-flash timers per mob_id. Persisted markers
+/// make the glide system responsible for motion (REV5 §18), so no position
+/// history is needed here anymore.
 #[derive(Resource, Default)]
 pub struct TdTracker {
-    pub last: HashMap<u64, (Vec2, Instant)>,
     /// Last replicated HP per mob — a drop arms the red damage flash.
     pub last_hp: HashMap<u64, u32>,
     /// Seconds left on each mob's damage flash (spec 025 §5).
@@ -197,7 +216,7 @@ pub struct TdTracker {
 
 /// Transient state for combat fx: what the last snapshot already consumed
 /// and what is still animating.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct TdFx {
     /// Highest combat_event id consumed (dedup across rebuilds).
     pub last_event_id: u64,
@@ -207,6 +226,20 @@ pub struct TdFx {
     pub capital_hit: HashMap<u64, f32>,
     /// Waves whose "under attack" toast already fired (first hit only).
     pub toasted_waves: HashSet<u64>,
+    /// Player weapon-swing pose timer (Spec 027 §9, set by player_hit rows).
+    pub player_swing: f32,
+}
+
+impl Default for TdFx {
+    fn default() -> Self {
+        Self {
+            last_event_id: 0,
+            posing: HashMap::default(),
+            capital_hit: HashMap::default(),
+            toasted_waves: HashSet::default(),
+            player_swing: 0.0,
+        }
+    }
 }
 
 /// One fx sprite in flight — the ballistic tracer (arrow/bomb/spore).
@@ -245,6 +278,11 @@ fn fx_plan(kind: &str) -> Option<FxBirth> {
         "capital_hit" => Some(FxBirth::CapitalHit),
         // REV4 traps: a spike/web spring or fire-tick blooms on its hex.
         "trap" => Some(FxBirth::Impact([1.0, 0.4, 0.3])),
+        // Spec 027 §8: the player threat rides the same stream — a weapon
+        // swing reads as an arc + impact on the hit mob's hex; taking
+        // damage blooms red on YOUR hex.
+        "player_hit" => Some(FxBirth::PlayerHit),
+        "player_hurt" => Some(FxBirth::Impact([1.0, 0.2, 0.15])),
         _ => None,
     }
 }
@@ -255,6 +293,10 @@ enum FxBirth {
     Impact([f32; 3]),
     /// Capital flash + shake + wave toast, no sprite.
     CapitalHit,
+    /// Player weapon swing: impact on the victim's hex (tile row), plus a
+    /// slim swing arc on the attacker's own spot handled client-side already
+    /// through the mob pose arm (`attacker_mob` is 0 for player swings).
+    PlayerHit,
 }
 
 // ---------------------------------------------------------------------------
@@ -286,13 +328,29 @@ pub struct TdCapitalMarker(pub String, pub u64);
 #[derive(Component)]
 pub struct TdOverlay;
 
-/// Interpolated glide target — mobs march one hex every few seconds
-/// server-side; speed is zero today (rebuilds land on new positions) but
-/// the field stays for the interpolation pass.
+/// Interpolated glide target — mobs march one hex every `step_interval`
+/// seconds server-side (pinned to tile centers). REV5 §18: markers are
+/// PERSISTENT per `mob_id`, so this target is an update, not a re-spawn —
+/// the body glides the full hex between server steps instead of popping.
 #[derive(Component, Clone)]
 struct TdMove {
     target: Vec2,
     speed: f32,
+}
+
+/// Fresh mob enter fx (REV5 §18): a short scale pop instead of a glide; the
+/// system removes the component when it settles.
+#[derive(Component)]
+struct TdSpawnPop {
+    left: f32,
+}
+
+/// Death fx (REV5 §18): a mob row that leaves the snapshot dies at its last
+/// client position with a 0.25 s red shrink, never pops out mid-glide.
+#[derive(Component)]
+struct TdMobFade {
+    secs: f32,
+    total: f32,
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +549,9 @@ struct WaveRow {
     open: bool,
 }
 
+/// One defense-structure row mirrored client-side (Spec 026 §3.1 rows;
+/// Clone + PartialEq for the throttled `TdStructRows` mirror).
+#[derive(Clone, PartialEq)]
 struct StructRow {
     structure_id: u64,
     x: f32,
@@ -499,6 +560,9 @@ struct StructRow {
     hp: u32,
     /// 0 = legacy row (client treats as L1); pip shows from L2.
     level: u8,
+    /// Spec 026: selection panel ownership gate + XP bucket display.
+    owner: String,
+    total_xp: u64,
 }
 
 struct MobRow {
@@ -571,6 +635,48 @@ fn bar_color(ratio: f32) -> Color {
 // World sync
 // ---------------------------------------------------------------------------
 
+/// Spec 026: defense-row mirror for selection/hover/panel reads, throttled
+/// 0.2 s (rows are few; equality-check keeps coalescing churn low). Lives
+/// outside `sync_td_entities` because that system already sits at Bevy's
+/// 16-SystemParam cap — its 17th param can't fit.
+fn sync_struct_rows(
+    net: Res<Net>,
+    mut rows: ResMut<TdStructRows>,
+    mut throttle: Local<f32>,
+    time: Res<Time>,
+) {
+    *throttle += time.delta_secs();
+    if *throttle < 0.2 {
+        return;
+    }
+    *throttle = 0.0;
+    let guard = net.conn.lock().unwrap();
+    let Some(conn) = guard.as_ref() else { return };
+    let fresh: Vec<StructRow> = conn
+        .db
+        .defense_structure()
+        .iter()
+        .map(|s| {
+            let c = TileCoord::from_id(s.hex_id);
+            let (hx, hy) = hex_center(c.x, c.y);
+            StructRow {
+                structure_id: s.structure_id,
+                x: hx + s.offset_x,
+                y: hy + s.offset_y,
+                kind: s.kind.clone(),
+                hp: s.hp,
+                level: s.level,
+                owner: s.owner.clone(),
+                total_xp: s.total_xp,
+            }
+        })
+        .collect();
+    if fresh == rows.rows {
+        return;
+    }
+    rows.rows = fresh;
+}
+
 fn sync_td_entities(
     mut commands: Commands,
     mut net: ResMut<Net>,
@@ -583,8 +689,8 @@ fn sync_td_entities(
     hex_tex: Res<TdHexTex>,
     player_xf: Res<PlayerTransform>,
     mode: Res<TdBuildMode>,
-    menu: Res<TdBuildMenu>,
-    mobs: Query<Entity, With<TdMobMarker>>,
+    panel: Res<CommandPanel>,
+    mut mobs: Query<(Entity, &TdMobAnim, &mut TdMove, &mut Transform), With<TdMobMarker>>,
     structures: Query<Entity, With<TdStructureMarker>>,
     capitals: Query<Entity, With<TdCapitalMarker>>,
     overlays: Query<Entity, With<TdOverlay>>,
@@ -644,6 +750,8 @@ fn sync_td_entities(
                     hp: s.hp,
                     // 0/absent = L1 for the HUD pip logic.
                     level: s.level,
+                    owner: s.owner.clone(),
+                    total_xp: s.total_xp,
                 }
             })
             .collect();
@@ -771,10 +879,12 @@ fn sync_td_entities(
         }
     }
 
-        // ---- rebuild: TD entities despawn then respawn (rows are few) ----
-    for e in mobs.iter() {
-        commands.entity(e).despawn();
-    }
+        // ---- rebuild: TD entities (REV5 §18) ----
+        // Structures/capitals/overlays stay respawn-on-sync (they don't
+        // move). MOB markers persist per mob_id: the mob section below
+        // updates glides in place and despawns only mobs whose row left
+        // the snapshot — a re-spawn would hard-cut every march (the
+        // playtest "mobs kind of teleport" report).
     for e in structures.iter() {
         commands.entity(e).despawn();
     }
@@ -791,7 +901,7 @@ fn sync_td_entities(
     // REV3 UX pass: territory is inked only while building (build mode armed
     // or the build menu open) and only MY land is lit — the map stays clean
     // otherwise, and "where can I build?" answers itself in build mode.
-    let show_overlays = mode.kind.is_some() || menu.open;
+    let show_overlays = mode.kind.is_some() || panel.is_open(Tab::Build);
     if show_overlays {
         for (hex_id, owner) in &snap.territory {
             let ownership_mine = Some(owner.as_str()) == address.as_deref();
@@ -895,20 +1005,25 @@ fn sync_td_entities(
             },
             Transform::from_xyz(0.0, height + 0.3, 0.04),
         ));
-        // Spec 024: green level pip above the HP bar from L2.
+        // Spec 024: green level pip above the HP bar from L2. Kept small —
+        // a tile is ~17 wu, anything past ~3 ru dwarfs the building.
         if let Some(label) = structure_level_label(row.level) {
             commands.spawn((
                 Text2d::new(label),
-                TextFont { font_size: 14.0.into(), ..default() },
-                TextColor(Color::srgb(0.3, 1.0, 0.55)),
-                TextShadow { color: Color::BLACK, offset: Vec2::new(0.5, 0.5) },
-                Transform::from_xyz(row.x, row.y + height + 0.75, prop_depth(row.y) + 12.0),
+                TextFont { font_size: 2.2.into(), ..default() },
+                TextColor(Color::srgba(0.35, 1.0, 0.55, 0.95)),
+                TextShadow { color: Color::BLACK, offset: Vec2::new(0.12, 0.12) },
+                Transform::from_xyz(row.x, row.y + height + 0.55, prop_depth(row.y) + 12.0),
             ));
         }
         let _ = row.structure_id;
     }
 
-    // ---- mobs ----
+    // ---- mobs (REV5 §18): persistent bodies keyed mob_id ----
+    let mut alive: HashMap<u64, Entity> = mobs
+        .iter()
+        .map(|(e, anim, _, _)| (anim.mob_id, e))
+        .collect();
     for row in &snap.mobs {
         let Some(mob) = cfg::mob_kind(&row.kind) else { continue };
         let ms = mob_sprite_kind(&td_tex, &row.kind);
@@ -923,50 +1038,784 @@ fn sync_td_entities(
         }
         tracker.last_hp.insert(row.mob_id, row.hp);
         let ratio = clamp_ratio(row.hp as f32, mob.hp as f32);
-        let pos = Vec3::new(row.x, row.y, prop_depth(row.y) + 40.0);
-        // Glide speed from the previous replicated position: server ticks run
-        // at 1s, so the observed delta gives a march velocity (Spec 023 §3.9).
-        let speed = match tracker.last.remove(&row.mob_id) {
-            Some((prev_pos, seen)) => {
-                let since = seen.elapsed().as_secs_f32().max(0.05);
-                (Vec2::new(row.x, row.y) - prev_pos).length() / since
+        let target = Vec2::new(row.x, row.y);
+        // Glide speed from the KIND's server step cadence (REV5 §18): one
+        // hex (TILE_SIZE wu) per `step_interval_secs`, not from snapshot
+        // deltas — replications arrive far faster than steps, so observed
+        // deltas read as instant hops.
+        let speed = mob_glide_speed(mob.step_interval_secs);
+        if let Some(ent) = alive.remove(&row.mob_id) {
+            let Ok((_, _, mut mv, mut xf)) = mobs.get_mut(ent) else { continue };
+            // Desync guard: a snapshot jump bigger than two hexes snaps
+            // instantly instead of gliding half the map.
+            if mob_should_snap(mv.target.distance(target)) {
+                xf.translation = Vec3::new(row.x, row.y, prop_depth(row.y) + 40.0);
             }
-            None => 0.0,
-        };
-        tracker.last.insert(
-            row.mob_id,
-            (Vec2::new(row.x, row.y), Instant::now()),
-        );
+            mv.target = target;
+            mv.speed = speed;
+            // Rate-limited bar: children are transient like markers' other
+            // overlays — clear + re-add keeps the ratio fresh for ~free.
+            commands
+                .entity(ent)
+                .despawn_children()
+                .with_child((
+                    Sprite {
+                        color: bar_color(ratio),
+                        custom_size: Some(Vec2::new(1.6 * ratio, 0.24)),
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, 1.1, 0.04),
+                ));
+        } else {
+            // Fresh marker: enters with a 0.3 s spawn pop at the server
+            // position (no glide — there is no prior position to come from).
+            let pos = Vec3::new(row.x, row.y, prop_depth(row.y) + 40.0);
+            commands.spawn((
+                TdMobMarker,
+                TdMobAnim {
+                    mob_id: row.mob_id,
+                    kind: row.kind.clone(),
+                },
+                TdMove {
+                    target,
+                    speed,
+                },
+                TdSpawnPop { left: 0.3 },
+                Sprite {
+                    image: ms.idle.clone(),
+                    color: Color::WHITE,
+                    custom_size: Some(Vec2::new(1.8 * aspect, 1.8)),
+                    ..default()
+                },
+                Transform::from_translation(pos),
+            ))
+            .with_child((
+                Sprite {
+                    color: bar_color(ratio),
+                    custom_size: Some(Vec2::new(1.6 * ratio, 0.24)),
+                    ..default()
+                },
+                Transform::from_xyz(0.0, 1.1, 0.04),
+            ));
+        }
+    }
+    // Funeral pass: rows that left the snapshot die at their last client
+    // position (red shrink 0.25 s) instead of popping out mid-glide.
+    for (mob_id, ent) in alive {
+        let Ok((_, anim, _, xf)) = mobs.get(ent) else { continue };
+        let ms = mob_sprite_kind(&td_tex, &anim.kind);
+        let aspect = ms.aspect;
+        commands.entity(ent).despawn();
         commands.spawn((
-            TdMobMarker,
-            TdMobAnim {
-                mob_id: row.mob_id,
-                kind: row.kind.clone(),
-            },
-            TdMove {
-                target: Vec2::new(pos.x, pos.y),
-                speed,
+            TdMobFade {
+                secs: 0.25,
+                total: 0.25,
             },
             Sprite {
                 image: ms.idle.clone(),
-                color: Color::WHITE,
+                color: Color::srgba(1.0, 0.3, 0.25, 1.0),
                 custom_size: Some(Vec2::new(1.8 * aspect, 1.8)),
                 ..default()
             },
-            Transform::from_translation(pos),
-        ))
-        .with_child((
-            Sprite {
-                color: bar_color(ratio),
-                custom_size: Some(Vec2::new(1.6 * ratio, 0.24)),
-                ..default()
-            },
-            Transform::from_xyz(0.0, 1.1, 0.04),
+            Transform::from_translation(xf.translation),
         ));
+        tracker.last_hp.remove(&mob_id);
+        tracker.flash.remove(&mob_id);
     }
+    let live_ids: HashSet<u64> = snap.mobs.iter().map(|m| m.mob_id).collect();
+    tracker.last_hp.retain(|id, _| live_ids.contains(id));
 
     // ---- combat fx feed (REV3 §10/§13) ----
-    process_combat_events(&snap, &mut fx, &mut commands);
+    process_combat_events(&snap, &mut fx, &mut commands, &player_xf);
+}
+
+/// REV5 §18: one-hex glide speed from the server's own step cadence — the
+/// server marches exactly one lattice tile (TILE_SIZE wu, pinned to the
+/// destination center) per `step_interval_secs`, so a marker gliding at
+/// `TILE_SIZE / interval` arrives roughly when the next step lands. This
+/// replaces the dead snapshot-delta derivation (deltas read as hops because
+/// replications arrive much faster than steps).
+fn mob_glide_speed(step_interval_secs: u32) -> f32 {
+    WorldGenConfig::TILE_SIZE / step_interval_secs.max(1) as f32
+}
+
+/// Desync guard (REV5 §18): a snapshot displacement bigger than two hexes
+/// snaps instantly instead of gliding half the map after a laggy stream.
+fn mob_should_snap(jump_wu: f32) -> bool {
+    jump_wu > 2.0 * WorldGenConfig::TILE_SIZE
+}
+
+// ---------------------------------------------------------------------------
+// Spec 026 — structure selection, attack area, upgrade/remove panel
+// ---------------------------------------------------------------------------
+
+/// Pure cursor-hit test for placement/selection (§3.1): a structure is
+/// picked by its bottom-anchored sprite rect (ground-slot leniency below),
+/// with a whole-hex Chebyshev footprint fallback — the natural click zone
+/// for ground traps whose art is tiny.
+fn structure_cursor_hit(
+    cursor: Vec2,
+    sx: f32,
+    sy: f32,
+    aspect: f32,
+    height: f32,
+) -> bool {
+    let w = height * aspect;
+    let y0 = sy + 0.4 - 0.55;
+    let y1 = sy + 0.4 + height;
+    let rect = cursor.x >= sx - w * 0.5
+        && cursor.x <= sx + w * 0.5
+        && cursor.y >= y0
+        && cursor.y <= y1;
+    rect || structure_hex_hit(cursor, sx, sy)
+}
+
+/// Whole-hex fallback hit: Chebyshev (the lattice metric the server's
+/// `tile_distance` uses) within a half tile of the structure center.
+fn structure_hex_hit(cursor: Vec2, sx: f32, sy: f32) -> bool {
+    (cursor.x - sx).abs() <= WorldGenConfig::TILE_SIZE * 0.5
+        && (cursor.y - sy).abs() <= WorldGenConfig::TILE_SIZE * 0.5
+}
+
+/// Side (wu) of the square that covers every hex the server counts inside
+/// `tile_distance ≤ range` (Chebyshev on the square lattice): it IS a
+/// square, `(2r+1)·TILE` — not a disc. Same shape the territory overlays
+/// and the farming floor already render.
+fn range_square_side(range_hexes: i32) -> f32 {
+    (2 * range_hexes.max(0) + 1) as f32 * WorldGenConfig::TILE_SIZE
+}
+
+/// Neutral ring-text (§3.1) driving both the selected-structure ring and
+/// the non-owner color: teal = mine, dimmed ice = someone else's.
+fn selection_ring_color(owner: Option<&str>, address: Option<&str>) -> Color {
+    let mine = owner.is_some() && owner == address;
+    if mine {
+        Color::srgba(0.3, 1.0, 0.55, 0.85)
+    } else {
+        Color::srgba(0.75, 0.87, 0.95, 0.7)
+    }
+}
+
+/// Human refund preview for the Remove button (§3.3/§D2): half of every
+/// ingredient, floor-rounded exactly like the server's `remove_refunds…`
+/// (`qty / 2` integer division), "—" when everything floors to 0.
+fn remove_refund_preview(kind: &cfg::DefenseKind) -> String {
+    let parts: Vec<String> = kind
+        .cost
+        .iter()
+        .filter_map(|(item, qty)| {
+            let half = *qty / 2;
+            (half > 0).then(|| format!("{}×{}", item, half))
+        })
+        .collect();
+    if parts.is_empty() {
+        "Refund: nothing".to_string()
+    } else {
+        format!("Refund: {}", parts.join(", "))
+    }
+}
+
+/// Spec 026 §3.1 picking: LMB on a structure selects it (toggle); ESC,
+/// terrain clicks and armed build mode/menu deselect. UI clicks (any widget
+/// hovered/pressed — minimap, hotbar, panels) never touch the world pick.
+fn td_structure_pick(
+    mut mouse: Res<ButtonInput<MouseButton>>,
+    mut keys: Res<ButtonInput<KeyCode>>,
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    widgets: Query<&Interaction>,
+    mode: Res<TdBuildMode>,
+    panel: Res<CommandPanel>,
+    rows: Res<TdStructRows>,
+    mut select: ResMut<TdSelect>,
+    td_tex: Res<TdTextures>,
+    net: Res<Net>,
+) {
+    if keys.just_pressed(KeyCode::Escape) {
+        select.sid = None;
+        select.confirm_remove = false;
+        return;
+    }
+    // Armed building (or the Build tab) deselects the structure — one
+    // task at a time.
+    if mode.kind.is_some() || panel.is_open(Tab::Build) {
+        if select.sid.is_some() {
+            select.sid = None;
+            select.confirm_remove = false;
+        }
+        return;
+    }
+    // Left-click on a structure picks it. (The old `rows.is_changed()`
+    // gate made this go dead once replication settled — the cached rows
+    // only flip `changed` when the list itself diffs. The widget guard
+    // below keeps UI clicks out.)
+    if !(mouse.just_pressed(MouseButton::Left)) || net.address.is_none() {
+        return;
+    }
+    let Ok(window) = windows.single() else { return };
+    let Some(cursor) = window.cursor_position() else { return };
+    // UI guard: a hovered/pressed widget (button, panel, minimap) keeps the
+    // click out of the world.
+    if widgets.iter().any(|i| {
+        matches!(i, Interaction::Hovered | Interaction::Pressed)
+    }) {
+        return;
+    }
+    let Ok((camera, cam_xf)) = cameras.single() else { return };
+    let Ok(world) = camera.viewport_to_world_2d(cam_xf, cursor) else { return };
+    let world = Vec2::new(world.x, world.y);
+    let hit = rows
+        .rows
+        .iter()
+        .filter(|row| {
+            let Some(def) = cfg::defense_kind(&row.kind) else { return false };
+            let (_, aspect, _, height) = structure_sprite(&td_tex, &row.kind);
+            structure_cursor_hit(world, row.x, row.y, aspect, height)
+        })
+        .min_by_key(|row| {
+            let d = (Vec2::new(row.x, row.y) - world).length();
+            (d * 1000.0) as u64
+        })
+        .map(|row| row.structure_id);
+    match hit {
+        Some(sid) if select.sid == Some(sid) => {
+            select.sid = None;
+        }
+        Some(sid) => {
+            select.sid = Some(sid);
+            select.confirm_remove = false;
+        }
+        None => {
+            select.sid = None;
+        }
+    }
+}
+
+/// Hover glance (§3.4): a nameplate above the cursor-hovered structure
+/// (0.25 s throttle, transient `TdHoverLabel` sprites).
+fn td_structure_hover(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut acc: Local<f32>,
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    rows: Res<TdStructRows>,
+    select: Res<TdSelect>,
+    td_tex: Res<TdTextures>,
+    labels: Query<Entity, With<TdHoverLabel>>,
+) {
+    *acc += time.delta_secs();
+    if *acc < 0.25 {
+        return;
+    }
+    *acc = 0.0;
+    for e in labels.iter() {
+        commands.entity(e).despawn();
+    }
+    if select.sid.is_some() {
+        return;
+    }
+    let Ok(window) = windows.single() else { return };
+    let Some(cursor) = window.cursor_position() else { return };
+    let Ok((camera, cam_xf)) = cameras.single() else { return };
+    let Ok(world) = camera.viewport_to_world_2d(cam_xf, cursor) else { return };
+    let world = Vec2::new(world.x, world.y);
+    let Some(hover) = rows.rows.iter().find(|row| {
+        let Some(def) = cfg::defense_kind(&row.kind) else { return false };
+        let (_, aspect, _, height) = structure_sprite(&td_tex, &row.kind);
+        structure_cursor_hit(world, row.x, row.y, aspect, height)
+    }) else {
+        return;
+    };
+    let Some(def) = cfg::defense_kind(&hover.kind) else { return };
+    let (_, aspect, _, height) = structure_sprite(&td_tex, &hover.kind);
+    let _ = aspect;
+    // Nameplate: name + level on the first line, HP beneath it, both on a
+    // small dark chip (TextBackgroundColor) so they stay readable against
+    // any terrain. Kept in the world scale — a tile is ~17 wu.
+    let name = format!(
+        "{}{}",
+        kind_display(&hover.kind),
+        structure_level_label(hover.level)
+            .map(|l| format!(" · {l}"))
+            .unwrap_or_default(),
+    );
+    let hp = format!("HP {}/{}", hover.hp, cfg::structure_max_hp(def, hover.level));
+    commands.spawn((
+        TdHoverLabel,
+        Text2d::new(format!("{name}\n{hp}")),
+        TextFont { font_size: 2.6.into(), ..default() },
+        TextColor(Color::srgb(0.92, 0.88, 0.72)),
+        TextShadow { color: Color::BLACK, offset: Vec2::new(0.15, 0.15) },
+        bevy::text::TextBackgroundColor(Color::srgba(0.04, 0.05, 0.08, 0.72)),
+        // Center-anchored two-line block: lift it so it clears the roof.
+        Transform::from_xyz(hover.x, hover.y + height + 3.6, prop_depth(hover.y) + 42.0),
+    ));
+}
+
+/// Per-kind tint for the attack-area square (§3.2 palette; the world arts
+/// render untinted, areas get one tint each so tower footprint stays
+/// distinct from the ring).
+fn area_tint(kind: &cfg::DefenseKind) -> Color {
+    match kind.name {
+        cfg::ITEM_ARROW_TOWER => Color::srgba(0.5, 0.72, 1.0, 0.16),
+        cfg::ITEM_BALLISTA => Color::srgba(0.9, 0.88, 0.75, 0.16),
+        cfg::ITEM_LANTERN_TOWER => Color::srgba(1.0, 0.74, 0.35, 0.18),
+        cfg::ITEM_COCONUT_TOWER => Color::srgba(0.45, 0.85, 0.42, 0.16),
+        cfg::ITEM_FROST_TOWER => Color::srgba(0.55, 0.85, 1.0, 0.18),
+        // Burn zones read fire-amber; consumable footprints stay red/icy.
+        cfg::ITEM_FIRE_TRAP => Color::srgba(1.0, 0.55, 0.2, 0.2),
+        cfg::ITEM_SPIKE_TRAP => Color::srgba(1.0, 0.35, 0.25, 0.2),
+        cfg::ITEM_WEB_TRAP => Color::srgba(0.6, 0.9, 1.0, 0.14),
+        _ => Color::srgba(0.3, 1.0, 0.55, 0.12),
+    }
+}
+
+/// One square overlay `TdSelectFx`.
+fn spawn_area(commands: &mut Commands, cx: f32, cy: f32, side: f32, color: Color, z: f32) {
+    commands.spawn((
+        TdSelectFx,
+        Sprite {
+            color,
+            custom_size: Some(Vec2::splat(side)),
+            ..default()
+        },
+        Transform::from_xyz(cx, cy, z),
+    ));
+}
+
+/// A square OUTLINE (4 thin bars) — the frost slow ring + selection ring.
+fn spawn_ring(
+    commands: &mut Commands,
+    cx: f32,
+    cy: f32,
+    side: f32,
+    thickness: f32,
+    color: Color,
+    z: f32,
+) {
+    let half = side * 0.5;
+    let spark = |commands: &mut Commands, x: f32, y: f32, w: f32, h: f32| {
+        commands.spawn((
+            TdSelectFx,
+            Sprite {
+                color,
+                custom_size: Some(Vec2::new(w, h)),
+                ..default()
+            },
+            Transform::from_xyz(x, y, z),
+        ));
+    };
+    spark(commands, cx, cy + half, side, thickness);
+    spark(commands, cx, cy - half, side, thickness);
+    spark(commands, cx + half, cy, thickness, side);
+    spark(commands, cx - half, cy, thickness, side);
+}
+
+/// Spec 026 §3.2: attack area for the selected structure, plus the build
+/// mode's armed-kind preview over the hovered hex (§3.2 / phase E).
+/// 0.25 s spawn/despawn sweep — same cheap pattern as place hints.
+fn td_selection_fx(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut acc: Local<f32>,
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    rows: Res<TdStructRows>,
+    select: Res<TdSelect>,
+    net: Res<Net>,
+    mode: Res<TdBuildMode>,
+    player_xf: Res<PlayerTransform>,
+    fxq: Query<Entity, With<TdSelectFx>>,
+) {
+    use idlecore_core::grid::world_pos_to_tile;
+    *acc += time.delta_secs();
+    if *acc < 0.25 {
+        return;
+    }
+    *acc = 0.0;
+    for e in fxq.iter() {
+        commands.entity(e).despawn();
+    }
+
+    // ---- 1) selected structure: ring + attack area ----
+    if let Some(sid) = select.sid {
+        let Some(row) = rows.rows.iter().find(|r| r.structure_id == sid) else {
+            return;
+        };
+        let z = prop_depth(row.y) + 7.0;
+        // Selection ring around the occupying hex (teal mine / ice other).
+        spawn_ring(
+            &mut commands,
+            row.x,
+            row.y,
+            WorldGenConfig::TILE_SIZE + 0.6,
+            0.35,
+            selection_ring_color(Some(&row.owner), net.address.as_deref()),
+            z,
+        );
+        if let Some(def) = cfg::defense_kind(&row.kind) {
+            // Attack area: the square the server actually covers
+            // (`tile_distance ≤ range` = Chebyshev square), pulsing only on
+            // consumable traps so the footprint feels armed (§3.2).
+            // Traps pulse (consumable = armed), towers hold the alpha.
+            let pulse = if cfg::is_trap(def) {
+                0.10 + 0.06 * (time.elapsed_secs() * 2.2).sin().abs()
+            } else {
+                0.0
+            };
+            if def.range_hexes > 0 && (def.dps > 0 || def.burn_secs > 0) {
+                let mut tint = area_tint(def);
+                if pulse > 0.0 {
+                    tint.set_alpha(tint.alpha() + pulse);
+                }
+                spawn_area(
+                    &mut commands,
+                    row.x,
+                    row.y,
+                    range_square_side(def.range_hexes as i32),
+                    tint,
+                    z,
+                );
+            }
+            // Frost tower's slow ring: a *second* ring outside the range
+            // square only when radius > range so it reads as layered ice.
+            if def.slow_radius > 0 {
+                let side = range_square_side(def.slow_radius as i32);
+                spawn_ring(&mut commands, row.x, row.y, side, 0.55, Color::srgba(0.6, 0.92, 1.0, 0.6), z);
+            }
+            // Consumable trap: the footprint quad IS the area.
+            if def.range_hexes == 0 && cfg::is_trap(def) {
+                let mut tint = area_tint(def);
+                if pulse > 0.0 {
+                    tint.set_alpha(tint.alpha() + pulse);
+                }
+                spawn_area(&mut commands, row.x, row.y, WorldGenConfig::TILE_SIZE, tint, z);
+            }
+        }
+    }
+
+    // ---- 2) build-mode preview: armed kind's attack area on the hovered
+    //      hex (biggest spec win: "will that reach?" answers before E) ----
+    let building = mode.kind.filter(|k| BUILDABLES.contains(k));
+    let Some(kind) = building else { return };
+    let cursor = windows
+        .single()
+        .ok()
+        .and_then(|w| w.cursor_position())
+        .and_then(|c| {
+            let (cam, cam_xf) = cameras.single().ok()?;
+            let wf = cam.viewport_to_world_2d(cam_xf, c).ok()?;
+            Some(Vec2::new(wf.x, wf.y))
+        });
+    let placed_at: Vec2 = match cursor {
+        Some(world) => {
+            let (q, r) = world_pos_to_tile(world.x, world.y, WorldGenConfig::TILE_SIZE);
+            let (cx, cy) = hex_center(q, r);
+            Vec2::new(cx, cy)
+        }
+        // Touch devices (no cursor): preview at the player's hex.
+        None => Vec2::new(player_xf.translation.x, player_xf.translation.y),
+    };
+    let Some(def) = cfg::defense_kind(&kind) else { return };
+    let z = prop_depth(placed_at.y) + 7.0;
+    // Preview ring (the "you'd build here" hex) matches place hints.
+    spawn_ring(
+        &mut commands,
+        placed_at.x,
+        placed_at.y,
+        WorldGenConfig::TILE_SIZE + 0.6,
+        0.35,
+        Color::srgba(0.3, 1.0, 0.55, 0.85),
+        z,
+    );
+    if def.range_hexes > 0 && (def.dps > 0 || def.burn_secs > 0) {
+        spawn_area(
+            &mut commands,
+            placed_at.x,
+            placed_at.y,
+            range_square_side(def.range_hexes as i32),
+            area_tint(def),
+            z,
+        );
+    }
+    if def.slow_radius > 0 {
+        spawn_ring(
+            &mut commands,
+            placed_at.x,
+            placed_at.y,
+            range_square_side(def.slow_radius as i32),
+            0.55,
+            Color::srgba(0.6, 0.92, 1.0, 0.6),
+            z,
+        );
+    }
+    if def.range_hexes == 0 && cfg::is_trap(def) {
+        spawn_area(
+            &mut commands,
+            placed_at.x,
+            placed_at.y,
+            WorldGenConfig::TILE_SIZE,
+            area_tint(def),
+            z,
+        );
+    }
+}
+
+/// Panel content (§3.3): header/hp/stats/XP bucket + action row gating.
+/// One system writes every text piece (ParamSet caps the sibling writers
+/// at 8 — the refund line is its own system below), 0.4 s throttle like
+/// `update_td_hud`.
+fn update_select_panel(
+    mut throttle: Local<f32>,
+    time: Res<Time>,
+    select: Res<TdSelect>,
+    rows: Res<TdStructRows>,
+    net: Res<Net>,
+    player: Query<&ClientPlayer>,
+    mut ps: ParamSet<(
+        Query<&mut Node, With<TdSelPanelRoot>>,
+        Query<&mut Node, With<TdSelActions>>,
+        Query<&mut Node, With<TdSelHpBar>>,
+        Query<&mut Text, With<TdSelHeader>>,
+        Query<&mut Text, With<TdSelStats>>,
+        Query<&mut Text, With<TdSelXp>>,
+        Query<&mut Text, With<TdSelUpgradeTxt>>,
+        Query<&mut Text, With<TdSelRemoveTxt>>,
+    )>,
+) {
+    *throttle += time.delta_secs();
+    if *throttle < 0.4 {
+        return;
+    }
+    // Selection row lift (e.g. the row vanished between syncs): keep it
+    // dark until a new pick.
+    let Some(sid) = select.sid else {
+        if let Ok(mut node) = ps.p0().single_mut() {
+            node.display = Display::None;
+        }
+        return;
+    };
+    let Some(row) = rows.rows.iter().find(|r| r.structure_id == sid) else {
+        if let Ok(mut node) = ps.p0().single_mut() {
+            node.display = Display::None;
+        }
+        return;
+    };
+    *throttle = 0.0;
+    let Some(def) = cfg::defense_kind(&row.kind) else { return };
+    let is_mine = net.address.as_deref() == Some(row.owner.as_str());
+    let max = cfg::structure_max_hp(def, row.level);
+    if let Ok(mut node) = ps.p0().single_mut() {
+        node.display = Display::Flex;
+    }
+    if let Ok(mut text) = ps.p3().single_mut() {
+        text.0 = format!(
+            "{}{}",
+            kind_display(&row.kind),
+            structure_level_label(row.level)
+                .map(|l| format!(" [{l}]"))
+                .unwrap_or_default(),
+        );
+    }
+    let ratio = clamp_ratio(row.hp as f32, max as f32);
+    if let Ok(mut node) = ps.p2().single_mut() {
+        node.width = Val::Percent(ratio * 100.0);
+    }
+    // Stat line's HP head, shared by every branch.
+    let hp_txt = format!("HP {}/{}", row.hp, max);
+    let stat = if def.dps > 0 && def.burn_secs > 0 {
+        // Its HP doubles as burn fuel — surface that in the same line.
+        format!(
+            "{hp_txt} · burn {}dps×{}s (fuel = HP)",
+            cfg::structure_dps(def, row.level),
+            def.burn_secs
+        )
+    } else if def.trap_dmg > 0 {
+        format!("{hp_txt} · burst {} dmg", def.trap_dmg)
+    } else if def.pin_secs > 0 {
+        format!("{hp_txt} · pin {}s", def.pin_secs)
+    } else if def.dps > 0 {
+        format!(
+            "{hp_txt} · dps {} · range {}",
+            cfg::structure_dps(def, row.level),
+            def.range_hexes
+        )
+    } else {
+        hp_txt
+    };
+    if let Ok(mut text) = ps.p4().single_mut() {
+        text.0 = stat;
+    }
+    // XP bucket (own rows only). Server math mirrored: bucket fills against
+    // `100·L²`, spendable = current level's surplus (`level_progress`). The
+    // panel shows the delta so the disabled reasons read before the reducer
+    // round-trips (§3.3).
+    let spendable = player
+        .single()
+        .ok()
+        .map(|p| idlecore_core::progression::level_progress(p.xp).1)
+        .unwrap_or(0);
+    if let Ok(mut text) = ps.p5().single_mut() {
+        text.0 = if !is_mine {
+            String::new()
+        } else if row.level >= cfg::STRUCTURE_LEVEL_MAX {
+            "MAX level".to_string()
+        } else if spendable == 0 {
+            "No spare XP in your level — earn XP".to_string()
+        } else {
+            format!(
+                "XP {}/{} · surplus {} · {}",
+                row.total_xp,
+                cfg::structure_xp_for_next_level(row.level),
+                spendable,
+                upgrade_delta_line(def, row.level).unwrap_or_default(),
+            )
+        };
+    }
+    // Button labels carry the gate reason (§D1): non-owner / MAX / cooldown.
+    let cooling = player
+        .single()
+        .ok()
+        .map(|p| p.action_cd_until_utc.saturating_sub(unix_now_secs()))
+        .unwrap_or(0);
+    if let Ok(mut text) = ps.p6().single_mut() {
+        text.0 = if !is_mine {
+            "Upgrade (not yours)".to_string()
+        } else if row.level >= cfg::STRUCTURE_LEVEL_MAX {
+            "Upgrade (MAX)".to_string()
+        } else if cooling > 0 {
+            format!("Upgrade ({cooling}s)")
+        } else {
+            format!("Upgrade → L{}", row.level + 1)
+        };
+    }
+    if let Ok(mut text) = ps.p7().single_mut() {
+        text.0 = if select.confirm_remove { "Sure?".to_string() } else { "Remove".to_string() };
+    }
+    // Action row only exists for your own rows (§3.1 — you may LOOK at any
+    // structure, but the buttons show for yours).
+    if let Ok(mut node) = ps.p1().single_mut() {
+        node.display = if is_mine { Display::Flex } else { Display::None };
+    }
+}
+
+/// Refund preview (§3.3) — its own writer system (ParamSet slots are for
+/// the main panel texts, max 8).
+fn update_select_refund(
+    select: Res<TdSelect>,
+    rows: Res<TdStructRows>,
+    net: Res<Net>,
+    mut text: Query<&mut Text, With<TdSelRefund>>,
+) {
+    if !select.is_changed() && !rows.is_changed() && !net.is_changed() {
+        return;
+    }
+    let Ok(mut text) = text.single_mut() else { return };
+    text.0 = match select
+        .sid
+        .and_then(|sid| rows.rows.iter().find(|r| r.structure_id == sid))
+    {
+        Some(row) => match (cfg::defense_kind(&row.kind), net.address.as_deref()) {
+            (Some(def), Some(addr)) if addr == row.owner => {
+                remove_refund_preview(def)
+            }
+            _ => String::new(),
+        },
+        None => String::new(),
+    };
+}
+
+/// One-line "what L{level+1} buys" for the panel (§3.3): hp always, dps on
+/// attackers; None at the level cap. Pure — unit-tested.
+fn upgrade_delta_line(def: &cfg::DefenseKind, level: u8) -> Option<String> {
+    if level >= cfg::STRUCTURE_LEVEL_MAX {
+        return None;
+    }
+    let next = level + 1;
+    let mut parts = vec![format!(
+        "hp {}→{}",
+        cfg::structure_max_hp(def, level),
+        cfg::structure_max_hp(def, next)
+    )];
+    if def.dps > 0 && def.burn_secs > 0 {
+        parts.push(format!(
+            "burn {}→{}",
+            cfg::structure_dps(def, level),
+            cfg::structure_dps(def, next)
+        ));
+    } else if def.dps > 0 {
+        parts.push(format!(
+            "dps {}→{}",
+            cfg::structure_dps(def, level),
+            cfg::structure_dps(def, next)
+        ));
+    }
+    Some(parts.join(" "))
+}
+
+/// Upgrade / Remove button presses (§3.3): the client re-validates what
+/// the server would enforce (owner, L5, cooldown) and sends the existing
+/// reducers `transfer_building_xp` / `remove_defense`.
+fn td_select_buttons(
+    mut upg: Query<&Interaction, (Changed<Interaction>, With<TdSelUpgrade>)>,
+    mut rem: Query<&Interaction, (Changed<Interaction>, With<TdSelRemove>)>,
+    mut select: ResMut<TdSelect>,
+    rows: Res<TdStructRows>,
+    mut net: ResMut<Net>,
+    player: Query<&ClientPlayer>,
+) {
+    let upgrade = upg.iter_mut().any(|i| *i == Interaction::Pressed);
+    let remove = rem.iter_mut().any(|i| *i == Interaction::Pressed);
+    if !upgrade && !remove {
+        // A stale confirm gate decays as soon as the cursor leaves the
+        // button (fresh interaction frames only keep it hot).
+        if select.confirm_remove {
+            if rem.iter().all(|i| *i != Interaction::Pressed)
+                && upg.iter().all(|i| *i != Interaction::Pressed)
+            {
+                select.confirm_remove = false;
+            }
+        }
+        return;
+    }
+    let Some(sid) = select.sid else { return };
+    let Some(row) = rows.rows.iter().find(|r| r.structure_id == sid) else {
+        return;
+    };
+    let Some(def) = cfg::defense_kind(&row.kind) else { return };
+    let _ = def;
+    let is_mine = net.address.as_deref() == Some(row.owner.as_str());
+    let cooling = player
+        .single()
+        .ok()
+        .is_some_and(|p| p.action_cd_until_utc > unix_now_secs());
+    if !is_mine || cooling {
+        return;
+    }
+    if upgrade && row.level < cfg::STRUCTURE_LEVEL_MAX {
+        let tx = net.sender();
+        send_reducer(&mut net, |r| {
+            r.transfer_building_xp_then(
+                row.structure_id,
+                reducer_report("transfer_building_xp", tx.clone(), 0),
+            )
+        });
+    }
+    if remove {
+        if !select.confirm_remove {
+            select.confirm_remove = true;
+        } else {
+            let tx = net.sender();
+            let target = row.structure_id;
+            send_reducer(&mut net, |r| {
+                r.remove_defense_then(target, reducer_report("remove_defense", tx.clone(), 0))
+            });
+            // The row vanishes at the next sync; close the panel now.
+            select.sid = None;
+            select.confirm_remove = false;
+        }
+    }
 }
 
 /// Glide every TD marker toward its replicated server position.
@@ -989,16 +1838,61 @@ fn glide_td_markers(time: Res<Time>, mut markers: Query<(&mut Transform, &mut Td
     }
 }
 
-/// Per-raider animation (Spec 025 §5): the idle frame when standing, one of
-/// two walk frames (0.25 s cadence) while gliding, and a 0.15 s red tint
-/// when the tracker says this mob just took a hit. HP bars are children
-/// without the marker component, so this query only reaches the body.
+/// Fresh mob enter fx (REV5 §18): scale from +0.3× over 0.3 s, then the
+/// component drops and transforms stop being touched.
+fn mob_spawn_pop(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut pops: Query<(Entity, &mut TdSpawnPop, &mut Transform)>,
+) {
+    let dt = time.delta_secs();
+    for (ent, mut pop, mut xf) in &mut pops {
+        pop.left -= dt;
+        if pop.left <= 0.0 {
+            xf.scale = Vec3::ONE;
+            commands.entity(ent).remove::<TdSpawnPop>();
+            continue;
+        }
+        let k = (pop.left / 0.3).clamp(0.0, 1.0);
+        xf.scale = Vec3::splat(1.0 + 0.3 * k);
+    }
+}
+
+/// Death fx (REV5 §18): 0.25 s red shrink+sink, then despawn. Runs on its
+/// own transient sprites (no marker component → no query conflicts with
+/// the persistent mob systems).
+fn mob_fade_tick(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut fades: Query<(Entity, &mut Sprite, &mut TdMobFade)>,
+) {
+    let dt = time.delta_secs();
+    for (ent, mut sprite, mut fade) in &mut fades {
+        fade.secs -= dt;
+        if fade.secs <= 0.0 {
+            commands.entity(ent).despawn();
+            continue;
+        }
+        let k = (fade.secs / fade.total).clamp(0.0, 1.0);
+        if let Some(size) = sprite.custom_size {
+            sprite.custom_size = Some(size * (0.4 + 0.6 * k));
+        }
+        sprite.color.set_alpha(k);
+    }
+}
+
+/// Per-raider animation (Spec 025 §5, REV5 §18): the idle frame when
+/// standing, one of two walk frames (0.25 s cadence) ONLY while actually
+/// gliding (dist > 0.05 wu — was speed-gated, which churned frames on
+/// standing mobs), a heading flip while moving, and a 0.15 s red tint when
+/// the tracker says this mob just took a hit. HP bars are children without
+/// the marker component, so this query only reaches the body.
 fn animate_mobs(
     time: Res<Time>,
     td_tex: Res<TdTextures>,
     mut tracker: ResMut<TdTracker>,
     fx: Res<TdFx>,
-    mut mobs: Query<(&TdMobAnim, &TdMove, &mut Sprite), With<TdMobMarker>>,
+    mut mobs: Query<(&TdMobAnim, &TdMove, &mut Sprite, &mut Transform), With<TdMobMarker>>,
 ) {
     let dt = time.delta_secs();
     tracker.flash.retain(|_, left| {
@@ -1006,20 +1900,30 @@ fn animate_mobs(
         *left > 0.0
     });
     let walk_flip = (time.elapsed_secs() / 0.25) as usize % 2;
-    for (anim, mv, mut sprite) in &mut mobs {
+    for (anim, mv, mut sprite, xf) in &mut mobs {
         let ms = mob_sprite_kind(&td_tex, &anim.kind);
-        // REV3 §13 attack cursor: while the fx timer is hot, the mob flashes
-        // between its idle frame and a bright pose tint, so every hit it
-        // lands on a structure/capital visibly reads as *its* act.
-        let attacking = fx.posing.contains_key(&anim.mob_id);
-        let image = if mv.speed > 0.05 {
+        // REV5 §18: movement gate on ACTUAL distance to the glide target.
+        let (tdx, tdy) = (mv.target.x - xf.translation.x, mv.target.y - xf.translation.y);
+        let remaining = (tdx * tdx + tdy * tdy).sqrt();
+        let image = if remaining > 0.05 {
             ms.walk[walk_flip].clone()
         } else {
             ms.idle.clone()
         };
+        // Heading flip (REV5): face the glide direction while moving.
+        if remaining > 0.05 {
+            let flip = tdx < 0.0;
+            if sprite.flip_x != flip {
+                sprite.flip_x = flip;
+            }
+        }
         if sprite.image.id() != image.id() {
             sprite.image = image;
         }
+        // REV3 §13 attack cursor: while the fx timer is hot, the mob flashes
+        // between its idle frame and a bright pose tint, so every hit it
+        // lands on a structure/capital visibly reads as *its* act.
+        let attacking = fx.posing.contains_key(&anim.mob_id);
         let flash_on = tracker.flash.contains_key(&anim.mob_id);
         let color = if flash_on {
             Color::srgb(1.0, 0.3, 0.25)
@@ -1048,7 +1952,12 @@ fn animate_mobs(
 /// Consume fresh `combat_event` rows once each and birth visuals: tracers
 /// fly from the shooter, impacts pop on the target, capitals flash, the
 /// wave's first capital hit toasts "under attack".
-fn process_combat_events(snap: &TdSnapshot, fx: &mut TdFx, commands: &mut Commands) {
+fn process_combat_events(
+    snap: &TdSnapshot,
+    fx: &mut TdFx,
+    commands: &mut Commands,
+    player_xf: &PlayerTransform,
+) {
     for row in &snap.events {
         if row.event_id <= fx.last_event_id {
             continue;
@@ -1058,6 +1967,11 @@ fn process_combat_events(snap: &TdSnapshot, fx: &mut TdFx, commands: &mut Comman
         // Attack cursor: any mob-sourced event arms the attack pose (§13).
         if row.attacker_mob > 0 {
             fx.posing.insert(row.attacker_mob, 0.55);
+        }
+        // Player swings arm the attacker pose at home too (attacker_mob is
+        // 0 — pose goes on the player fx slot below).
+        if row.kind == "player_hit" {
+            fx.player_swing = 0.35;
         }
         let (tx, ty) = fx_target_pos(row);
         match plan {
@@ -1103,8 +2017,7 @@ fn process_combat_events(snap: &TdSnapshot, fx: &mut TdFx, commands: &mut Comman
                 let size = if row.kind == "struct_fell" { 1.6 } else { 1.0 };
                 impact_sprite(commands, color, tx, ty, size);
             }
-            FxBirth::CapitalHit => {
-                fx.capital_hit.insert(row.capital_id, 0.5);
+            FxBirth::CapitalHit => {                fx.capital_hit.insert(row.capital_id, 0.5);
                 if row.wave_id != 0 && fx.toasted_waves.insert(row.wave_id) {
                     commands.spawn((
                         TdWorldToast { t: 0.0 },
@@ -1118,6 +2031,30 @@ fn process_combat_events(snap: &TdSnapshot, fx: &mut TdFx, commands: &mut Comman
                         Transform::from_xyz(tx, ty + 2.0, prop_depth(ty) + 60.0),
                     ));
                 }
+            }
+            // Spec 027: player weapon swing — a gold tracer from YOU to the
+            // victim's hex + the impact bloom (the arc reads as the swing).
+            FxBirth::PlayerHit => {
+                let from = Vec2::new(player_xf.translation.x, player_xf.translation.y - 0.4);
+                let to = Vec2::new(tx, ty);
+                let dist = to.distance(from);
+                if dist > 0.4 {
+                    commands.spawn((
+                        TdBolt {
+                            t: 0.0,
+                            ttl: (dist / 26.0).clamp(0.12, 0.45),
+                            from,
+                            to,
+                        },
+                        Sprite {
+                            color: Color::srgba(1.0, 0.9, 0.5, 1.0),
+                            custom_size: Some(Vec2::new(0.9, 0.22)),
+                            ..default()
+                        },
+                        Transform::from_xyz(from.x, from.y, prop_depth(ty) + 43.0),
+                    ));
+                }
+                impact_sprite(commands, [1.0, 0.9, 0.5], tx, ty, 0.9);
             }
         }
     }
@@ -1313,10 +2250,22 @@ pub const BUILD_GROUPS: [(&str, &[&str]); 3] = [
     ),
 ];
 
-/// Build menu (B) open/closed — the menu replaces blind B-cycling.
+/// Spec 029: the build menu is the Build tab of the shared command panel
+/// (`ui::panel::CommandPanel` owns open/tab); no local open flag.
+
+/// Spec 026: selected structure + the double-click confirm gate for its
+/// Remove button. Terrain clicks, ESC and armed build mode/menu deselect.
 #[derive(Resource, Default)]
-pub struct TdBuildMenu {
-    pub open: bool,
+pub struct TdSelect {
+    pub sid: Option<u64>,
+    pub confirm_remove: bool,
+}
+
+/// Mirror of the snapshot's defense-structure rows for selection, hover and
+/// the panel (refreshed whenever any TD table changes).
+#[derive(Resource, Default)]
+pub struct TdStructRows {
+    pub rows: Vec<StructRow>,
 }
 
 /// Floor hint color per armed action. Tone-picked so the tint pops against
@@ -1586,34 +2535,28 @@ fn td_place_hints(
 fn td_build_keys(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut mode: ResMut<TdBuildMode>,
-    mut menu: ResMut<TdBuildMenu>,
-    mut root: Query<&mut Node, With<TdBuildMenuRoot>>,
+    panel: Res<CommandPanel>,
     mut net: ResMut<Net>,
+    mut was_build_open: Local<bool>,
 ) {
-    let mut changed = false;
-    if keyboard.just_pressed(KeyCode::KeyB) {
-        menu.open = !menu.open;
-        changed = true;
-        if menu.open {
-            net.push(NetEvent::ServerMessage(
-                "BUILDINGS: pick one — E on a lit hex to place".to_string(),
-            ));
-        } else if mode.kind.take().is_some() {
+    // Spec 029: B moved to `ui::panel` (it toggles the Build tab of the
+    // shared shell). This system keeps only the world-side semantics:
+    // ESC disarms an armed build kind, and Build-tab show/hide pokes the
+    // territory overlay re-render (same trigger the old menu toggle used).
+    if keyboard.just_pressed(KeyCode::Escape) {
+        if mode.kind.take().is_some() {
             net.push(NetEvent::ServerMessage("build mode off".to_string()));
         }
     }
-    if keyboard.just_pressed(KeyCode::Escape) && (menu.open || mode.kind.take().is_some()) {
-        menu.open = false;
-        changed = true;
-        net.push(NetEvent::ServerMessage("build mode off".to_string()));
+    let build_open = panel.is_open(Tab::Build);
+    if build_open != *was_build_open {
+        *was_build_open = build_open;
+        // NOTE (Spec 029): closing the tab never disarms an armed kind —
+        // the row-click flow closes the shell right after arming, and B
+        // simply re-reveals the lit hexes. ESC is the disarm key (023 rule,
+        // handled above); switching away from the Build tab keeps it armed.
+        net.mark_td_dirty();
     }
-    if !changed {
-        return;
-    }
-    if let Ok(mut node) = root.single_mut() {
-        node.display = if menu.open { Display::Flex } else { Display::None };
-    }
-    net.mark_td_dirty();
 }
 
 /// Pure pick of the XP-transfer target: the nearest OWN structure within 1
@@ -1679,18 +2622,11 @@ fn td_upgrade_keys(
     });
 }
 
-fn close_menu(menu: &mut TdBuildMenu, root: &mut Query<&mut Node, With<TdBuildMenuRoot>>) {    menu.open = false;
-    if let Ok(mut node) = root.single_mut() {
-        node.display = Display::None;
-    }
-}
-
-/// Click a building row → arm that kind, close the menu, report costs.
+/// Click a building row → arm that kind, close the panel, report costs.
 fn td_build_row_clicks(
     rows: Query<(&Interaction, &TdBuildRow), Changed<Interaction>>,
     mut mode: ResMut<TdBuildMode>,
-    mut menu: ResMut<TdBuildMenu>,
-    mut root: Query<&mut Node, With<TdBuildMenuRoot>>,
+    mut panel: ResMut<CommandPanel>,
     mut net: ResMut<Net>,
 ) {
     for (interaction, row) in &rows {
@@ -1705,7 +2641,9 @@ fn td_build_row_clicks(
         net.push(NetEvent::ServerMessage(format!(
             "BUILD MODE: {kind} ({cost}) — E on a lit hex; ESC cancels"
         )));
-        close_menu(&mut menu, &mut root);
+        // Old flow closed the menu so the lit hexes are visible; the shell
+        // is told to close the same way.
+        panel.close();
         net.mark_td_dirty();
     }
 }
@@ -1745,7 +2683,7 @@ fn td_build_row_tint(
         let want_bg = if armed {
             Color::srgb(0.16, 0.42, 0.32)
         } else if can_afford {
-            Color::srgb(0.1, 0.18, 0.3)
+            crate::ui::panel::ROW_BG
         } else {
             Color::srgb(0.09, 0.1, 0.14)
         };
@@ -1753,9 +2691,9 @@ fn td_build_row_tint(
             bg.0 = want_bg;
         }
         let want_border = if armed {
-            Color::srgb(0.3, 0.95, 0.65)
+            crate::ui::panel::GOOD
         } else {
-            Color::srgba(0.0, 0.0, 0.0, 0.6)
+            crate::ui::panel::FRAME_BORDER
         };
         if border.top != want_border {
             *border = BorderColor::all(want_border);
@@ -1825,6 +2763,375 @@ fn td_build_icons(td: Res<TdTextures>, mut rows: Query<(&TdBuildRow, &mut ImageN
 }
 
 // ---------------------------------------------------------------------------
+// Spec 027 — player combat HUD (wellness chip + death veil) and combat input
+// ---------------------------------------------------------------------------
+
+#[derive(Component)]
+pub struct TdWellnessRoot;
+
+/// HP bar fill (Spec 027 §9: wellness chip style).
+#[derive(Component)]
+pub struct TdHpFill;
+
+#[derive(Component)]
+pub struct TdHpTxt;
+
+#[derive(Component)]
+pub struct TdWeaponTxt;
+
+#[derive(Component)]
+pub struct TdDashTxt;
+
+/// Full-screen death veil + respawn countdown (Spec 027 §9).
+#[derive(Component)]
+pub struct TdVeilRoot;
+
+#[derive(Component)]
+pub struct TdVeilTxt;
+
+/// Pure dash-cooldown chip text (unit-tested): ready / draining.
+fn dash_chip_text(dash_cd_until_utc: u64, now: u64) -> String {
+    if dash_cd_until_utc <= now {
+        "Dash [Space] — ready".to_string()
+    } else {
+        format!("Dash [Space] — {}", fmt_countdown(dash_cd_until_utc - now))
+    }
+}
+
+/// Pure hp bar fill for attacks (unit-tested): full → green, mid → amber,
+/// low → red — the mirror of the capital chip's server-side HP math.
+fn combat_hp_ratio(hp: u32, max: u32) -> f32 {
+    clamp_ratio(hp as f32, max as f32)
+}
+
+/// Pure owned-tier cycle (Spec 027 §4, unit-tested): the next tier above
+/// `current` inside the bitmask (bit i = tier i owned), wrapping to the
+/// lowest owned; fists (tier 0) are implicit.
+fn next_owned_tier(current: u8, owned_mask: u16) -> u8 {
+    // Top tier now includes the bow (§14 addendum: tier 5).
+    let owned = owned_mask | 0b1;
+    if (current + 1..=5).find(|&t| owned & (1 << t) != 0).is_none() {
+        (0..current).find(|&t| owned & (1 << t) != 0).unwrap_or(current)
+    } else {
+        (current + 1..=5).find(|&t| owned & (1 << t) != 0).unwrap() as u8
+    }
+}
+
+fn spawn_td_wellness(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let font: bevy::text::FontSource = asset_server.load("fonts/FiraSans-Bold.ttf").into();
+
+    // Wellness chip — bottom-right: weapon label, hp bar, dash row. Shown
+    // only once a combat column carries a real stamp (`update_combat_hud`).
+    commands
+        .spawn((
+            Name::new("td_wellness"),
+            TdWellnessRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(96.0),
+                right: Val::Px(20.0),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::FlexEnd,
+                row_gap: Val::Px(5.0),
+                padding: UiRect::all(Val::Px(10.0)),
+                border_radius: BorderRadius::all(Val::Px(10.0)),
+                display: Display::None,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.05, 0.05, 0.09, 0.85)),
+            BorderColor::all(Color::srgb(0.6, 0.15, 0.15)),
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                TdWeaponTxt,
+                Text::default(),
+                TextFont { font: font.clone(), font_size: 12.0.into(), ..default() },
+                TextColor(Color::srgb(1.0, 0.9, 0.5)),
+            ));
+            // HP bar: dark trough + ratio fill (green→amber→red), like the
+            // capital's.
+            parent
+                .spawn((
+                    Node {
+                        width: Val::Px(190.0),
+                        height: Val::Px(11.0),
+                        border_radius: BorderRadius::all(Val::Px(3.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.14)),
+                ))
+                .with_child((
+                    TdHpFill,
+                    Node {
+                        width: Val::Percent(100.0),
+                        height: Val::Px(11.0),
+                        border_radius: BorderRadius::all(Val::Px(3.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.25, 0.9, 0.3)),
+                ));
+            parent.spawn((
+                TdHpTxt,
+                Text::default(),
+                TextFont { font: font.clone(), font_size: 12.0.into(), ..default() },
+                TextColor(Color::WHITE),
+            ));
+            parent.spawn((
+                TdDashTxt,
+                Text::default(),
+                TextFont { font: font.clone(), font_size: 12.0.into(), ..default() },
+                TextColor(Color::srgb(0.55, 0.85, 1.0)),
+            ));
+        });
+
+    // Death veil — full-screen dim, hidden while alive (§9).
+    commands
+        .spawn((
+            Name::new("td_death_veil"),
+            TdVeilRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                display: Display::None,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.08, 0.0, 0.04, 0.65)),
+            GlobalZIndex(50),
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                TdVeilTxt,
+                Text::new("You fell."),
+                TextFont { font, font_size: 26.0.into(), ..default() },
+                TextColor(Color::WHITE),
+                TextLayout::new(Justify::Center, bevy::text::LineBreak::NoWrap),
+            ));
+        });
+}
+
+/// Wellness chip + death veil content. One ParamSet (6 sibling writers):
+/// 0 hp fill, 1 veil root, 2 hp text, 3 weapon, 4 dash, 5 veil text.
+fn update_combat_hud(
+    time: Res<Time>,
+    inv: Res<crate::inventory::Inventory>,
+    player: Query<&crate::player::ClientPlayer>,
+    mut throttle: Local<f32>,
+    mut ps: ParamSet<(
+        Query<(&mut Node, &mut BackgroundColor), With<TdHpFill>>,
+        Query<&mut Node, With<TdVeilRoot>>,
+        Query<&mut Text, With<TdHpTxt>>,
+        Query<&mut Text, With<TdWeaponTxt>>,
+        Query<&mut Text, With<TdDashTxt>>,
+        Query<&mut Text, With<TdVeilTxt>>,
+    )>,
+) {
+    *throttle += time.delta_secs();
+    if *throttle < 0.4 {
+        return;
+    }
+    *throttle = 0.0;
+    let Ok(p) = player.single() else { return };
+    let now = unix_now_secs();
+
+    // The combat columns mirror only once logged in (0 everywhere before) —
+    // keep the chip and veil hidden until a real stamp arrives.
+    let known = p.dash_cd_until_utc != 0 || p.hostile_until_utc != 0 || p.grace_until_utc != 0;
+    if !known {
+        if let Ok(mut text) = ps.p2().single_mut() {
+            **text = String::new();
+        }
+        if let Ok(mut text) = ps.p3().single_mut() {
+            **text = String::new();
+        }
+        if let Ok(mut node) = ps.p1().single_mut() {
+            node.display = Display::None;
+        }
+        return;
+    }
+
+    // Death: veil up + countdown (§6).
+    if p.death_until_utc > now {
+        if let Ok(mut node) = ps.p1().single_mut() {
+            node.display = Display::Flex;
+        }
+        if let Ok(mut text) = ps.p5().single_mut() {
+            **text = format!("You fell. Respawning in {}s", p.death_until_utc - now);
+        }
+        return;
+    }
+    if let Ok(mut node) = ps.p1().single_mut() {
+        node.display = Display::None;
+    }
+
+    // HP = 0 without a death stamp is the server's unseeded encoding —
+    // render full (mirrors `hp_of` on the server).
+    let max = idlecore_core::player_combat::player_max_hp(p.level);
+    let hp = if p.hp == 0 { max } else { p.hp };
+    let ratio = combat_hp_ratio(hp, max);
+    if let Ok((mut node, mut bg)) = ps.p0().single_mut() {
+        node.width = Val::Percent(ratio * 100.0);
+        *bg = BackgroundColor(hp_bar_color(ratio));
+    }
+    let in_combat = p.hostile_until_utc > now;
+    if let Ok(mut text) = ps.p2().single_mut() {
+        // The lone `+` is the out-of-combat regen shimmer (§6).
+        **text = format!(
+            "{hp} / {max} hp{}",
+            if in_combat { " (fighting!)" } else { " +" }
+        );
+    }
+    if let Ok(mut text) = ps.p3().single_mut() {
+        // §14: the bow reads its Arrow stack on the chip — firing dry is
+        // impossible in UI terms once the count is visible.
+        let arrows = match p.weapon_def().ammo {
+            Some(ammo) => inv.counts.get(ammo).copied().unwrap_or(0).to_string(),
+            None => String::new(),
+        };
+        let ammo_note = if arrows.is_empty() {
+            String::new()
+        } else {
+            format!(" · {arrows} {}", p.weapon_def().ammo.unwrap_or(""))
+        };
+        **text = format!("Wpn: {}{}", p.weapon_def().name, ammo_note);
+    }
+    if let Ok(mut text) = ps.p4().single_mut() {
+        **text = dash_chip_text(p.dash_cd_until_utc, now);
+    }
+}
+
+/// Spec 027 §5.1 input: `KeyF` strikes the facing arc; clicking a mob
+/// strikes toward ITS hex. Space dashes — fired in `player_movement` where
+/// the ×3 local burst already lives.
+#[allow(clippy::type_complexity)]
+fn td_combat_input(
+    mut keys: Res<ButtonInput<KeyCode>>,
+    mut mouse: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    widgets: Query<&Interaction>,
+    mode: Res<TdBuildMode>,
+    panel: Res<CommandPanel>,
+    mobs: Query<(&TdMobAnim, &Transform), With<TdMobMarker>>,
+    mut net: ResMut<Net>,
+    player_xf: Res<PlayerTransform>,
+    mut orientation: ResMut<crate::player::PlayerOrientation>,
+    p: Query<&crate::player::ClientPlayer>,
+    rows: Res<TdStructRows>,
+    td_tex: Res<TdTextures>,
+    mut skins: ResMut<crate::skins::PlayerSkins>,
+    minimap_state: Res<crate::minimap::MinimapState>,
+) {
+    if net.address.is_none() {
+        return;
+    }
+    let Ok(player) = p.single() else { return };
+    let now = unix_now_secs();
+    if player.death_until_utc > now {
+        return; // dead: reducers reject anyway — save the trip
+    }
+    let armed_build = mode.kind.is_some() || panel.is_open(Tab::Build);
+
+    // ---- KeyF: strike the facing arc ----
+    if keys.just_pressed(KeyCode::KeyF) && !armed_build {
+        let dir = idlecore_core::player_combat::heading_index(orientation.facing_angle);
+        crate::skins::start_attack(
+            &mut skins,
+            crate::skins::AttackAnim::of_weapon(player.weapon_def().anim),
+        );
+        let tx = net.sender();
+        send_reducer(&mut net, |r| {
+            r.player_attack_then(dir, reducer_report("attack", tx.clone(), 0))
+        });
+    }
+
+    // ---- KeyC: cycle the OWNED tier upward; KeyV: attempt to buy/equip
+    // the next tier up (first equip consumes its materials — server checks).
+    if keys.just_pressed(KeyCode::KeyC) {
+        let owned = player.weapons_owned | 0b1; // fists always owned (tier 0)
+        let next = next_owned_tier(player.weapon, owned);
+        let tx = net.sender();
+        send_reducer(&mut net, |r| {
+            r.equip_weapon_then(next, reducer_report("equip", tx.clone(), 0))
+        });
+    }
+    if keys.just_pressed(KeyCode::KeyV) && player.weapon < 5 {
+        // Buying the next rung: Fists → Club → Spear → Sword → Blade → Bow.
+        let next = player.weapon + 1;
+        let tx = net.sender();
+        send_reducer(&mut net, |r| {
+            r.equip_weapon_then(next, reducer_report("equip", tx.clone(), 0))
+        });
+    }
+
+    // ---- Click a mob: strike toward its hex; click empty ground: strike
+    // that facing (Spec 030 replaces the old left-click teleport). A
+    // structure under the cursor keeps the 026 selection instead.
+    if armed_build || !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    if panel.open {
+        // The shared command panel is up — clicks belong to its widgets
+        // (the panel background carries no Interaction, so guard here too).
+        return;
+    }
+    // UI guard: a hovered/pressed widget keeps the click out of the world.
+    if widgets.iter().any(|i| matches!(i, Interaction::Hovered | Interaction::Pressed)) {
+        return;
+    }
+    // Clicks on the minimap live on the minimap (select/teleport) — never
+    // strike through it.
+    if crate::minimap::cursor_on_minimap(&windows, &minimap_state) {
+        return;
+    }
+    let Ok(window) = windows.single() else { return };
+    let Some(cursor) = window.cursor_position() else { return };
+    let Ok((camera, cam_xf)) = cameras.single() else { return };
+    let Ok(world) = camera.viewport_to_world_2d(cam_xf, cursor) else { return };
+    let world = Vec2::new(world.x, world.y);
+    let me = Vec2::new(player_xf.translation.x, player_xf.translation.y);
+    // Structure hit → the selection system owns this click (Spec 026).
+    let structure_hit = rows.rows.iter().any(|row| {
+        cfg::defense_kind(&row.kind).is_some()
+            && {
+                let (_, aspect, _, height) = structure_sprite(&td_tex, &row.kind);
+                structure_cursor_hit(world, row.x, row.y, aspect, height)
+            }
+    });
+    if structure_hit {
+        return;
+    }
+    // Closest mob within the strike footprints; else strike the ground point.
+    let reach =
+        (player.weapon_def().range_hexes.max(1) as f32) * WorldGenConfig::TILE_SIZE * 1.6;
+    let target = mobs
+        .iter()
+        .map(|(a, t)| (a.mob_id, Vec2::new(t.translation.x, t.translation.y)))
+        .min_by(|a, b| (a.1 - world).length().total_cmp(&(b.1 - world).length()))
+        .filter(|(_, mob_pos)| {
+            (mob_pos - world).length() < 2.4
+                && (mob_pos - me).length() <= reach + WorldGenConfig::TILE_SIZE
+        })
+        .map(|(_, pos)| pos)
+        .unwrap_or(world);
+    let angle = (target - me).y.atan2((target - me).x);
+    orientation.facing_angle = angle; // the clip + weapon overlay face the strike
+    crate::skins::start_attack(
+        &mut skins,
+        crate::skins::AttackAnim::of_weapon(player.weapon_def().anim),
+    );
+    let dir = idlecore_core::player_combat::heading_index(angle);
+    let tx = net.sender();
+    send_reducer(&mut net, |r| {
+        r.player_attack_then(dir, reducer_report("attack", tx.clone(), 0))
+    });
+}
+
+// ---------------------------------------------------------------------------
 // HUD
 // ---------------------------------------------------------------------------
 
@@ -1833,10 +3140,6 @@ struct TdBannerRoot;
 
 #[derive(Component)]
 struct TdBannerText;
-
-/// Root wrapper of the B-key buildings menu (Display toggle).
-#[derive(Component)]
-struct TdBuildMenuRoot;
 
 /// One selectable building row (`'static str` = the server kind name).
 #[derive(Component)]
@@ -1849,6 +3152,38 @@ struct TdBuildRowIcon;
 /// Per-row cost text (red when the inventory can't pay, Spec 024).
 #[derive(Component)]
 struct TdBuildCost;
+
+// --- Spec 026: selection panel markers -------------------------------------
+#[derive(Component)]
+struct TdSelPanelRoot;
+#[derive(Component)]
+struct TdSelHeader;
+#[derive(Component)]
+struct TdSelHpBar;
+#[derive(Component)]
+struct TdSelStats;
+#[derive(Component)]
+struct TdSelXp;
+#[derive(Component)]
+struct TdSelActions;
+#[derive(Component)]
+struct TdSelUpgrade;
+#[derive(Component)]
+struct TdSelUpgradeTxt;
+#[derive(Component)]
+struct TdSelRemove;
+#[derive(Component)]
+struct TdSelRemoveTxt;
+#[derive(Component)]
+struct TdSelRefund;
+
+/// Hover nameplate above the cursor's structure (transient, §3.4).
+#[derive(Component)]
+struct TdHoverLabel;
+
+/// Transient overlay sprites: selection ring, attack area, build preview.
+#[derive(Component)]
+struct TdSelectFx;
 
 /// Root of the top-left status cluster: next-raid countdown widget +
 /// player stats (gold / XP / capital level-HP).
@@ -2133,52 +3468,23 @@ fn spawn_td_hud(mut commands: Commands, asset_server: Res<AssetServer>) {
                 });
         });
 
-    // Buildings menu (B) — centered just above the hotbar, same panel
-    // language as the top-left cluster. Hidden until toggled.
+    // Buildings menu — Spec 029: the Build tab of the shared command panel.
+    // No own wrapper/root; visibility + frame chrome are owned by ui::panel.
+    // Rows re-skin to the shared tokens below.
     commands
         .spawn((
-            Name::new("td_build_menu_root"),
-            TdBuildMenuRoot,
+            Name::new("td_build_tab"),
+            TabContent(Tab::Build),
             Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(0.0),
-                right: Val::Px(0.0),
-                bottom: Val::Px(126.0),
-                justify_content: JustifyContent::Center,
+                width: Val::Px(330.0),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: Val::Px(4.0),
                 display: Display::None,
                 ..default()
             },
         ))
-        .with_children(|wrap| {
-            wrap.spawn((
-                Name::new("td_build_panel"),
-                Node {
-                    width: Val::Px(330.0),
-                    flex_direction: FlexDirection::Column,
-                    align_items: AlignItems::Center,
-                    padding: UiRect::all(Val::Px(10.0)),
-                    row_gap: Val::Px(4.0),
-                    border: UiRect::all(Val::Px(1.5)),
-                    border_radius: BorderRadius::all(Val::Px(9.0)),
-                    ..default()
-                },
-                BackgroundColor(Color::srgba(0.05, 0.08, 0.15, 0.9)),
-                BorderColor::all(Color::srgb(0.28, 0.62, 0.5)),
-            ))
-            .with_children(|panel| {
-                panel.spawn(((
-                    Text::new("🛠 BUILDINGS"),
-                    TextFont {
-                        font: font.clone(),
-                        font_size: FontSize::Px(13.0),
-                        ..default()
-                    },
-                    TextColor(Color::srgb(0.3, 0.95, 0.65)),
-                    TextShadow {
-                        color: Color::BLACK,
-                        offset: Vec2::new(1.0, 1.0),
-                    },
-                ),));
+        .with_children(|panel| {
                 panel.spawn((
                     Text::new("pick one → press E on a lit hex; ESC cancels"),
                     TextFont {
@@ -2219,8 +3525,8 @@ fn spawn_td_hud(mut commands: Commands, asset_server: Res<AssetServer>) {
                                 border_radius: BorderRadius::all(Val::Px(6.0)),
                                 ..default()
                             },
-                            BackgroundColor(Color::srgb(0.1, 0.18, 0.3)),
-                            BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+                            BackgroundColor(crate::ui::panel::ROW_BG),
+                            BorderColor::all(crate::ui::panel::FRAME_BORDER),
                             TdBuildRow(kind),
                         ))
                         .with_children(|row| {
@@ -2265,6 +3571,156 @@ fn spawn_td_hud(mut commands: Commands, asset_server: Res<AssetServer>) {
                     }
                 }
             });
+
+    // Spec 026 §3.3 — selection panel. Hidden until a structure is picked;
+    // content is maintained by `update_select_panel`.
+    commands
+        .spawn((
+            Name::new("td_select_panel_root"),
+            TdSelPanelRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(18.0),
+                bottom: Val::Px(150.0),
+                width: Val::Px(250.0),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                padding: UiRect::all(Val::Px(9.0)),
+                row_gap: Val::Px(3.0),
+                border: UiRect::all(Val::Px(1.5)),
+                border_radius: BorderRadius::all(Val::Px(9.0)),
+                display: Display::None,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.05, 0.08, 0.15, 0.9)),
+            BorderColor::all(Color::srgb(0.28, 0.62, 0.5)),
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Text::new("-"),
+                TextFont {
+                    font: font.clone(),
+                    font_size: FontSize::Px(13.0),
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+                TextShadow { color: Color::BLACK, offset: Vec2::new(1.0, 1.0) },
+                TdSelHeader,
+            ));
+            // HP bar trough + ratio fill.
+            panel
+                .spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        height: Val::Px(7.0),
+                        border_radius: BorderRadius::all(Val::Px(3.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.14)),
+                ))
+                .with_child((
+                    Node {
+                        width: Val::Percent(100.0),
+                        height: Val::Px(7.0),
+                        border_radius: BorderRadius::all(Val::Px(3.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.25, 0.9, 0.3)),
+                    TdSelHpBar,
+                ));
+            panel.spawn((
+                Text::new("-"),
+                TextFont {
+                    font: font.clone(),
+                    font_size: FontSize::Px(11.0),
+                    ..default()
+                },
+                TextColor(TEXT_COLOR),
+                TdSelStats,
+            ));
+            panel.spawn((
+                Text::new(""),
+                TextFont {
+                    font: font.clone(),
+                    font_size: FontSize::Px(11.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.65, 0.95, 0.7)),
+                TdSelXp,
+            ));
+            // Action row: Upgrade + Remove buttons side by side.
+            panel
+                .spawn((Node { width: Val::Percent(100.0), flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, display: Display::None, ..default() }, TdSelActions))
+                .with_children(|actions| {
+                    actions.spawn((
+                        Button,
+                        Interaction::default(),
+                        Node {
+                            flex_grow: 1.0,
+                            margin: UiRect::horizontal(Val::Px(2.0)),
+                            padding: UiRect::horizontal(Val::Px(9.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            border_radius: BorderRadius::all(Val::Px(6.0)),
+                            justify_content: JustifyContent::Center,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.1, 0.18, 0.3)),
+                        BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+                        TdSelUpgrade,
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new("Upgrade"),
+                            TextFont {
+                                font: font.clone(),
+                                font_size: FontSize::Px(12.0),
+                                ..default()
+                            },
+                            TextColor(Color::srgb(0.65, 0.95, 0.7)),
+                            TextShadow { color: Color::BLACK, offset: Vec2::new(0.5, 0.5) },
+                            TdSelUpgradeTxt,
+                        ));
+                    });
+                    actions.spawn((
+                        Button,
+                        Interaction::default(),
+                        Node {
+                            flex_grow: 1.0,
+                            margin: UiRect::horizontal(Val::Px(2.0)),
+                            padding: UiRect::horizontal(Val::Px(9.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            border_radius: BorderRadius::all(Val::Px(6.0)),
+                            justify_content: JustifyContent::Center,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.1, 0.18, 0.3)),
+                        BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+                        TdSelRemove,
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new("Remove"),
+                            TextFont {
+                                font: font.clone(),
+                                font_size: FontSize::Px(12.0),
+                                ..default()
+                            },
+                            TextColor(Color::srgb(1.0, 0.5, 0.35)),
+                            TextShadow { color: Color::BLACK, offset: Vec2::new(0.5, 0.5) },
+                            TdSelRemoveTxt,
+                        ));
+                    });
+                });
+            panel.spawn((
+                Text::new(""),
+                TextFont {
+                    font: font.clone(),
+                    font_size: FontSize::Px(11.0),
+                    ..default()
+                },
+                TextColor(TEXT_COLOR),
+                TdSelRefund,
+            ));
         });
 }
 
@@ -2553,6 +4009,151 @@ mod stat_tests {
 }
 
 #[cfg(test)]
+mod tests_spec026_select {
+    use super::*;
+
+    #[test]
+    fn cursor_hits_the_sprite_rect_with_hex_fallback() {
+        // Arrow Tower at (10, 10): rect w = 2.2·(24/32) ≈ 1.65, base y 10.4.
+        let (hx, hy) = (10.0f32, 10.0f32);
+        assert!(structure_cursor_hit(
+            Vec2::new(hx, hy + 1.0),
+            hx,
+            hy,
+            24.0 / 32.0,
+            2.2
+        ), "body rect hit");
+        assert!(structure_cursor_hit(
+            Vec2::new(hx, hy + 1.4),
+            hx,
+            hy,
+            24.0 / 32.0,
+            2.2
+        ), "up to the top of the sprite");
+        assert!(!structure_cursor_hit(
+            Vec2::new(hx + 1.6, hy + 1.0),
+            hx,
+            hy,
+            24.0 / 32.0,
+            2.2
+        ) == false || structure_hex_hit(
+            Vec2::new(hx + 1.0, hy),
+            hx,
+            hy,
+        ), "hex fallback catches near-groud.fx");
+        assert!(!structure_cursor_hit(
+            Vec2::new(hx + 9.0, hy + 9.0),
+            hx,
+            hy,
+            1.0,
+            2.0
+        ), "far away is a terrain click (deselect)");
+    }
+
+    #[test]
+    fn chebyshev_hex_hit_matches_the_tile_size() {
+        let half = WorldGenConfig::TILE_SIZE * 0.5;
+        assert!(structure_hex_hit(
+            Vec2::new(half, half - 0.01),
+            0.0,
+            0.0
+        ), "inside the half-tile box");
+        assert!(!structure_hex_hit(
+            Vec2::new(half + 0.01, half + 0.01),
+            0.0,
+            0.0
+        ), "outside is another hex");
+        // Chebyshev: square, matching the server's tile_distance.
+        assert!(structure_hex_hit(Vec2::new(half, half), 0.0, 0.0));
+    }
+
+    #[test]
+    fn range_square_sides_cover_the_full_chebyshev_window() {
+        // `tile_distance ≤ r` is a (2r+1)·T square on the lattice.
+        assert_eq!(range_square_side(0), WorldGenConfig::TILE_SIZE);
+        assert_eq!(range_square_side(2), 5.0 * WorldGenConfig::TILE_SIZE);
+        assert_eq!(range_square_side(3), 7.0 * WorldGenConfig::TILE_SIZE);
+        assert_eq!(range_square_side(-1), WorldGenConfig::TILE_SIZE, "clamp");
+    }
+
+    #[test]
+    fn selection_ring_differs_for_owners_and_neighbors() {
+        let mine = selection_ring_color(Some("arthur"), Some("arthur"));
+        let theirs = selection_ring_color(Some("bob"), Some("arthur"));
+        assert_ne!(mine, theirs, "own land reads teal, others read ice");
+    }
+
+    #[test]
+    fn remove_refund_preview_matches_half_of_every_ingredient() {
+        // Arrow Tower: (8W, 4S, 1MP) → halves 4W 2S 0MP — 0MP hidden.
+        let tower = cfg::defense_kind(cfg::ITEM_ARROW_TOWER).unwrap();
+        assert_eq!(remove_refund_preview(tower), "Refund: Wood×4, Stone×2");
+        let band = cfg::defense_kind(cfg::ITEM_BONE_BARRICADE).unwrap();
+        assert_eq!(remove_refund_preview(band), "Refund: Bone×3");
+        // Iron Wall: (6MP, 4S) → 3MP 2S.
+        let iron = cfg::defense_kind(cfg::ITEM_IRON_WALL).unwrap();
+        assert_eq!(remove_refund_preview(iron), "Refund: MetalPart×3, Stone×2");
+    }
+
+    #[test]
+    fn upgrade_delta_line_reports_hp_and_dps_per_tier() {
+        let tower = cfg::defense_kind(cfg::ITEM_ARROW_TOWER).unwrap();
+        assert_eq!(
+            upgrade_delta_line(tower, 1).as_deref(),
+            Some("hp 80→104 dps 10→12"),
+            "L2: +30% hp over base (10·L), +25% dps floored"
+        );
+        assert_eq!(upgrade_delta_line(tower, 5), None, "cap hides the row");
+        // Walls show hp only (no dps at all).
+        let wall = cfg::defense_kind(cfg::ITEM_WOOD_WALL).unwrap();
+        assert_eq!(
+            upgrade_delta_line(wall, 1).as_deref(),
+            Some("hp 70→91"),
+            "extra text trimmed on wall tiers"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests_rev5_glide {
+    use super::*;
+
+    #[test]
+    fn glide_speed_matches_each_kind_step_cadence() {
+        // One lattice hex (TILE_SIZE wu) per step interval: Slime marches
+        // every 2 s, Spear Goblin 3 s, Myconid 4 s, boss 5 s.
+        for (secs, name) in [(2u32, "Slime"), (3, "Spear Goblin"), (4, "Myconid"), (5, "Big Slime")] {
+            let kind = cfg::mob_kind(name).expect("roster kind");
+            assert_eq!(kind.step_interval_secs, secs, "{name} cadence pinned");
+            let speed = mob_glide_speed(secs);
+            assert!(
+                (speed - WorldGenConfig::TILE_SIZE / secs as f32).abs() < 1e-6,
+                "{name} glide speed"
+            );
+        }
+        // Degenerate interval clamps to 1 — no zero/div-by-none speed.
+        assert!(mob_glide_speed(0) > 0.0);
+    }
+
+    #[test]
+    fn snapshot_jump_beyond_two_hexes_snaps_not_glides() {
+        let t = WorldGenConfig::TILE_SIZE;
+        assert!(!mob_should_snap(t), "a normal one-hex step glides");
+        assert!(!mob_should_snap(t * 1.5), "sub-2-hex gaps keep gliding");
+        assert!(mob_should_snap(t * 2.1), "> 2 hexes is a desync, snap it");
+        assert!(mob_should_snap(500.0));
+    }
+
+    #[test]
+    fn walk_gate_threshold_distinguishes_standing_from_gliding() {
+        // The gate lives inline in animate_mobs (`remaining > 0.05 wu`);
+        // pin the bound so idle-frame churn cannot regress silently.
+        assert!(Vec2::new(0.2, 0.0).length() > 0.05);
+        assert!(Vec2::new(0.01, 0.0).length() <= 0.05);
+    }
+}
+
+#[cfg(test)]
 mod tests_cull_radii {
     use super::*;
 
@@ -2590,6 +4191,8 @@ mod tests_fx {
             "struct_fell",
             "capital_hit",
             "trap", // REV4 spike/web/fire traps
+            "player_hit", // Spec 027 §8: my swing lands
+            "player_hurt", // I take damage
         ];
         for kind in server_kinds {
             assert!(
@@ -2605,6 +4208,47 @@ mod tests_fx {
         for kind in ["melee", "splash", "struct_fell"] {
             assert!(matches!(fx_plan(kind), Some(FxBirth::Impact(_))));
         }
+        assert!(matches!(fx_plan("player_hit"), Some(FxBirth::PlayerHit)));
+        assert!(matches!(fx_plan("player_hurt"), Some(FxBirth::Impact(_))));
+    }
+
+    #[test]
+    fn dash_chip_text_flips_between_ready_and_countdown() {
+        assert_eq!(
+            dash_chip_text(0, 1_000),
+            "Dash [Space] — ready",
+            "0 cd = never held = ready"
+        );
+        assert_eq!(
+            dash_chip_text(1_000, 1_000),
+            "Dash [Space] — ready",
+            "at the stamp the cd is spent"
+        );
+        assert_eq!(
+            dash_chip_text(1_005, 1_000),
+            "Dash [Space] — 0:05",
+            "draining chip counts the remaining window"
+        );
+    }
+
+    #[test]
+    fn combat_hp_ratio_bars_are_a_clamped_fraction() {
+        assert_eq!(combat_hp_ratio(0, 0), 0.0, "degenerate max");
+        assert_eq!(combat_hp_ratio(100, 100), 1.0);
+        assert_eq!(combat_hp_ratio(50, 100), 0.5);
+        assert_eq!(combat_hp_ratio(0, 100), 0.0);
+        assert_eq!(combat_hp_ratio(150, 100), 1.0, "overheal clamps");
+    }
+
+    #[test]
+    fn next_owned_tier_cycles_owned_masks() {
+        // bit i = tier i owned; fists (tier 0) implicit.
+        assert_eq!(next_owned_tier(0, 0), 0, "only fists owned → stay fists");
+        assert_eq!(next_owned_tier(4, 0), 0, "reads normalize to owned set");
+        assert_eq!(next_owned_tier(0, 0b1_0010), 1, "next owned above current");
+        assert_eq!(next_owned_tier(1, 0b1_0010), 4, "wraps to the top owned");
+        assert_eq!(next_owned_tier(4, 0b1_0010), 0, "top → lowest owned (fists)");
+        assert_eq!(next_owned_tier(1, 0), 0, "no owned tiers → fists");
     }
 
     /// REV3 §14: the banner name derivable on the client matches the

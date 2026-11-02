@@ -34,6 +34,12 @@ FROM oven/bun:latest
 WORKDIR /app
 COPY --from=builder /app/dist ./public
 COPY docker/server.ts ./server.ts
+COPY docker/precompress.ts ./precompress.ts
+
+# Serve the wasm/assets compressed (Accept-Encoding: br/gz) — shrinks the
+# download ~60-70% without touching the build. Bun.serve serves the
+# precompressed siblings; server.ts picks them up.
+RUN bun run precompress.ts public
 
 EXPOSE 3012
 CMD ["bun", "run", "server.ts"]

@@ -22,6 +22,8 @@ pub mod clean_reducer;
 pub mod combat_event_table;
 pub mod combat_event_type;
 pub mod cosmetic_owned_type;
+pub mod craft_armor_reducer;
+pub mod craft_arrows_reducer;
 pub mod craft_reducer;
 pub mod debug_force_wave_reducer;
 pub mod defense_structure_table;
@@ -31,6 +33,7 @@ pub mod eco_transaction_table;
 pub mod eco_transaction_type;
 pub mod equip_cosmetic_reducer;
 pub mod equip_vehicle_reducer;
+pub mod equip_weapon_reducer;
 pub mod gather_object_reducer;
 pub mod harvest_plot_reducer;
 pub mod harvest_reducer;
@@ -54,7 +57,9 @@ pub mod plant_grass_reducer;
 pub mod plant_plot_reducer;
 pub mod plant_reducer;
 pub mod plant_tree_reducer;
+pub mod player_attack_reducer;
 pub mod player_cosmetic_table;
+pub mod player_dash_reducer;
 pub mod player_item_table;
 pub mod player_item_type;
 pub mod player_table;
@@ -117,6 +122,8 @@ pub use clean_reducer::clean;
 pub use combat_event_table::*;
 pub use combat_event_type::CombatEvent;
 pub use cosmetic_owned_type::CosmeticOwned;
+pub use craft_armor_reducer::craft_armor;
+pub use craft_arrows_reducer::craft_arrows;
 pub use craft_reducer::craft;
 pub use debug_force_wave_reducer::debug_force_wave;
 pub use defense_structure_table::*;
@@ -126,6 +133,7 @@ pub use eco_transaction_table::*;
 pub use eco_transaction_type::EcoTransaction;
 pub use equip_cosmetic_reducer::equip_cosmetic;
 pub use equip_vehicle_reducer::equip_vehicle;
+pub use equip_weapon_reducer::equip_weapon;
 pub use gather_object_reducer::gather_object;
 pub use harvest_plot_reducer::harvest_plot;
 pub use harvest_reducer::harvest;
@@ -149,7 +157,9 @@ pub use plant_grass_reducer::plant_grass;
 pub use plant_plot_reducer::plant_plot;
 pub use plant_reducer::plant;
 pub use plant_tree_reducer::plant_tree;
+pub use player_attack_reducer::player_attack;
 pub use player_cosmetic_table::*;
+pub use player_dash_reducer::player_dash;
 pub use player_item_table::*;
 pub use player_item_type::PlayerItem;
 pub use player_table::*;
@@ -243,6 +253,12 @@ pub enum Reducer {
         slot_y: i32,
         ingredients: Vec<String>,
     },
+    CraftArmor {
+        id: u8,
+    },
+    CraftArrows {
+        count: u32,
+    },
     DebugForceWave,
     DisputeListing {
         listing_id: u64,
@@ -252,6 +268,9 @@ pub enum Reducer {
     },
     EquipVehicle {
         vehicle_type: String,
+    },
+    EquipWeapon {
+        tier: u8,
     },
     GatherObject {
         object_id: u64,
@@ -306,6 +325,12 @@ pub enum Reducer {
         hex_id: u64,
         slot_x: i32,
         slot_y: i32,
+    },
+    PlayerAttack {
+        direction: i32,
+    },
+    PlayerDash {
+        direction: i32,
     },
     PublishListing {
         title: String,
@@ -370,10 +395,13 @@ impl __sdk::Reducer for Reducer {
             Reducer::ClaimLand { .. } => "claim_land",
             Reducer::Clean { .. } => "clean",
             Reducer::Craft { .. } => "craft",
+            Reducer::CraftArmor { .. } => "craft_armor",
+            Reducer::CraftArrows { .. } => "craft_arrows",
             Reducer::DebugForceWave => "debug_force_wave",
             Reducer::DisputeListing { .. } => "dispute_listing",
             Reducer::EquipCosmetic { .. } => "equip_cosmetic",
             Reducer::EquipVehicle { .. } => "equip_vehicle",
+            Reducer::EquipWeapon { .. } => "equip_weapon",
             Reducer::GatherObject { .. } => "gather_object",
             Reducer::Harvest { .. } => "harvest",
             Reducer::HarvestPlot { .. } => "harvest_plot",
@@ -387,6 +415,8 @@ impl __sdk::Reducer for Reducer {
             Reducer::PlantGrass { .. } => "plant_grass",
             Reducer::PlantPlot { .. } => "plant_plot",
             Reducer::PlantTree { .. } => "plant_tree",
+            Reducer::PlayerAttack { .. } => "player_attack",
+            Reducer::PlayerDash { .. } => "player_dash",
             Reducer::PublishListing { .. } => "publish_listing",
             Reducer::ReleaseEscrow { .. } => "release_escrow",
             Reducer::RemoveDefense { .. } => "remove_defense",
@@ -471,6 +501,14 @@ impl __sdk::Reducer for Reducer {
                 slot_y: slot_y.clone(),
                 ingredients: ingredients.clone(),
             }),
+            Reducer::CraftArmor { id } => {
+                __sats::bsatn::to_vec(&craft_armor_reducer::CraftArmorArgs { id: id.clone() })
+            }
+            Reducer::CraftArrows { count } => {
+                __sats::bsatn::to_vec(&craft_arrows_reducer::CraftArrowsArgs {
+                    count: count.clone(),
+                })
+            }
             Reducer::DebugForceWave => {
                 __sats::bsatn::to_vec(&debug_force_wave_reducer::DebugForceWaveArgs {})
             }
@@ -488,6 +526,9 @@ impl __sdk::Reducer for Reducer {
                 __sats::bsatn::to_vec(&equip_vehicle_reducer::EquipVehicleArgs {
                     vehicle_type: vehicle_type.clone(),
                 })
+            }
+            Reducer::EquipWeapon { tier } => {
+                __sats::bsatn::to_vec(&equip_weapon_reducer::EquipWeaponArgs { tier: tier.clone() })
             }
             Reducer::GatherObject { object_id } => {
                 __sats::bsatn::to_vec(&gather_object_reducer::GatherObjectArgs {
@@ -579,6 +620,16 @@ impl __sdk::Reducer for Reducer {
                 slot_x: slot_x.clone(),
                 slot_y: slot_y.clone(),
             }),
+            Reducer::PlayerAttack { direction } => {
+                __sats::bsatn::to_vec(&player_attack_reducer::PlayerAttackArgs {
+                    direction: direction.clone(),
+                })
+            }
+            Reducer::PlayerDash { direction } => {
+                __sats::bsatn::to_vec(&player_dash_reducer::PlayerDashArgs {
+                    direction: direction.clone(),
+                })
+            }
             Reducer::PublishListing {
                 title,
                 description,

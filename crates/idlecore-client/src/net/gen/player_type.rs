@@ -41,6 +41,15 @@ pub struct Player {
     pub pollution_cleaned: u64,
     pub templates_published: u64,
     pub templates_purchased: u64,
+    pub player_hp: u32,
+    pub weapon: u8,
+    pub weapons_owned: u16,
+    pub attack_cd_until: u64,
+    pub dash_cd_until: u64,
+    pub dash_until: u64,
+    pub hostile_until: u64,
+    pub death_until: u64,
+    pub grace_until: u64,
 }
 
 impl __sdk::InModule for Player {
@@ -85,6 +94,15 @@ pub struct PlayerCols {
     pub pollution_cleaned: __sdk::__query_builder::Col<Player, u64>,
     pub templates_published: __sdk::__query_builder::Col<Player, u64>,
     pub templates_purchased: __sdk::__query_builder::Col<Player, u64>,
+    pub player_hp: __sdk::__query_builder::Col<Player, u32>,
+    pub weapon: __sdk::__query_builder::Col<Player, u8>,
+    pub weapons_owned: __sdk::__query_builder::Col<Player, u16>,
+    pub attack_cd_until: __sdk::__query_builder::Col<Player, u64>,
+    pub dash_cd_until: __sdk::__query_builder::Col<Player, u64>,
+    pub dash_until: __sdk::__query_builder::Col<Player, u64>,
+    pub hostile_until: __sdk::__query_builder::Col<Player, u64>,
+    pub death_until: __sdk::__query_builder::Col<Player, u64>,
+    pub grace_until: __sdk::__query_builder::Col<Player, u64>,
 }
 
 impl __sdk::__query_builder::HasCols for Player {
@@ -140,6 +158,15 @@ impl __sdk::__query_builder::HasCols for Player {
                 table_name,
                 "templates_purchased",
             ),
+            player_hp: __sdk::__query_builder::Col::new(table_name, "player_hp"),
+            weapon: __sdk::__query_builder::Col::new(table_name, "weapon"),
+            weapons_owned: __sdk::__query_builder::Col::new(table_name, "weapons_owned"),
+            attack_cd_until: __sdk::__query_builder::Col::new(table_name, "attack_cd_until"),
+            dash_cd_until: __sdk::__query_builder::Col::new(table_name, "dash_cd_until"),
+            dash_until: __sdk::__query_builder::Col::new(table_name, "dash_until"),
+            hostile_until: __sdk::__query_builder::Col::new(table_name, "hostile_until"),
+            death_until: __sdk::__query_builder::Col::new(table_name, "death_until"),
+            grace_until: __sdk::__query_builder::Col::new(table_name, "grace_until"),
         }
     }
 }

@@ -19,6 +19,10 @@ pub struct Mob {
     pub hp: u32,
     pub step_accum_secs: u32,
     pub pinned_until_secs: u64,
+    pub aggro_target: String,
+    pub aggro_until_secs: u64,
+    pub pack_id: u64,
+    pub born_at_secs: u64,
 }
 
 impl __sdk::InModule for Mob {
@@ -41,6 +45,10 @@ pub struct MobCols {
     pub hp: __sdk::__query_builder::Col<Mob, u32>,
     pub step_accum_secs: __sdk::__query_builder::Col<Mob, u32>,
     pub pinned_until_secs: __sdk::__query_builder::Col<Mob, u64>,
+    pub aggro_target: __sdk::__query_builder::Col<Mob, String>,
+    pub aggro_until_secs: __sdk::__query_builder::Col<Mob, u64>,
+    pub pack_id: __sdk::__query_builder::Col<Mob, u64>,
+    pub born_at_secs: __sdk::__query_builder::Col<Mob, u64>,
 }
 
 impl __sdk::__query_builder::HasCols for Mob {
@@ -59,6 +67,10 @@ impl __sdk::__query_builder::HasCols for Mob {
             hp: __sdk::__query_builder::Col::new(table_name, "hp"),
             step_accum_secs: __sdk::__query_builder::Col::new(table_name, "step_accum_secs"),
             pinned_until_secs: __sdk::__query_builder::Col::new(table_name, "pinned_until_secs"),
+            aggro_target: __sdk::__query_builder::Col::new(table_name, "aggro_target"),
+            aggro_until_secs: __sdk::__query_builder::Col::new(table_name, "aggro_until_secs"),
+            pack_id: __sdk::__query_builder::Col::new(table_name, "pack_id"),
+            born_at_secs: __sdk::__query_builder::Col::new(table_name, "born_at_secs"),
         }
     }
 }

@@ -16,6 +16,7 @@ pub mod world;
 pub mod economy;
 pub mod player;
 pub mod movement;
+pub mod combat;
 pub mod interactions;
 pub mod objects;
 pub mod mobs;
@@ -439,6 +440,51 @@ pub fn debug_force_wave(ctx: &ReducerContext) -> Result<(), String> {
         return Err("Not logged in — connect first".to_string());
     };
     crate::mobs::debug_force_wave(ctx, &address)
+}
+
+/// Spec 027 §5.1: weapon strike in one of 8 headings (0 = east, 45° steps).
+#[reducer]
+pub fn player_attack(ctx: &ReducerContext, direction: i32) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    crate::combat::player_attack(ctx, &address, direction)
+}
+
+/// Spec 027 §5.2: dash burst (6 s cooldown, 0.4 s i-frames).
+#[reducer]
+pub fn player_dash(ctx: &ReducerContext, direction: i32) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    crate::combat::player_dash(ctx, &address, direction)
+}
+
+/// Spec 027 §4: equip a weapon tier; first equip of a tier buys it once.
+#[reducer]
+pub fn equip_weapon(ctx: &ReducerContext, tier: u8) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    crate::combat::equip_weapon(ctx, &address, tier)
+}
+
+/// Spec 027 §14.2: craft a batch of Arrows (2 Wood + 1 Stone each).
+#[reducer]
+pub fn craft_arrows(ctx: &ReducerContext, count: u32) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    crate::combat::craft_arrows(ctx, &address, count)
+}
+
+/// Spec 033: buy an armor piece (permanent item; owning it grants defense).
+#[reducer]
+pub fn craft_armor(ctx: &ReducerContext, id: u8) -> Result<(), String> {
+    let Some(address) = address_of(ctx) else {
+        return Err("Not logged in — connect first".to_string());
+    };
+    crate::combat::craft_armor(ctx, &address, id)
 }
 
 // ---------------------------------------------------------------------------

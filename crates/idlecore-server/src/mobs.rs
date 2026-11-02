@@ -11,7 +11,7 @@ use idlecore_core::defense_config as cfg;
 use idlecore_core::grid::TileCoord;
 
 use crate::capital::destroy_capital;
-use crate::objects::add_item;
+use crate::combat::{kill_or_wound};
 use crate::types::{
     capital, combat_event, defense_structure, tile_center, hex_coords_of, tile_distance,
     tile_id_of, hex_tile, mob, now_secs, raid_wave, territory, Capital, DefenseStructure, Mob,
@@ -197,6 +197,10 @@ fn spawn_wave(ctx: &ReducerContext, capital: &Capital, now: u64) -> bool {
             hp: kind.hp,
             step_accum_secs: 0,
             pinned_until_secs: 0,
+            aggro_target: String::new(),
+            aggro_until_secs: 0,
+            pack_id: 0,
+            born_at_secs: 0,
         });
     }
     let mut cap_row = capital.clone();
@@ -512,9 +516,10 @@ pub fn engagement_dps(kind: &cfg::MobKind, target_is_wall: bool) -> u32 {
     sapper_dps(kind.dps, kind.wall_dps, target_is_wall)
 }
 
-/// Every 1 second: tower fire, mob march + melee, damage bookkeeping, wave
-/// ends, destruction cascade.
+/// Every 1 second: player/roamer passes (Spec 027 combat), tower fire, mob
+/// march + melee, damage bookkeeping, wave ends, destruction cascade.
 pub fn tick(ctx: &ReducerContext) {
+    crate::combat::tick(ctx);
     let now = now_secs(ctx);
     let towers_all: Vec<DefenseStructure> = ctx.db.defense_structure().iter().collect();    // REV4 traps: burn zones tick dps to EVERY raider in range for a fuel
     // budget (hp), while spike/web traps are consumed the moment a raider
@@ -548,6 +553,9 @@ pub fn tick(ctx: &ReducerContext) {
 
     // ---- Tower fire: nearest mob in range per tower takes dps damage ----
     let mut mob_damage: HashMap<u64, u32> = HashMap::new();
+    // Spec 027 §7: who gets the drop if this damage kills a roamer —
+    // towers/traps write their owner here (raid mobs never read it).
+    let mut damage_credit: HashMap<u64, String> = HashMap::new();
     for tower in towers_all.iter() {
         // Traps are excluded: they trigger by proximity, they never snipe.
         if cfg::defense_kind(&tower.kind).is_none_or(|k| k.dps == 0 || k.burn_secs > 0) {
@@ -568,6 +576,10 @@ pub fn tick(ctx: &ReducerContext) {
             .min_by_key(|m| (tile_distance(m.hex_q, m.hex_r, tq, tr), m.mob_id));
         if let Some(target) = target {
             *mob_damage.entry(target.mob_id).or_insert(0) += cfg::structure_dps(kind, tower.level);
+            // Roamer kills credit the tower owner (Spec 027 §7).
+            damage_credit
+                .entry(target.mob_id)
+                .or_insert_with(|| tower.owner.clone());
             // Tracer fx (REV3 §10/§13): towers shoot too; the client tells
             // tower shots from mob shots by attacker_mob == 0.
             crate::mobs::emit_tower_event(ctx, tower, target.hex_id, now);
@@ -583,6 +595,10 @@ pub fn tick(ctx: &ReducerContext) {
             tile_distance(m.hex_q, m.hex_r, tq, tr) <= kind.range_hexes as i32
         }) {
             *mob_damage.entry(m.mob_id).or_insert(0) += dps;
+            // Roamer kills credit the trap owner (Spec 027 §7).
+            damage_credit
+                .entry(m.mob_id)
+                .or_insert_with(|| trap.owner.clone());
             // One impact bloom on the trap hex speaks for the zone.
             emit_event(
                 ctx,
@@ -630,7 +646,7 @@ pub fn tick(ctx: &ReducerContext) {
         if dmg == 0 {
             continue;
         }
-        kill_or_wound(ctx, mob, dmg, &capitals);
+        kill_or_wound(ctx, mob, dmg, &capitals, damage_credit.get(&mob.mob_id).map(|s| s.as_str()));
     }
 
     // ---- Mob melee + marching (skip mobs dead this tick) ----
@@ -668,11 +684,6 @@ pub fn tick(ctx: &ReducerContext) {
             }),
         )
         .collect();
-    let walls: Vec<(u64, i32, i32)> = tower_hexes
-        .iter()
-        .filter(|(_, (_, _, w))| *w)
-        .map(|(sid, (hq, hr, _))| (*sid, *hq, *hr))
-        .collect();
     // Frost slow aura spots (REV4) — (hex, radius) per built frost tower.
     let frost_spots: Vec<(i32, i32, u32)> = towers_all
         .iter()
@@ -698,6 +709,8 @@ pub fn tick(ctx: &ReducerContext) {
         for mob in mob_rows
             .iter()
             .filter(|m| !mob_damage.contains_key(&m.mob_id))
+            // Roamers + aggroed hunters never encircle structures (§7/§8).
+            .filter(|m| !(m.capital_id == 0 || m.aggro_until_secs > now))
         {
             let Some(kind) = cfg::mob_kind(&mob.kind) else { continue };
             if kind.range_hexes != 1 {
@@ -728,6 +741,11 @@ pub fn tick(ctx: &ReducerContext) {
         if mob_damage.contains_key(&mob.mob_id) {
             continue; // fell to tower fire this tick
         }
+        // Roamers (Spec 027 §7) marched/striked in `combat::roamer_pass` —
+        // the raid pipeline owns capital-raiders only.
+        if mob.capital_id == 0 {
+            continue;
+        }
         let Some(kind) = cfg::mob_kind(&mob.kind) else {
             ctx.db.mob().mob_id().delete(mob.mob_id);
             continue;
@@ -739,6 +757,70 @@ pub fn tick(ctx: &ReducerContext) {
         if capital.destroyed {
             ctx.db.mob().mob_id().delete(mob.mob_id);
             continue;
+        }
+        // Spec 027 §8: an aggroed raider hunts its player — structures and
+        // the capital lose its attention (opt-in retaliation, 20 s stamp).
+        if let Some((pq, pr)) = crate::combat::hunting_player_hex(ctx, mob, now) {
+            if kind.step_interval_secs > 0 {
+                let frozen = frost_spots.iter().any(|(hx, hr, radius)| {
+                    tile_distance(mob.hex_q, mob.hex_r, *hx, *hr) <= *radius as i32
+                });
+                // Frost aura (REV4): doubled cadence — hunters included.
+                let interval = if frozen {
+                    kind.step_interval_secs * 2
+                } else {
+                    kind.step_interval_secs
+                };
+                match march(ctx, mob, interval, pq, pr, &blocked, &traps_step) {
+                    MarchOutcome::Stepped => {}
+                    MarchOutcome::WalledIn(_) => {
+                        // Walled in while hunting: the wall eats the swing
+                        // time (no dps — walls don't bleed from a chase).
+                    }
+                    MarchOutcome::Trapped {
+                        structure_id,
+                        hex_id,
+                        trap_dmg,
+                        pin_secs,
+                        trap_kind,
+                    } => {
+                        // Credit a roamer-killing trap to its owner (§7).
+                        let owner = towers_all
+                            .iter()
+                            .find(|s| s.structure_id == structure_id)
+                            .map(|s| s.owner.clone());
+                        if let Some(t) = ctx.db.defense_structure().structure_id().find(structure_id) {
+                            ctx.db.defense_structure().structure_id().delete(t.structure_id);
+                        }
+                        emit_event(
+                            ctx,
+                            capital.capital_id,
+                            mob.wave_id,
+                            now,
+                            CE_TRAP,
+                            mob.mob_id,
+                            hex_id,
+                            (SLOT_CENTER_X, SLOT_CENTER_Y),
+                            trap_kind,
+                        );
+                        if trap_dmg > 0 {
+                            let mut fallen = mob.clone();
+                            fallen.hex_id = hex_id;
+                            kill_or_wound(ctx, &fallen, trap_dmg, &capitals, owner.as_deref());
+                            continue;
+                        }
+                        if pin_secs > 0 {
+                            if let Some(mut fresh) = ctx.db.mob().mob_id().find(mob.mob_id) {
+                                fresh.pinned_until_secs = now + u64::from(pin_secs);
+                                ctx.db.mob().mob_id().update(fresh);
+                            }
+                        }
+                    }
+                }
+            }
+            // Strike at reach once per tick regardless of march cadence.
+            crate::combat::raider_strike(ctx, mob, now);
+            continue; // rings/repositioning don't apply while hunting
         }
         let (cq, cr) = hex_coords_of(capital.hex_id);
         let capital_dist = tile_distance(mob.hex_q, mob.hex_r, cq, cr);
@@ -852,7 +934,7 @@ pub fn tick(ctx: &ReducerContext) {
                     if trap_dmg > 0 {
                         let mut fallen = mob.clone();
                         fallen.hex_id = hex_id;
-                        kill_or_wound(ctx, &fallen, trap_dmg, &capitals);
+                        kill_or_wound(ctx, &fallen, trap_dmg, &capitals, None);
                         continue; // dead this tick — skip the ring reposition
                     }
                     if pin_secs > 0 {
@@ -1008,45 +1090,6 @@ pub fn tick(ctx: &ReducerContext) {
             struct_hits,
             capital_hits
         ),
-    );
-}
-
-/// Apply melee/tower damage to a mob; at 0 HP the mob dies — drops go to
-/// the capital's defender and capital XP accrues (drop roll deterministic
-/// per mob id, Spec 023 §3.3).
-fn kill_or_wound(
-    ctx: &ReducerContext,
-    mob: &Mob,
-    damage: u32,
-    capitals: &HashMap<u64, Capital>,
-) {
-    if mob.hp > damage {
-        let mut m = mob.clone();
-
-        m.hp -= damage;
-
-        ctx.db.mob().mob_id().update(m);
-
-        return;
-    }
-    ctx.db.mob().mob_id().delete(mob.mob_id);
-    let Some(kind) = cfg::mob_kind(&mob.kind) else { return };
-    let Some(capital) = capitals.get(&mob.capital_id) else { return };
-
-    if (u64::from(mob.mob_id) % 100) < u64::from(kind.drop_chance_pct) {
-        add_item(ctx, &capital.owner, kind.drop_item, u64::from(kind.drop_qty));
-    }
-    crate::capital::capital_add_xp(
-        ctx,
-        capital,
-        cfg::CAPITAL_XP_PER_MOB,
-        now_secs(ctx),
-    );
-    tracing::info!(
-        "MOB-KILL kind={} wave={} drops={}",
-        kind.name,
-        mob.wave_id,
-        kind.drop_item
     );
 }
 

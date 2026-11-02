@@ -7,6 +7,9 @@
 //! canonical views (0 = facing down/front, 1 = up/back, 2 = side). Each
 //! 32×32 frame is sliced out at load time and the side view is mirrored to
 //! give west-facing directions, producing a convincing 8-way cycle.
+//! Spec 030: the same pre-made folder ships attack sheets — `Sword.png`
+//! (10 columns/frame view) and `Bow and Arrow.png` (7) — used for the
+//! one-shot strike animation whenever the player attacks.
 
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
@@ -25,18 +28,37 @@ pub const DIRECTIONS: usize = 8;
 pub const IDLE_FRAMES: usize = 4;
 pub const WALK_FRAMES: usize = 6;
 pub const RUN_FRAMES: usize = 8;
+/// Attack sheets (Spec 030–033): per frame-view column counts.
+pub const SWORD_FRAMES: usize = 10;
+pub const BOW_FRAMES: usize = 7;
+pub const AXE_FRAMES: usize = 6;
+pub const SICKLE_FRAMES: usize = 6;
+pub const PICKAXE_FRAMES: usize = 6;
+pub const HOE_FRAMES: usize = 6;
+pub const SHOVEL_FRAMES: usize = 5;
+/// One-shot attack clip cadence (10 sword frames ≈ 0.70 s, 7 bow ≈ 0.49 s).
+pub const ATTACK_FRAME_TIME: f32 = 0.07;
 
 /// Frame size (art pixels) of the premade character sheets.
 pub const FRAME_W: u32 = 32;
 pub const FRAME_H: u32 = 32;
 
-/// Build the source sheet paths for a named character: idle, walk, run.
-fn sheet_paths(name: &str) -> (String, String, String) {
-    (
-        format!("models/Character/Character/Pre-made/{name}/Idle.png"),
-        format!("models/Character/Character/Pre-made/{name}/Walk.png"),
-        format!("models/Character/Character/Pre-made/{name}/Run.png"),
-    )
+/// Build the source sheet paths for a named character: idle, walk, run and
+/// the seven attack sheets.
+fn sheet_paths(name: &str) -> [String; 10] {
+    let base = format!("models/Character/Character/Pre-made/{name}/");
+    [
+        format!("{base}Idle.png"),
+        format!("{base}Walk.png"),
+        format!("{base}Run.png"),
+        format!("{base}Sword.png"),
+        format!("{base}Bow and Arrow.png"),
+        format!("{base}Axe.png"),
+        format!("{base}Sickle.png"),
+        format!("{base}Pickaxe.png"),
+        format!("{base}Hoe.png"),
+        format!("{base}Shovel.png"),
+    ]
 }
 
 /// On-screen figure height in world units — the player's normal size
@@ -169,6 +191,61 @@ pub struct IsoCharacter {
     pub walk: Vec<Handle<Image>>,
     /// `run[d * RUN_FRAMES + f]`.
     pub run: Vec<Handle<Image>>,
+    /// Sword strike clip: `sword[d * SWORD_FRAMES + f]` (Spec 030).
+    pub sword: Vec<Handle<Image>>,
+    /// Bow draw+loose clip: `bow[d * BOW_FRAMES + f]` (Spec 030).
+    pub bow: Vec<Handle<Image>>,
+    /// Axe chop clip: `axe[d * AXE_FRAMES + f]` (Spec 031).
+    pub axe: Vec<Handle<Image>>,
+    /// Sickle hook clip: `sickle[d * SICKLE_FRAMES + f]` (Spec 031).
+    pub sickle: Vec<Handle<Image>>,
+    /// Pickaxe stab clip: `pickaxe[d * PICKAXE_FRAMES + f]` (Spec 033).
+    pub pickaxe: Vec<Handle<Image>>,
+    /// Hoe sweep clip: `hoe[d * HOE_FRAMES + f]` (Spec 033).
+    pub hoe: Vec<Handle<Image>>,
+    /// Shovel lob clip: `shovel[d * SHOVEL_FRAMES + f]` (Spec 033).
+    pub shovel: Vec<Handle<Image>>,
+}
+
+/// One-shot attack clip selector (Spec 031/033) — which sheet a strike plays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttackAnim {
+    Sword,
+    Bow,
+    Axe,
+    Sickle,
+    Pickaxe,
+    Hoe,
+    Shovel,
+}
+
+impl AttackAnim {
+    /// Sheet choice for an equipped tier (Spec 033): the core tier carries
+    /// its animation; Fists share the sword slash.
+    pub fn of_weapon(core_anim: idlecore_core::player_combat::WeaponAnim) -> Self {
+        use idlecore_core::player_combat::WeaponAnim as W;
+        match core_anim {
+            W::Sword => AttackAnim::Sword,
+            W::Bow => AttackAnim::Bow,
+            W::Axe => AttackAnim::Axe,
+            W::Sickle => AttackAnim::Sickle,
+            W::Pickaxe => AttackAnim::Pickaxe,
+            W::Hoe => AttackAnim::Hoe,
+            W::Shovel => AttackAnim::Shovel,
+        }
+    }
+
+    fn frames(self) -> usize {
+        match self {
+            AttackAnim::Sword => SWORD_FRAMES,
+            AttackAnim::Bow => BOW_FRAMES,
+            AttackAnim::Axe => AXE_FRAMES,
+            AttackAnim::Sickle => SICKLE_FRAMES,
+            AttackAnim::Pickaxe => PICKAXE_FRAMES,
+            AttackAnim::Hoe => HOE_FRAMES,
+            AttackAnim::Shovel => SHOVEL_FRAMES,
+        }
+    }
 }
 
 /// Runtime skin state.
@@ -187,6 +264,11 @@ pub struct PlayerSkins {
     pub idle_frame: usize,
     pub run_frame: usize,
     pub walk_frame: usize,
+    /// Spec 030: one-shot attack clip — `Some(anim)` while playing, with
+    /// its elapsed seconds. Any frame advancing past the last column ends
+    /// the clip and falls back to idle/walk.
+    pub attack: Option<AttackAnim>,
+    pub attack_time: f32,
 }
 
 /// Advance (and wrap) the run frame index.
@@ -245,19 +327,15 @@ fn setup_skins(
     if !skins.characters.is_empty() {
         return;
     }
-    // Load (and keep) all source sheets: Idle + Walk + Run per character.
+    // Load (and keep) all source sheets: Idle + Walk + Run + the four
+    // attack sheets per character.
     let handles: Vec<Handle<Image>> = if let Some(h) = sources.as_ref() {
         h.clone()
     } else {
         let h: Vec<Handle<Image>> = CHARACTERS
             .iter()
             .flat_map(|name| {
-                let (idle_path, walk_path, run_path) = sheet_paths(name);
-                vec![
-                    asset_server.load::<Image>(&idle_path),
-                    asset_server.load::<Image>(&walk_path),
-                    asset_server.load::<Image>(&run_path),
-                ]
+                sheet_paths(name).map(|p| asset_server.load::<Image>(&p))
             })
             .collect();
         *sources = Some(h.clone());
@@ -268,38 +346,40 @@ fn setup_skins(
     }
     let mut map = HashMap::new();
     for (i, name) in CHARACTERS.iter().enumerate() {
-        let idle_h = handles[i * 3].clone();
-        let walk_h = handles[i * 3 + 1].clone();
-        let run_h = handles[i * 3 + 2].clone();
-        let (iw, ih, idle_data) = {
-            let idle = images.get(&idle_h).expect("idle sheet loaded");
+        let h: &Vec<Handle<Image>> = &handles;
+        let base = i * 10;
+        let sheet = |idx: usize| -> (u32, u32, Vec<u8>) {
+            let img = images.get(&h[base + idx]).expect(
+                "attack sheet loaded",
+            );
             (
-                idle.width(),
-                idle.height(),
-                idle.data.as_deref().unwrap_or(&[]).to_vec(),
+                img.width(),
+                img.height(),
+                img.data.as_deref().unwrap_or(&[]).to_vec(),
             )
         };
-        let (ww, wh, walk_data) = {
-            let walk = images.get(&walk_h).expect("walk sheet loaded");
-            (
-                walk.width(),
-                walk.height(),
-                walk.data.as_deref().unwrap_or(&[]).to_vec(),
-            )
-        };
-        let (rw, rh, run_data) = {
-            let run = images.get(&run_h).expect("run sheet loaded");
-            (
-                run.width(),
-                run.height(),
-                run.data.as_deref().unwrap_or(&[]).to_vec(),
-            )
-        };
+        let (iw, ih, idle_data) = sheet(0);
+        let (ww, wh, walk_data) = sheet(1);
+        let (rw, rh, run_data) = sheet(2);
+        let (sw, sh, sword_data) = sheet(3);
+        let (bw, bh, bow_data) = sheet(4);
+        let (xw, xh, axe_data) = sheet(5);
+        let (kw, kh, sickle_data) = sheet(6);
+        let (pw, ph, pickaxe_data) = sheet(7);
+        let (ow, oh, hoe_data) = sheet(8);
+        let (vw, vh, shovel_data) = sheet(9);
         let character = IsoCharacter {
             name: name.to_string(),
             idle: build_action_frames(&mut images, &idle_data, iw, ih, iw / FRAME_W),
             walk: build_action_frames(&mut images, &walk_data, ww, wh, ww / FRAME_W),
             run: build_action_frames(&mut images, &run_data, rw, rh, rw / FRAME_W),
+            sword: build_action_frames(&mut images, &sword_data, sw, sh, sw / FRAME_W),
+            bow: build_action_frames(&mut images, &bow_data, bw, bh, bw / FRAME_W),
+            axe: build_action_frames(&mut images, &axe_data, xw, xh, xw / FRAME_W),
+            sickle: build_action_frames(&mut images, &sickle_data, kw, kh, kw / FRAME_W),
+            pickaxe: build_action_frames(&mut images, &pickaxe_data, pw, ph, pw / FRAME_W),
+            hoe: build_action_frames(&mut images, &hoe_data, ow, oh, ow / FRAME_W),
+            shovel: build_action_frames(&mut images, &shovel_data, vw, vh, vw / FRAME_W),
         };
         map.insert(name.to_string(), character);
     }
@@ -337,6 +417,8 @@ fn apply_skin_to_sprite(
     skins.idle_frame = 0;
     skins.run_frame = 0;
     skins.walk_frame = 0;
+    skins.attack = None;
+    skins.attack_time = 0.0;
     skins.need_bake = false;
     skins.applied = true;
     info!("Skin applied to sprite: {name}");
@@ -370,6 +452,56 @@ fn animate_player_sprite(
         character.walk[d * WALK_FRAMES..(d + 1) * WALK_FRAMES].to_vec();
     let run_frames: Vec<Handle<Image>> =
         character.run[d * RUN_FRAMES..(d + 1) * RUN_FRAMES].to_vec();
+
+    // Spec 030: the one-shot attack clip outranks idle/walk/run. It is NOT
+    // looping — once past the last column it clears and normal animation
+    // resumes next frame.
+    if skins.attack.is_some() {
+        // Borrow split: read the clip's sheet len through the map, then
+        // mutate the clock freely.
+        let anim = skins.attack.unwrap_or(AttackAnim::Sword);
+        let frame_count = anim.frames();
+        let within = {
+            let attack = match anim {
+                AttackAnim::Sword => &character.sword,
+                AttackAnim::Bow => &character.bow,
+                AttackAnim::Axe => &character.axe,
+                AttackAnim::Sickle => &character.sickle,
+                AttackAnim::Pickaxe => &character.pickaxe,
+                AttackAnim::Hoe => &character.hoe,
+                AttackAnim::Shovel => &character.shovel,
+            };
+            attack.len() / DIRECTIONS
+        };
+        let t = skins.attack_time + time.delta_secs();
+        let idx = (t / ATTACK_FRAME_TIME) as usize;
+        if idx >= within {
+            skins.attack = None; // clip finished
+        } else {
+            let base = d * frame_count;
+            let idx = idx.min(frame_count - 1);
+            let target = {
+                let attack = match anim {
+                    AttackAnim::Sword => &character.sword,
+                    AttackAnim::Bow => &character.bow,
+                    AttackAnim::Axe => &character.axe,
+                    AttackAnim::Sickle => &character.sickle,
+                    AttackAnim::Pickaxe => &character.pickaxe,
+                    AttackAnim::Hoe => &character.hoe,
+                    AttackAnim::Shovel => &character.shovel,
+                };
+                attack[base + idx].clone()
+            };
+            skins.attack_time = t;
+            if sprite.image != target {
+                sprite.image = target;
+            }
+            transform.scale = Vec3::ONE;
+            transform.rotation = Quat::IDENTITY;
+            return;
+        }
+    }
+
 
     if speed > MOVE_EPS {
         if speed > RUN_SPEED {
@@ -419,8 +551,7 @@ fn animate_player_sprite(
 
 /// Cycle the equipped skin by `dir` (±1) through `CHARACTERS`. Returns the
 /// newly selected character name (callers persist it to the server).
-pub(crate) fn cycle_skin_dir(skins: &mut PlayerSkins, dir: i32) -> Option<String> {
-    let cur = skins
+pub(crate) fn cycle_skin_dir(skins: &mut PlayerSkins, dir: i32) -> Option<String> {    let cur = skins
         .selected
         .as_deref()
         .and_then(|n| CHARACTERS.iter().position(|c| c == &n));
@@ -454,6 +585,16 @@ pub(crate) fn set_skin_by_name(skins: &mut PlayerSkins, name: &str) -> bool {
         skins.need_bake = true;
     }
     false
+}
+
+/// Fire the one-shot attack animation (Spec 030/031). `anim` picks the
+/// sheet. Safe to call repeatedly — a retrigger restarts the clip from
+/// frame 0.
+pub fn start_attack(skins: &mut PlayerSkins, anim: AttackAnim) {
+    if skins.attack != Some(anim) || skins.attack_time != 0.0 {
+        skins.attack = Some(anim);
+        skins.attack_time = 0.0;
+    }
 }
 
 /// Eight-way facing derived from the movement angle (0 = east, +PI/2 = north).

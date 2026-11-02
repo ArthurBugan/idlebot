@@ -19,10 +19,11 @@ use crate::net::plugin::{Net, NetEvent};
 pub const INGREDIENTS: [&str; 4] = ["Wood", "Log", "Stone", "Grass"];
 
 const CELL_SIZE: f32 = 52.0;
-const PANEL_BG: Color = Color::srgba(0.07, 0.07, 0.10, 0.96);
-const SLOT_BG: Color = Color::srgba(0.10, 0.10, 0.14, 0.88);
-const SLOT_BORDER: Color = Color::srgb(0.35, 0.35, 0.40);
-const CRAFT_BORDER: Color = Color::srgb(1.0, 0.8, 0.4);
+// Spec 029: panel chrome tokens live in `ui::panel` now.
+const PANEL_BG: Color = crate::ui::panel::FRAME_BG;
+const SLOT_BG: Color = crate::ui::panel::ROW_BG;
+const SLOT_BORDER: Color = crate::ui::panel::FRAME_BORDER;
+const CRAFT_BORDER: Color = crate::ui::panel::ACCENT;
 
 /// Craft menu state: open flag, the bench being used, the four grid cells
 /// and when the menu was opened (so the opening `E` press can't close it).

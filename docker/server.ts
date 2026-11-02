@@ -31,12 +31,30 @@ const server = Bun.serve({
     let path = decodeURIComponent(url.pathname);
     if (path === "/") path = "/index.html";
 
-    const file = Bun.file("public" + path);
+    const enc = (req.headers.get("accept-encoding") ?? "").toLowerCase();
+    // .wasm gets gzip only (universal wasm decoding); text assets prefer brotli.
+    const precompressed = path.endsWith(".wasm")
+      ? (enc.includes("gzip") ? path + ".gz" : null)
+      : enc.includes("br")
+        ? path + ".br"
+        : enc.includes("gzip")
+          ? path + ".gz"
+          : null;
+
+    let file = precompressed && (await Bun.file("public" + precompressed).exists())
+      ? Bun.file("public" + precompressed)
+      : Bun.file("public" + path);
     if (await file.exists()) {
       const ext = path.slice(path.lastIndexOf(".")).toLowerCase();
       const headers: Record<string, string> = {
         "content-type": MIME[ext] ?? "application/octet-stream",
       };
+      // Serve a precompressed sibling (brotli first, gzip fallback).
+      if (file.name.endsWith(".br")) {
+        headers["content-encoding"] = "br";
+      } else if (file.name.endsWith(".gz")) {
+        headers["content-encoding"] = "gzip";
+      }
       // Don't cache the code/glue; assets are content-addressed by the loader.
       if (ext === ".wasm" || ext === ".js") {
         headers["cache-control"] = "no-cache";

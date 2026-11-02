@@ -49,3 +49,13 @@ incremental = true
 [profile.dev.package."*"]
 opt-level = 3
 
+# Release builds ship as a single wasm binary served to the browser, so
+# minimise it: full LTO + single codegen unit for dead-code elimination,
+# strip symbols, and abort instead of unwinding (no panic payloads in wasm).
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = true
+strip = true
+panic = "abort"
+

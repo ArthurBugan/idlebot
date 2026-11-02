@@ -40,6 +40,36 @@ pub struct ClientPlayer {
     /// Local mirror of the cooldown end (server more `last_action_at + 5 s`,
     /// compared against local unix time by the hotbar timer).
     pub action_cd_until_utc: u64,
+    // Spec 027 §3 — combat mirror. hp 0 on a fresh session means "unseeded"
+    // on the server too (renders full), NOT dead: death is death_until_utc.
+    pub hp: u32,
+    pub weapon: u8,
+    /// Bitmask of purchased weapon tiers (bit i = tier i).
+    pub weapons_owned: u16,
+    pub attack_cd_until_utc: u64,
+    pub dash_cd_until_utc: u64,
+    pub dash_until_utc: u64,
+    pub hostile_until_utc: u64,
+    pub death_until_utc: u64,
+    pub grace_until_utc: u64,
+    /// Local dash burst deadline (unix secs): fires on the dash key, trimmed
+    /// by the authoritative row a beat later.
+    pub dash_burst_secs: f64,
+}
+
+impl ClientPlayer {
+    /// Currently equipped weapon def (Spec 027 §4 + Spec 033 matrix).
+    pub fn weapon_def(&self) -> &'static idlecore_core::player_combat::Weapon {
+        idlecore_core::player_combat::weapon(self.weapon).unwrap_or_else(|| {
+            // Fists are the head of the matrix (id 0).
+            &idlecore_core::player_combat::weapons()[0]
+        })
+    }
+
+    /// Is the dash burst live right now (local press + server stamp)?
+    pub fn dashing(&self, unix_now: f64) -> bool {
+        self.dash_until_utc as f64 > unix_now || self.dash_burst_secs > unix_now
+    }
 }
 
 /// Player transform resource for camera/minimap follow.

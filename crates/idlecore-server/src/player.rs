@@ -165,6 +165,17 @@ fn new_player(address: &str, identity: &str, now: u64) -> Player {
         pollution_cleaned: 0,
         templates_published: 0,
         templates_purchased: 0,
+        // Spec 027 §3 combat state: fresh spawns open at full HP, Fists, no
+        // cooldowns outstanding.
+        player_hp: 0, // 0 = unseeded → hp_of() reads full for the level
+        weapon: 0,
+        weapons_owned: 0,
+        attack_cd_until: 0,
+        dash_cd_until: 0,
+        dash_until: 0,
+        hostile_until: 0,
+        death_until: 0,
+        grace_until: 0,
     }
 }
 

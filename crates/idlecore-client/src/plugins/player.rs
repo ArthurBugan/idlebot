@@ -84,7 +84,7 @@ fn player_movement(
     player_transform: ResMut<PlayerTransform>,
     orientation: ResMut<PlayerOrientation>,
     streaming_world: Option<Res<StreamingWorldResource>>,
-    net: Option<Res<crate::net::plugin::Net>>,
+    net: Option<ResMut<crate::net::plugin::Net>>,
     name_edit: Option<Res<crate::net::hud::NameEdit>>,
     touch: Res<crate::touch::TouchControls>,
 ) {
@@ -112,6 +112,38 @@ fn player_movement(
     }
     if keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight) || touch.sprint {
         speed *= SPRINT_MULTIPLIER;
+    }
+    // Spec 027 §5.2: dash burst — Space fires the reducer, the local window
+    // (0.4 s vs the server's 1-tick rounding) drives the ×3 burst speed now.
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        if keyboard.just_pressed(KeyCode::Space) {
+            let dir = idlecore_core::player_combat::heading_index(orientation.facing_angle);
+            if let Some(mut net) = net {
+                if net.address.is_some() && player.death_until_utc <= now as u64 {
+                    let tx = net.sender();
+                    use crate::net::gen::player_dash;
+                    crate::net::hud::send_reducer(&mut net, |r| {
+                        r.player_dash_then(
+                            dir,
+                            crate::net::hud::reducer_report("dash", tx.clone(), 0),
+                        )
+                    });
+                    // Immediate burst: the server row confirms a beat later.
+                    player.dash_burst_secs = now
+                        + idlecore_core::player_combat::DASH_DURATION_SECS as f64
+                        + 0.1;
+                }
+            }
+        }
+        if player.death_until_utc > now as u64 {
+            speed = 0.0; // dead: stand still until respawn
+        } else if player.dashing(now) {
+            speed *= idlecore_core::player_combat::DASH_SPEED_MULT as f32;
+        }
     }
     // Partial joystick tilt scales speed for precise analog movement.
     speed *= input.length().min(1.0);

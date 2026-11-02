@@ -61,8 +61,26 @@
 
 ## D7 — player threat (§15 stretch; needs user decision)
 
-- [ ] decision needed: `player_hp` on `Player` + adjacency dps from mobs,
-      capital respawn + gold loss — **schema accrual; ask the user**.
+- [x] decided: resolved by **Spec 027 player combat** — `player_hp` +
+      respawn/schema land there (raiders engage the player only after the
+      player aggros them; roamers are 027's domain).
+- [ ] server-side raid §8 hookup follows 027 Phase F3.
+
+## D9 — REV5 natural enemy movement (§17–18)
+
+Root cause (playtest "mobs kind of teleport"): `sync_td_entities`
+despawns + respawns every marker per rebuild → each step re-spawns the
+mob at its new tile center; `TdMove.speed` computes but glide never runs
+(dist ≈ 0 at spawn).
+
+- [ ] persistent mob entities keyed `mob_id` (update not respawn;
+      despawn only when row leaves the snapshot).
+- [ ] glide speed from the kind's `step_interval_secs` (2–5 s per hex);
+      walk frames gated on actual distance; heading `flip_x`.
+- [ ] death at last client position (red flash + 0.25 s fall/shrink).
+- [ ] desync guard: jump > 2 hexes snaps, never glides a long haul.
+- [ ] client tests: persistence across rebuild, glide speed per kind,
+      walk-frame idle gate (extends 025 §6 client section).
 
 ## D8 — REV3 playtest + review
 

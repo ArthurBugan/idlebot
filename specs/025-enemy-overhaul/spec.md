@@ -127,8 +127,6 @@ so higher capitals field deeper recolor waves.
 - New tower categories to counter ranged mobs (Spec 026 candidate).
 - Wildlife/farm life — next spec (026), as decided.
 
----
-
 # REV3 — Sieges you can see (playtest feedback)
 
 ## 8. Problem (playtest)
@@ -266,3 +264,65 @@ which is the only place 025 becomes a schema-accrual task.
   writes (exhaustive test on the match); attack-pose cursor transitions;
   cap toast gating (first capital_hit of wave only).
 
+---
+# REV5 — Natural enemy movement (playtest: "mobs kind of teleport")
+
+## 17. Problem (playtest)
+
+Raiders blink hex-to-hex with no visible travel. Root cause, both in
+`net/td.rs`:
+
+1. **`sync_td_entities` despawns + respawns every TD marker on each
+   rebuild** ("rows are few"). A mob that stepped one hex this tick
+   spawns *at its new tile center* — the previous position never
+   existed on screen, so every step is a hard cut.
+2. **`TdMove.speed` is dead weight:** the re-spawn derives a glide speed
+   from `TdTracker.last` (previous replicated position + elapsed), but
+   the entity is re-created *at* the target, so `glide_td_markers`
+   always sits at `dist ≈ 0`. The interpolation pass never moves a
+   single pixel all game.
+3. Server-side the march is fine (one hex per `step_interval`, positions
+   pinned to tile centers) — nothing to fix there; this is a
+   client-presentation bug.
+
+## 18. Fix (client only — no schema, no reducer, no bindings regen)
+
+- **Kill the per-rebuild mass-despawn for mobs.** Mob markers become
+  persistent entities keyed `mob_id` (spawn-if-missing, update
+  otherwise, despawn-only for rows that left the snapshot — wave close,
+  kill). Structures/capitals keep the cheap respawn pattern (they don't
+  move).
+- **On update:** write `TdMove.target` = new server position, inflate a
+  2-slot position history in `TdTracker` so the glide duration matches
+  the *server's* step cadence: `speed = hex_dist / step_interval_secs`
+  (fall back to observed delta when the kind's interval isn't known
+  client-side). Marker continues where it was — the observed hop
+  becomes a smooth 1-hex glide every 2–5 s, matching what the mob
+  actually does server-side.
+- **During glide:** walk frames at 0.25 s cadence (already coded) only
+  fire while actually moving — gate them on `dist > 0.05 wu` instead of
+  unconditionally, and mirror-heading flip the sprite (`flip_x`) by the
+  glide direction sign.
+- **Death/disappearance:** a mob row leaving the snap dies at its last
+  client position (0.15 s red flash + fall/shrink 0.25 s), never pops
+  out mid-glide.
+- **Teleport-lookalikes stay legitimate zaps:** the tracers (bolt fx) and
+  knock effects are intentionally instant; only mobility is smoothed.
+- Interp safety: if the tracker has no prior position (fresh spawn) the
+  marker enters with a 0.3 s spawn-scale pop instead of a glide.
+- Desync guard: if `dist > 2·hex_dist` (snapshot jump from a laggy
+  stream, e.g. after a re-message-delivery), snap instantly instead of
+  gliding across half the map.
+
+## 19. Tests (025 §6 client section extends)
+
+- Rebuild diff: same `mob_id` across two snapshots must NOT despawn
+  (persistence test on spawn/update/despawn paths).
+- Glide math: server-side step interval → expected glide speed for every
+  roster kind's `step_interval_secs` (2–5).
+- Walk-frame gate: zero dist = idle frame (no walk flip churn).
+- Desync snap: jump larger than 2 hexes skips glide.
+- No B0001: glide/a vfx queries already disjoint via `With<TdMobMarker>`
+  vs `Without<TdMobMarker>` — keep it documented at both systems.
+
+---

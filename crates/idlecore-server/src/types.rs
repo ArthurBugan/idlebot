@@ -68,6 +68,38 @@ pub struct Player {
     pub pollution_cleaned: u64,
     pub templates_published: u64,
     pub templates_purchased: u64,
+
+    // Spec 027 §3 — player combat state. All columns are `#[default]`-seeded
+    // so the additive publish backfills every live row safely.
+    /// Current HP; 0 on legacy rows means "full" until the first combat
+    /// write (the reducer treats 0-without-a-death-stamp as unseeded max).
+    #[default(0)]
+    pub player_hp: u32,
+    /// Equipped weapon tier (0 = Fists; tiers map `player_combat::WEAPONS`).
+    #[default(0)]
+    pub weapon: u8,
+    /// Bitmask of permanently purchased weapon tiers (bit i = tier i owned).
+    #[default(0)]
+    pub weapons_owned: u16,
+    /// Reducer-level attack gate (unix secs, server time).
+    #[default(0)]
+    pub attack_cd_until: u64,
+    /// `player_dash` gate (6 s, Spec 027 §5.2).
+    #[default(0)]
+    pub dash_cd_until: u64,
+    /// 0 = grounded; while set, dash speed ×3 and i-frames vs mob dps.
+    #[default(0)]
+    pub dash_until: u64,
+    /// Out-of-combat HP regen pauses until this tick (mob damage refreshes).
+    #[default(0)]
+    pub hostile_until: u64,
+    /// > now ⇒ dead: client shows the corpse timer, reducers reject.
+    #[default(0)]
+    pub death_until: u64,
+    /// Fresh-spawn protection on capital respawn; drops on first attack.
+    /// (DEVIATION: not in the spec's 7-column list — it needs its own slot.)
+    #[default(0)]
+    pub grace_until: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -665,6 +697,20 @@ pub struct Mob {
     /// Web-trap pin: the mob cannot march until this timestamp (0 = free).
     #[default(0)]
     pub pinned_until_secs: u64,
+    // Spec 027 — player threat. Aggro: damaged/adjacent mobs hunt this
+    // player until the stamp; roamers (capital_id == 0) carry the
+    // pack + lifetime markers.
+    /// Player the mob hunts, "" = none.
+    #[default("")]
+    pub aggro_target: String,
+    #[default(0)]
+    pub aggro_until_secs: u64,
+    /// Roaming pack marker (0 = raid spawned); members share one pack id.
+    #[default(0)]
+    pub pack_id: u64,
+    /// Spawn stamp for the 300 s roamer lifetime (0 = legacy row).
+    #[default(0)]
+    pub born_at_secs: u64,
 }
 
 /// One raid opened against a capital. An open wave (`ended_at IS NULL`) blocks
@@ -703,6 +749,10 @@ pub const CE_SPLASH: &str = "splash"; // bomb AoE echo on an extra target
 pub const CE_STRUCT_FELL: &str = "struct_fell"; // structure destroyed
 pub const CE_CAPITAL_HIT: &str = "capital_hit"; // capital HP took damage
 pub const CE_TRAP: &str = "trap"; // trap triggered (spike burst / web pin)
+// Spec 027 §8: the player threat rides the same stream — player deals
+// damage ("player_hit"), player takes it ("player_hurt").
+pub const CE_PLAYER_HIT: &str = "player_hit"; // player deals damage
+pub const CE_PLAYER_HURT: &str = "player_hurt"; // player takes damage
 
 #[derive(Clone, Debug)]
 #[spacetimedb::table(

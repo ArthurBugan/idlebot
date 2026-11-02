@@ -7,6 +7,7 @@
 //! persists it. Heartbeat refreshes `last_seen` (Spec 021 FR6).
 
 use spacetimedb::{ReducerContext, Table};
+use idlecore_core::player_combat as combat;
 use idlecore_core::world_gen::WorldGenConfig;
 use crate::types::{tile_id_of, now_secs, player};
 use crate::player::update_hex;
@@ -50,8 +51,11 @@ pub fn move_player(
     let _ = dt;
 
     // Speed cap: base × vehicle multiplier × (delta time handled below).
+    // Spec 027 §5.2: a live dash triplets the validated budget (the burst
+    // is real travel, the server just re-checks the step size per call).
     let multiplier = crate::vehicles::multiplier(&p.vehicle);
-    let max_speed = BASE_SPEED * multiplier;
+    let dash_burst = if p.dash_until > now { combat::DASH_SPEED_MULT as f32 } else { 1.0 };
+    let max_speed = BASE_SPEED * multiplier * dash_burst;
     let speed = intended_speed.clamp(0.0, max_speed);
 
     let dx = to_x - p.position_x;

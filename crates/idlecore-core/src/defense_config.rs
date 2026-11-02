@@ -25,6 +25,10 @@ pub const ITEM_FIRE_TRAP: &str = "FireTrap";
 /// Pre-existing items the defense costs spend (mirrors server `types.rs`).
 pub const ITEM_WOOD: &str = "Wood";
 pub const ITEM_STONE: &str = "Stone";
+/// Bowstring fiber — the same gathered Grass item the bench crafts spend.
+pub const ITEM_GRASS: &str = "Grass";
+/// Spec 027 §14 addendum: bow ammunition, crafted in the weapon forge.
+pub const ITEM_ARROW: &str = "Arrow";
 
 // ---------------------------------------------------------------------------
 // Capital city
