@@ -1328,11 +1328,17 @@ fn sync_remote_players(
             // Authoritative state for our own wallet → mirror into the local sim.
             if let Ok(mut p) = player.single_mut() {
                 let old_level = p.level;
+                if row.last_action_at > p.last_action_seen {
+                    // An action the server accepted; the 5 s global
+                    // cooldown just restarted — drive the hotbar timer.
+                    p.last_action_seen = row.last_action_at;
+                    p.action_cd_until_utc = row.last_action_at
+                        + idlecore_core::actions::ACTION_COOLDOWN_SECS;
+                }
                 p.gold = row.gold;
                 p.usdt = row.usdt;
                 p.xp = row.total_xp;
-                p.level = row.level;
-                p.eco_points = row.eco_points as u64;
+                p.level = row.level;                p.eco_points = row.eco_points as u64;
                 // Spec 006 T6.3: restore equipped vehicle from the authoritative row.
                 p.owned_vehicle = vehicle_from_str(&row.vehicle);
                 // Spec 014 FR4: avatar drives the local character's skin.

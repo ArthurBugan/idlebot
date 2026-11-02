@@ -6,9 +6,10 @@ RUN apt-get update \
         build-essential pkg-config libssl-dev ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# wasm target + the wasm-bindgen CLI pinned to the version in Cargo.lock.
+# wasm target + the wasm-bindgen CLI pinned to the version in Cargo.lock
+# (the CLI version must exactly match the wasm-bindgen crate version).
 RUN rustup target add wasm32-unknown-unknown \
-    && cargo install wasm-bindgen-cli --version 0.2.127 --locked
+    && cargo install wasm-bindgen-cli --version 0.2.130
 
 WORKDIR /app
 

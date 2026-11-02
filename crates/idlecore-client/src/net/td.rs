@@ -144,12 +144,30 @@ pub struct TdTextures {
     pub barricade: (Handle<Image>, f32),
     pub arrow_tower: (Handle<Image>, f32),
     pub ballista: (Handle<Image>, f32),
+    // REV4 buildables.
+    pub wood_wall: (Handle<Image>, f32),
+    pub iron_wall: (Handle<Image>, f32),
+    pub lantern: (Handle<Image>, f32),
+    pub coconut: (Handle<Image>, f32),
+    pub snowman: (Handle<Image>, f32),
+    pub spike: (Handle<Image>, f32),
+    pub web: (Handle<Image>, f32),
+    pub fire: (Handle<Image>, f32),
     pub icon_core: Handle<Image>,
     pub icon_part: Handle<Image>,
     pub icon_bone: Handle<Image>,
     pub icon_barricade: Handle<Image>,
     pub icon_arrow: Handle<Image>,
     pub icon_ballista: Handle<Image>,
+    // REV4 build-menu icons.
+    pub icon_wood_wall: Handle<Image>,
+    pub icon_iron_wall: Handle<Image>,
+    pub icon_lantern: Handle<Image>,
+    pub icon_coconut: Handle<Image>,
+    pub icon_snowman: Handle<Image>,
+    pub icon_spike: Handle<Image>,
+    pub icon_web: Handle<Image>,
+    pub icon_fire: Handle<Image>,
 }
 
 /// A raider kind's sprite set (Spec 025 §5). `walk` frames alternate while
@@ -225,6 +243,8 @@ fn fx_plan(kind: &str) -> Option<FxBirth> {
         "splash" => Some(FxBirth::Impact([1.0, 0.55, 0.1])),
         "struct_fell" => Some(FxBirth::Impact([0.7, 0.7, 0.7])),
         "capital_hit" => Some(FxBirth::CapitalHit),
+        // REV4 traps: a spike/web spring or fire-tick blooms on its hex.
+        "trap" => Some(FxBirth::Impact([1.0, 0.4, 0.3])),
         _ => None,
     }
 }
@@ -310,8 +330,8 @@ fn init_td_textures(atlas: Res<crate::slice::SlicedAtlas>, mut td: ResMut<TdText
     let with_aspect = |key: &str, aspect: f32| g(key).map(|h| (h, aspect));
     let (Some(capital), Some(barricade), Some(arrow_tower), Some(ballista)) = (
         with_aspect(atlas::TD_CAPITAL, 128.0 / 112.0),
-        with_aspect(atlas::TD_BARRICADE, 1.0),
-        with_aspect(atlas::TD_ARROW_TOWER, 16.0 / 32.0),
+        with_aspect(atlas::TD_BARRICADE, 32.0 / 18.0),
+        with_aspect(atlas::TD_ARROW_TOWER, 24.0 / 32.0),
         with_aspect(atlas::TD_BALLISTA, 1.0),
     ) else {
         return;
@@ -345,17 +365,59 @@ fn init_td_textures(atlas: Res<crate::slice::SlicedAtlas>, mut td: ResMut<TdText
     ) else {
         return;
     };
+    // REV4 buildables — sprites + icons must ALL be present or the menu
+    // would mix placeholders with real arts.
+    let (Some(wood_wall), Some(iron_wall), Some(lantern), Some(coconut)) = (
+        with_aspect(atlas::TD_WOOD_WALL, 1.0),
+        with_aspect(atlas::TD_IRON_WALL, 16.0 / 32.0),
+        with_aspect(atlas::TD_LANTERN, 32.0 / 48.0),
+        with_aspect(atlas::TD_COCONUT, 1.0),
+    ) else {
+        return;
+    };
+    let (Some(snowman), Some(spike), Some(web), Some(fire)) = (
+        with_aspect(atlas::TD_SNOWMAN, 16.0 / 24.0),
+        with_aspect(atlas::TD_TRAP, 16.0 / 32.0),
+        with_aspect(atlas::TD_WEB, 1.0),
+        with_aspect(atlas::TD_FIRE, 16.0 / 32.0),
+    ) else {
+        return;
+    };
+    let icon_wood_wall = g(atlas::ICON_WOOD_WALL).unwrap_or_default();
+    let icon_iron_wall = g(atlas::ICON_IRON_WALL).unwrap_or_default();
+    let icon_lantern = g(atlas::ICON_LANTERN).unwrap_or_default();
+    let icon_coconut = g(atlas::ICON_COCONUT).unwrap_or_default();
+    let icon_snowman = g(atlas::ICON_SNOWMAN).unwrap_or_default();
+    let icon_spike = g(atlas::ICON_SPIKE_TRAP).unwrap_or_default();
+    let icon_web = g(atlas::ICON_WEB_TRAP).unwrap_or_default();
+    let icon_fire = g(atlas::ICON_FIRE_TRAP).unwrap_or_default();
     td.mobs = mobs;
     td.capital = capital;
     td.barricade = barricade;
     td.arrow_tower = arrow_tower;
     td.ballista = ballista;
+    td.wood_wall = wood_wall;
+    td.iron_wall = iron_wall;
+    td.lantern = lantern;
+    td.coconut = coconut;
+    td.snowman = snowman;
+    td.spike = spike;
+    td.web = web;
+    td.fire = fire;
     td.icon_core = icon_core;
     td.icon_part = icon_part;
     td.icon_bone = icon_bone;
     td.icon_barricade = icon_barricade;
     td.icon_arrow = icon_arrow;
     td.icon_ballista = icon_ballista;
+    td.icon_wood_wall = icon_wood_wall;
+    td.icon_iron_wall = icon_iron_wall;
+    td.icon_lantern = icon_lantern;
+    td.icon_coconut = icon_coconut;
+    td.icon_snowman = icon_snowman;
+    td.icon_spike = icon_spike;
+    td.icon_web = icon_web;
+    td.icon_fire = icon_fire;
     td.ready = true;
     info!("TD textures ready (Spec 023)");
 }
@@ -369,25 +431,41 @@ fn mob_sprite_kind<'a>(td: &'a TdTextures, kind: &str) -> &'a MobSprite {
         .expect("Slime is in the Spec 025 roster map")
 }
 
-fn structure_sprite(td: &TdTextures, kind: &str) -> (Handle<Image>, f32, Color) {
+/// Sprite art + art aspect + tint + world height (wu) per structure kind.
+/// REV4 arts mostly render untinted (real colors); placeholders keep tints.
+fn structure_sprite(td: &TdTextures, kind: &str) -> (Handle<Image>, f32, Color, f32) {
     match kind {
         cfg::ITEM_BONE_BARRICADE => (
             td.barricade.0.clone(),
             td.barricade.1,
             Color::srgb(0.8, 0.7, 0.5),
+            2.2,
         ),
         cfg::ITEM_ARROW_TOWER => (
             td.arrow_tower.0.clone(),
             td.arrow_tower.1,
             Color::srgb(0.55, 0.8, 1.0),
+            2.2,
         ),
         // The chest borrows the barricade art, warm brown crate tone.
         cfg::ITEM_STORAGE_CHEST => (
             td.barricade.0.clone(),
             td.barricade.1,
             Color::srgb(0.65, 0.45, 0.25),
+            2.2,
         ),
-        _ => (td.ballista.0.clone(), td.ballista.1, Color::srgb(0.7, 0.55, 1.0)),
+        // ---- REV4 walls ----
+        cfg::ITEM_WOOD_WALL => (td.wood_wall.0.clone(), td.wood_wall.1, Color::WHITE, 2.4),
+        cfg::ITEM_IRON_WALL => (td.iron_wall.0.clone(), td.iron_wall.1, Color::WHITE, 2.4),
+        // ---- REV4 towers ----
+        cfg::ITEM_LANTERN_TOWER => (td.lantern.0.clone(), td.lantern.1, Color::WHITE, 3.0),
+        cfg::ITEM_COCONUT_TOWER => (td.coconut.0.clone(), td.coconut.1, Color::WHITE, 3.2),
+        cfg::ITEM_FROST_TOWER => (td.snowman.0.clone(), td.snowman.1, Color::WHITE, 2.0),
+        // ---- REV4 traps: ground-level consumables ----
+        cfg::ITEM_SPIKE_TRAP => (td.spike.0.clone(), td.spike.1, Color::WHITE, 1.3),
+        cfg::ITEM_WEB_TRAP => (td.web.0.clone(), td.web.1, Color::WHITE, 1.1),
+        cfg::ITEM_FIRE_TRAP => (td.fire.0.clone(), td.fire.1, Color::WHITE, 1.5),
+        _ => (td.ballista.0.clone(), td.ballista.1, Color::srgb(0.7, 0.55, 1.0), 2.2),
     }
 }
 
@@ -504,6 +582,8 @@ fn sync_td_entities(
     td_tex: Res<TdTextures>,
     hex_tex: Res<TdHexTex>,
     player_xf: Res<PlayerTransform>,
+    mode: Res<TdBuildMode>,
+    menu: Res<TdBuildMenu>,
     mobs: Query<Entity, With<TdMobMarker>>,
     structures: Query<Entity, With<TdStructureMarker>>,
     capitals: Query<Entity, With<TdCapitalMarker>>,
@@ -708,33 +788,39 @@ fn sync_td_entities(
     let (px, py) = (player_xf.translation.x, player_xf.translation.y);
     let (view_r2, terr_r2) = cull_radii(&extent);
     // ---- ownership overlays ----
-    for (hex_id, owner) in &snap.territory {
-        let c = TileCoord::from_id(*hex_id);
-        let (cx, cy) = hex_center(c.x, c.y);
-        let dist_sq = {
-            let dx = cx - px;
-            let dy = cy - py;
-            dx * dx + dy * dy
-        };
-        if dist_sq > terr_r2 {
-            continue;
-        }
-        let ownership_mine = Some(owner.as_str()) == address.as_deref();
-        commands.spawn((
-            TdOverlay,
-            Sprite {
-                // Square territory fill (no hex art) — a tile-wide colored
-                // rect so territory reads as land, not pinhead dots.
-                color: if ownership_mine {
-                    Color::srgba(1.0, 0.86, 0.35, 0.5)
-                } else {
-                    Color::srgba(0.62, 0.42, 1.0, 0.4)
+    // REV3 UX pass: territory is inked only while building (build mode armed
+    // or the build menu open) and only MY land is lit — the map stays clean
+    // otherwise, and "where can I build?" answers itself in build mode.
+    let show_overlays = mode.kind.is_some() || menu.open;
+    if show_overlays {
+        for (hex_id, owner) in &snap.territory {
+            let ownership_mine = Some(owner.as_str()) == address.as_deref();
+            if !ownership_mine {
+                continue;
+            }
+            let c = TileCoord::from_id(*hex_id);
+            let (cx, cy) = hex_center(c.x, c.y);
+            let dist_sq = {
+                let dx = cx - px;
+                let dy = cy - py;
+                dx * dx + dy * dy
+            };
+            if dist_sq > terr_r2 {
+                continue;
+            }
+            commands.spawn((
+                TdOverlay,
+                Sprite {
+                    // Square territory fill (no hex art) — a tile-wide colored
+                    // rect so territory reads as land, not pinhead dots; slightly
+                    // inset + fainter so the map shows through the claimed mass.
+                    color: Color::srgba(1.0, 0.86, 0.35, 0.3),
+                    custom_size: Some(Vec2::splat(WorldGenConfig::TILE_SIZE * 0.92)),
+                    ..default()
                 },
-                custom_size: Some(Vec2::splat(WorldGenConfig::TILE_SIZE)),
-                ..default()
-            },
-            Transform::from_xyz(cx, cy, prop_depth(cy) + 3.0),
-        ));
+                Transform::from_xyz(cx, cy, prop_depth(cy) + 3.0),
+            ));
+        }
     }
 
     // ---- capitals ----
@@ -784,11 +870,11 @@ fn sync_td_entities(
             continue;
         }
         let Some(def) = cfg::defense_kind(&row.kind) else { continue };
-        let (image, aspect, color) = structure_sprite(&td_tex, &row.kind);
+        let (image, aspect, color, height) = structure_sprite(&td_tex, &row.kind);
         // Leveled structures fill their bar against their own max HP.
         let ratio = clamp_ratio(row.hp as f32, cfg::structure_max_hp(def, row.level) as f32);
-        // Bottom-anchored so walls/towers stand on the ground slot.
-        let height = 2.2;
+        // Bottom-anchored so walls/towers stand on the ground slot
+        // (height comes from `structure_sprite` per kind).
         let pos = Vec3::new(row.x, row.y + 0.4, prop_depth(row.y) + 12.0);
         commands.spawn((
             TdStructureMarker,
@@ -1067,10 +1153,10 @@ fn combat_fx_tick(
     time: Res<Time>,
     mut fx: ResMut<TdFx>,
     mut commands: Commands,
-    mut bolts: Query<(Entity, &mut TdBolt, &mut Transform)>,
-    mut impacts: Query<(Entity, &mut TdImpact, &mut Sprite)>,
+    mut bolts: Query<(Entity, &mut TdBolt, &mut Transform), Without<TdMobMarker>>,
+    mut impacts: Query<(Entity, &mut TdImpact, &mut Sprite), (Without<TdMobMarker>, Without<TdCapitalMarker>)>,
     mut toasts: Query<(Entity, &mut TdWorldToast, &mut TextColor)>,
-    mut capitals: Query<(Entity, &TdCapitalMarker, &mut Sprite)>,
+    mut capitals: Query<(Entity, &TdCapitalMarker, &mut Sprite), (Without<TdMobMarker>, Without<TdImpact>)>,
 ) {
     let dt = time.delta_secs();
     fx.posing.retain(|_, left| {
@@ -1177,12 +1263,54 @@ pub struct TdBuildMode {
 }
 
 /// The const proxy kinds the build menu lists, with cost lines. Spec 024
-/// adds the storage chest as a fourth buildable.
-pub const BUILDABLES: [&str; 4] = [
+/// adds the storage chest as a fourth buildable; REV4 expands to 12 named
+/// kinds grouped walls / towers / traps (utility + flavor pending).
+pub const BUILDABLES: [&str; 12] = [
     cfg::ITEM_BONE_BARRICADE,
+    cfg::ITEM_WOOD_WALL,
+    cfg::ITEM_IRON_WALL,
     cfg::ITEM_ARROW_TOWER,
     cfg::ITEM_BALLISTA,
+    cfg::ITEM_LANTERN_TOWER,
+    cfg::ITEM_COCONUT_TOWER,
+    cfg::ITEM_FROST_TOWER,
+    cfg::ITEM_SPIKE_TRAP,
+    cfg::ITEM_WEB_TRAP,
+    cfg::ITEM_FIRE_TRAP,
     cfg::ITEM_STORAGE_CHEST,
+];
+
+/// Build-menu sections (REV4 "separated by category"): label + kinds in
+/// list order. The chest rides with Structures — no dedicated group yet.
+pub const BUILD_GROUPS: [(&str, &[&str]); 3] = [
+    (
+        "WALLS",
+        &[
+            cfg::ITEM_BONE_BARRICADE,
+            cfg::ITEM_WOOD_WALL,
+            cfg::ITEM_IRON_WALL,
+        ],
+    ),
+    (
+        "TOWERS",
+        &[
+            cfg::ITEM_ARROW_TOWER,
+            cfg::ITEM_BALLISTA,
+            cfg::ITEM_LANTERN_TOWER,
+            cfg::ITEM_COCONUT_TOWER,
+            cfg::ITEM_FROST_TOWER,
+        ],
+    ),
+    (
+        "TRAPS",
+        &[
+            cfg::ITEM_SPIKE_TRAP,
+            cfg::ITEM_WEB_TRAP,
+            cfg::ITEM_FIRE_TRAP,
+            // Utility for now: the vault lives at the end of the list.
+            cfg::ITEM_STORAGE_CHEST,
+        ],
+    ),
 ];
 
 /// Build menu (B) open/closed — the menu replaces blind B-cycling.
@@ -1199,8 +1327,16 @@ fn hint_color(held: &str, claim_ready: bool) -> Option<Color> {
             // Teal: "build here" (owned land).
             Some(Color::srgba(0.25, 0.95, 0.65, 0.9))
         }
-        cfg::ITEM_STORAGE_CHEST => {
-            // Amber-teal: the vault belongs on owned soil as well.
+        // REV4 expansion: every buildable rows under the same teal build hint.
+        cfg::ITEM_STORAGE_CHEST
+        | cfg::ITEM_WOOD_WALL
+        | cfg::ITEM_IRON_WALL
+        | cfg::ITEM_LANTERN_TOWER
+        | cfg::ITEM_COCONUT_TOWER
+        | cfg::ITEM_FROST_TOWER
+        | cfg::ITEM_SPIKE_TRAP
+        | cfg::ITEM_WEB_TRAP
+        | cfg::ITEM_FIRE_TRAP => {
             Some(Color::srgba(0.25, 0.95, 0.65, 0.9))
         }
         "" if claim_ready => {
@@ -1639,12 +1775,13 @@ fn td_build_row_tint(
     }
 }
 
-/// Fill the row icons once the atlas crops are ready.
-fn td_build_icons(td: Res<TdTextures>, mut rows: Query<(&TdBuildRow, &mut ImageNode)>) {
+/// Fill the row icons once the atlas crops are ready; each icon keeps its
+/// art's aspect inside the 26×26 slot (UI stretches otherwise).
+fn td_build_icons(td: Res<TdTextures>, mut rows: Query<(&TdBuildRow, &mut ImageNode, &mut Node)>) {
     if !td.ready {
         return;
     }
-    for (row_entry, mut icon) in &mut rows {
+    for (row_entry, mut icon, mut node) in &mut rows {
         let kind = row_entry.0;
         let handle: &Handle<Image> = match kind {
             cfg::ITEM_BONE_BARRICADE => &td.icon_barricade,
@@ -1653,10 +1790,36 @@ fn td_build_icons(td: Res<TdTextures>, mut rows: Query<(&TdBuildRow, &mut ImageN
             // No dedicated chest crop in the atlas yet — reuse the Metal
             // Part icon tinted crate-brown (Spec 024 §2.3 placeholder).
             cfg::ITEM_STORAGE_CHEST => &td.icon_part,
+            // REV4 expansion.
+            cfg::ITEM_WOOD_WALL => &td.icon_wood_wall,
+            cfg::ITEM_IRON_WALL => &td.icon_iron_wall,
+            cfg::ITEM_LANTERN_TOWER => &td.icon_lantern,
+            cfg::ITEM_COCONUT_TOWER => &td.icon_coconut,
+            cfg::ITEM_FROST_TOWER => &td.icon_snowman,
+            cfg::ITEM_SPIKE_TRAP => &td.icon_spike,
+            cfg::ITEM_WEB_TRAP => &td.icon_web,
+            cfg::ITEM_FIRE_TRAP => &td.icon_fire,
             _ => continue,
         };
         if icon.image != *handle {
             icon.image = handle.clone();
+            // Fit the slot box around the art's aspect (32×18 barricade is
+            // wide, 24×32 tower is tall, the rest square).
+            let (w, h) = match kind {
+                cfg::ITEM_BONE_BARRICADE => (26.0, 26.0 * 18.0 / 32.0),
+                cfg::ITEM_ARROW_TOWER => (26.0 * 24.0 / 32.0, 26.0),
+                cfg::ITEM_WOOD_WALL => (26.0, 26.0),
+                cfg::ITEM_IRON_WALL => (26.0 * 0.5, 26.0),
+                cfg::ITEM_LANTERN_TOWER => (26.0 * 32.0 / 48.0, 26.0),
+                cfg::ITEM_COCONUT_TOWER => (26.0, 26.0),
+                cfg::ITEM_FROST_TOWER => (26.0 * 2.0 / 3.0, 26.0),
+                cfg::ITEM_SPIKE_TRAP => (26.0 * 0.5, 26.0),
+                cfg::ITEM_WEB_TRAP => (26.0, 26.0),
+                cfg::ITEM_FIRE_TRAP => (26.0 * 0.5, 26.0),
+                _ => (26.0, 26.0),
+            };
+            node.width = Val::Px(w);
+            node.height = Val::Px(h);
         }
     }
 }
@@ -2025,7 +2188,19 @@ fn spawn_td_hud(mut commands: Commands, asset_server: Res<AssetServer>) {
                     },
                     TextColor(Color::srgba(0.75, 0.85, 0.8, 0.9)),
                 ));
-                for kind in BUILDABLES {
+                for (label, kinds) in BUILD_GROUPS {
+                    panel.spawn((
+                        Text::new(label),
+                        TextFont {
+                            font: font.clone(),
+                            font_size: FontSize::Px(10.0),
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.55, 0.7, 0.75)),
+                        TextShadow { color: Color::BLACK, offset: Vec2::new(1.0, 1.0) },
+                        Node { margin: UiRect::top(Val::Px(2.0)), ..default() },
+                    ));
+                    for kind in kinds.iter() {
                     let cost = cfg::defense_kind(kind)
                         .map(|d| d.cost.iter().map(|(i, q)| format!("{q}×{i}")).collect::<Vec<_>>().join("  "))
                         .unwrap_or_default();
@@ -2087,6 +2262,7 @@ fn spawn_td_hud(mut commands: Commands, asset_server: Res<AssetServer>) {
                                 TdBuildCost,
                             ));
                         });
+                    }
                 }
             });
         });
@@ -2099,6 +2275,15 @@ fn kind_display(kind: &str) -> &'static str {
         cfg::ITEM_ARROW_TOWER => "Arrow Tower",
         cfg::ITEM_BALLISTA => "Ballista",
         cfg::ITEM_STORAGE_CHEST => "Chest",
+        // REV4 expansion.
+        cfg::ITEM_WOOD_WALL => "Wood Wall",
+        cfg::ITEM_IRON_WALL => "Iron Wall",
+        cfg::ITEM_LANTERN_TOWER => "Lantern Tower",
+        cfg::ITEM_COCONUT_TOWER => "Coconut Tower",
+        cfg::ITEM_FROST_TOWER => "Frost Tower",
+        cfg::ITEM_SPIKE_TRAP => "Spike Trap",
+        cfg::ITEM_WEB_TRAP => "Web Trap",
+        cfg::ITEM_FIRE_TRAP => "Fire Trap",
         _ => "Structure",
     }
 }
@@ -2404,6 +2589,7 @@ mod tests_fx {
             "splash",
             "struct_fell",
             "capital_hit",
+            "trap", // REV4 spike/web/fire traps
         ];
         for kind in server_kinds {
             assert!(

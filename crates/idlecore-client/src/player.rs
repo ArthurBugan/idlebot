@@ -34,6 +34,12 @@ pub struct ClientPlayer {
     pub avatar: String,
     /// True once the spawn position has been restored from the server row.
     pub position_restored: bool,
+    /// Last mirrored `player.last_action_at` — a newer value means the
+    /// server accepted a new action and its 5 s cooldown just started.
+    pub last_action_seen: u64,
+    /// Local mirror of the cooldown end (server more `last_action_at + 5 s`,
+    /// compared against local unix time by the hotbar timer).
+    pub action_cd_until_utc: u64,
 }
 
 /// Player transform resource for camera/minimap follow.

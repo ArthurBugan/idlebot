@@ -11,6 +11,7 @@ use bevy::prelude::*;
 // 0.20: the old `bevy::ui::Button` is now a deprecated private type
 // alias, so spawn/query the headless `ui_widgets::Button` instead.
 use bevy::ui_widgets::Button;
+use bevy::ui::FocusPolicy;
 use bevy::input::mouse::MouseButton;
 use spacetimedb_sdk::Table;
 use crate::net::gen::player_item_table::PlayerItemTableAccess;
@@ -291,6 +292,7 @@ impl Plugin for InventoryPlugin {
                     handle_inv_craft_clicks,
                     handle_world_click,
                     update_hotbar_xp_bar,
+                    update_hotbar_cooldown,
                 ),
             );
     }
@@ -320,7 +322,7 @@ fn slot_bundle(marker: impl Component, size: f32) -> impl Bundle {
     )
 }
 
-fn spawn_texts(parent: &mut ChildSpawnerCommands, font: &Handle<Font>) {
+fn spawn_texts(parent: &mut ChildSpawnerCommands, font: &Handle<Font>, slot: usize) {
     parent.spawn((
         Name::new("slot-icon"),
         SlotIcon,
@@ -345,6 +347,62 @@ fn spawn_texts(parent: &mut ChildSpawnerCommands, font: &Handle<Font>) {
             ..default()
         },
     ));
+}
+
+/// Cooldown ink for one HOTBAR slot only (default hidden); amber bar drains
+/// downward + live "Ns" readout while the global 5 s action cooldown runs.
+fn spawn_cooldown(parent: &mut ChildSpawnerCommands, font: &Handle<Font>, slot: usize) {
+    parent
+        .spawn((
+            CooldownVeil(slot),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                top: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                overflow: Overflow::clip(),
+                display: Display::None,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.03, 0.05, 0.12, 0.55)),
+            FocusPolicy::Pass,
+        ))
+        .with_children(|veil| {
+            veil.spawn((
+                CooldownFill(slot),
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    right: Val::Px(0.0),
+                    bottom: Val::Px(0.0),
+                    height: Val::Percent(0.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(1.0, 0.65, 0.15, 0.28)),
+                FocusPolicy::Pass,
+            ));
+            veil.spawn((
+                CooldownText(slot),
+                Text::new(""),
+                TextFont {
+                    font: FontSource::Handle(font.clone()),
+                    font_size: 12.0.into(),
+                    ..default()
+                },
+                TextColor(Color::srgb(1.0, 0.85, 0.4)),
+                TextShadow { color: Color::BLACK, offset: Vec2::new(1.0, 1.0) },
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0),
+                    top: Val::Px(2.0),
+                    left: Val::Px(0.0),
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                FocusPolicy::Pass,
+            ));
+        });
 }
 
 fn spawn_hotbar(mut commands: Commands, asset_server: Res<AssetServer>) {
@@ -463,7 +521,10 @@ fn spawn_hotbar(mut commands: Commands, asset_server: Res<AssetServer>) {
             .with_children(|row| {
                 for i in 0..9 {
                     row.spawn(slot_bundle(HotbarSlot(i), SLOT_SIZE))
-                        .with_children(|cell| spawn_texts(cell, &font));
+                        .with_children(|cell| {
+                            spawn_texts(cell, &font, i);
+                            spawn_cooldown(cell, &font, i);
+                        });
                 }
             });
         });
@@ -480,6 +541,19 @@ struct XpNeededText;
 /// Hotbar XP bar fill (width = XP progress through the current level).
 #[derive(Component)]
 struct XpBarFill;
+
+/// 5 s action-cooldown ink over one hotbar slot (shown on the active slot);
+/// the index ties the veil/fill/readout to their slot.
+#[derive(Component)]
+struct CooldownVeil(pub usize);
+
+/// Bottom-up amber drain bar inside [`CooldownVeil`].
+#[derive(Component)]
+struct CooldownFill(pub usize);
+
+/// Live "3s" readout inside [`CooldownVeil`].
+#[derive(Component)]
+struct CooldownText(pub usize);
 
 /// Refresh the hotbar XP bar from the server-synced player: green level
 /// number, `xp / needed` readout, fill fraction across the current level
@@ -513,6 +587,55 @@ fn update_hotbar_xp_bar(
     }
     if let Ok(mut needed_text) = texts.p1().single_mut() {
         needed_text.0 = format!("{into} / {needed}");
+    }
+}
+
+/// Unix seconds now (cooldown endpoints come from the server clock).
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Animated 5 s action-cooldown over the ACTIVE hotbar slot (global game
+/// rule: every accepted action, any kind, sets `player.last_action_at`).
+/// The ink fades in, an amber bar drains top-down, and a live countdown
+/// shows the seconds left so spamming reads as "on cooldown", not broken.
+fn update_hotbar_cooldown(
+    player: Query<&ClientPlayer>,
+    inventory: Res<Inventory>,
+    mut veils: Query<(&CooldownVeil, &mut Node)>,
+    mut fills: Query<(&mut Node, &CooldownFill), Without<CooldownVeil>>,
+    mut texts: Query<(&mut Text, &CooldownText), (Without<CooldownFill>, Without<CooldownVeil>)>,
+) {
+    let Ok(p) = player.single() else {
+        return;
+    };
+    let now = unix_now_secs();
+    let left = p.action_cd_until_utc.saturating_sub(now);
+    let total = idlecore_core::actions::ACTION_COOLDOWN_SECS as f32;
+    let frac = (left as f32 / total).clamp(0.0, 1.0);
+    let on = left > 0;
+
+    for (veil, mut node) in &mut veils {
+        node.display = if on && veil.0 == inventory.active {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+
+    for (mut fill, which) in &mut fills {
+        if which.0 == inventory.active {
+            fill.height = Val::Percent(100.0 * frac);
+        }
+    }
+
+    for (mut text, which) in &mut texts {
+        if which.0 == inventory.active {
+            text.0 = if left > 0 { format!("{left}s") } else { "".into() };
+        }
     }
 }
 
@@ -565,7 +688,7 @@ fn spawn_inventory_panel(mut commands: Commands, asset_server: Res<AssetServer>)
                             let idx = row * 9 + col;
                             row_node
                                 .spawn(slot_bundle(InvSlot(idx), CELL_SIZE))
-                                .with_children(|cell| spawn_texts(cell, &font));
+                                .with_children(|cell| spawn_texts(cell, &font, idx));
                         }
                     });
             }
@@ -620,7 +743,7 @@ fn spawn_inventory_panel(mut commands: Commands, asset_server: Res<AssetServer>)
                                     let idx = r * 2 + c;
                                     grid_row
                                         .spawn(slot_bundle(InvCraftCell(idx), CELL_SIZE))
-                                        .with_children(|cell| spawn_texts(cell, &font));
+                                        .with_children(|cell| spawn_texts(cell, &font, idx));
                                 }
                             });
                         }

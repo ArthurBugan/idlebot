@@ -13,6 +13,15 @@ pub const ITEM_BONE_BARRICADE: &str = "BoneBarricade";
 pub const ITEM_ARROW_TOWER: &str = "ArrowTower";
 pub const ITEM_BALLISTA: &str = "Ballista";
 pub const ITEM_STORAGE_CHEST: &str = "StorageChest";
+// REV4 buildable expansion (walls / towers / traps; utility + flavor later).
+pub const ITEM_WOOD_WALL: &str = "WoodWall";
+pub const ITEM_IRON_WALL: &str = "IronWall";
+pub const ITEM_LANTERN_TOWER: &str = "LanternTower";
+pub const ITEM_COCONUT_TOWER: &str = "CoconutTower";
+pub const ITEM_FROST_TOWER: &str = "FrostTower";
+pub const ITEM_SPIKE_TRAP: &str = "SpikeTrap";
+pub const ITEM_WEB_TRAP: &str = "WebTrap";
+pub const ITEM_FIRE_TRAP: &str = "FireTrap";
 /// Pre-existing items the defense costs spend (mirrors server `types.rs`).
 pub const ITEM_WOOD: &str = "Wood";
 pub const ITEM_STONE: &str = "Stone";
@@ -549,9 +558,30 @@ pub struct DefenseKind {
     pub dps: u32,
     /// Walls are melee targets mobs must chew through to pass.
     pub is_wall: bool,
+    /// REV4 traps: burst damage dealt once, when a raider steps onto the
+    /// trap's hex (the trap is then consumed). 0 = not a spike trap.
+    pub trap_dmg: u32,
+    /// REV4 traps: seconds a raider is pinned in place after stepping onto
+    /// the trap's hex (trap consumed). 0 = not a web trap.
+    pub pin_secs: u32,
+    /// REV4 traps: burn-zone traps tick `dps` to every raider within
+    /// `range_hexes` for this many seconds, then burn out (the structure's
+    /// `hp` DOES double as the fuel budget for the bar+burnout). 0 = not.
+    pub burn_secs: u32,
+    /// REV4 towers: mobs within this melee radius march at half speed.
+    /// 0 = no slow.
+    pub slow_radius: u32,
 }
 
-pub const DEFENSE_KINDS: [DefenseKind; 4] = [
+/// Spike burst that consumes the trap (one-shots Slime 22 HP fodder).
+pub const TRAP_SPIKE_DMG: u32 = 40;
+
+/// True for any consumable trap kind (never rebuilt from rubble).
+pub fn is_trap(kind: &DefenseKind) -> bool {
+    kind.trap_dmg > 0 || kind.pin_secs > 0 || kind.burn_secs > 0
+}
+
+pub const DEFENSE_KINDS: [DefenseKind; 12] = [
     DefenseKind {
         name: ITEM_BONE_BARRICADE,
         cost: &[(ITEM_BONE, 6)],
@@ -559,6 +589,10 @@ pub const DEFENSE_KINDS: [DefenseKind; 4] = [
         range_hexes: 0,
         dps: 0,
         is_wall: true,
+        trap_dmg: 0,
+        pin_secs: 0,
+        burn_secs: 0,
+        slow_radius: 0,
     },
     DefenseKind {
         name: ITEM_ARROW_TOWER,
@@ -567,6 +601,10 @@ pub const DEFENSE_KINDS: [DefenseKind; 4] = [
         range_hexes: 2,
         dps: 10,
         is_wall: false,
+        trap_dmg: 0,
+        pin_secs: 0,
+        burn_secs: 0,
+        slow_radius: 0,
     },
     DefenseKind {
         name: ITEM_BALLISTA,
@@ -575,6 +613,10 @@ pub const DEFENSE_KINDS: [DefenseKind; 4] = [
         range_hexes: 3,
         dps: 22,
         is_wall: false,
+        trap_dmg: 0,
+        pin_secs: 0,
+        burn_secs: 0,
+        slow_radius: 0,
     },
     // Spec 024 §2.3: storage chest — vault for items on owned soil;
     // destroyed by raids after its contents are refunded to the owner.
@@ -585,6 +627,111 @@ pub const DEFENSE_KINDS: [DefenseKind; 4] = [
         range_hexes: 0,
         dps: 0,
         is_wall: false,
+        trap_dmg: 0,
+        pin_secs: 0,
+        burn_secs: 0,
+        slow_radius: 0,
+    },
+    // ---- REV4 walls: wood is cheap filler, iron is the heavy tier ----
+    DefenseKind {
+        name: ITEM_WOOD_WALL,
+        cost: &[(ITEM_WOOD, 5)],
+        hp: 70,
+        range_hexes: 0,
+        dps: 0,
+        is_wall: true,
+        trap_dmg: 0,
+        pin_secs: 0,
+        burn_secs: 0,
+        slow_radius: 0,
+    },
+    DefenseKind {
+        name: ITEM_IRON_WALL,
+        cost: &[(ITEM_METAL_PART, 6), (ITEM_STONE, 4)],
+        hp: 160,
+        range_hexes: 0,
+        dps: 0,
+        is_wall: true,
+        trap_dmg: 0,
+        pin_secs: 0,
+        burn_secs: 0,
+        slow_radius: 0,
+    },
+    // ---- REV4 towers: lantern = short-range burst, coconut = long arc,
+    // frost = weak dps + march slowdown aura ----
+    DefenseKind {
+        name: ITEM_LANTERN_TOWER,
+        cost: &[(ITEM_WOOD, 4), (ITEM_BONE, 6)],
+        hp: 70,
+        range_hexes: 2,
+        dps: 18,
+        is_wall: false,
+        trap_dmg: 0,
+        pin_secs: 0,
+        burn_secs: 0,
+        slow_radius: 0,
+    },
+    DefenseKind {
+        name: ITEM_COCONUT_TOWER,
+        cost: &[(ITEM_WOOD, 6), (ITEM_METAL_PART, 3)],
+        hp: 90,
+        range_hexes: 3,
+        dps: 14,
+        is_wall: false,
+        trap_dmg: 0,
+        pin_secs: 0,
+        burn_secs: 0,
+        slow_radius: 0,
+    },
+    DefenseKind {
+        name: ITEM_FROST_TOWER,
+        cost: &[(ITEM_STONE, 6), (ITEM_BONE, 4)],
+        hp: 80,
+        range_hexes: 2,
+        dps: 8,
+        is_wall: false,
+        trap_dmg: 0,
+        pin_secs: 0,
+        burn_secs: 0,
+        slow_radius: 2,
+    },
+    // ---- REV4 traps: consumable, never chewed, trigger by proximity ----
+    DefenseKind {
+        name: ITEM_SPIKE_TRAP,
+        cost: &[(ITEM_BONE, 4)],
+        hp: 10,
+        range_hexes: 0,
+        dps: 0,
+        is_wall: false,
+        trap_dmg: TRAP_SPIKE_DMG,
+        pin_secs: 0,
+        burn_secs: 0,
+        slow_radius: 0,
+    },
+    DefenseKind {
+        name: ITEM_WEB_TRAP,
+        cost: &[(ITEM_WOOD, 3)],
+        hp: 10,
+        range_hexes: 0,
+        dps: 0,
+        is_wall: false,
+        trap_dmg: 0,
+        pin_secs: 5,
+        burn_secs: 0,
+        slow_radius: 0,
+    },
+    // Burn fuel = hp: the bar also shows burnout; every tick spends 1 hp.
+    DefenseKind {
+        name: ITEM_FIRE_TRAP,
+        cost: &[(ITEM_WOOD, 3), (ITEM_BONE, 3)],
+        hp: 10,
+        range_hexes: 1,
+        dps: 6,
+        is_wall: false,
+        trap_dmg: 0,
+        pin_secs: 0,
+        burn_secs: 10,
+        slow_radius: 0,
     },
 ];
 
@@ -792,7 +939,7 @@ mod tests {
 
     #[test]
     fn defense_kinds_are_buildable_and_walled() {
-        assert_eq!(DEFENSE_KINDS.len(), 4);
+        assert_eq!(DEFENSE_KINDS.len(), 12, "4 legacy + 8 REV4 expansion kinds");
         assert!(defense_kind("ArrowTower").is_some());
         assert!(defense_kind("BoneBarricade").unwrap().is_wall);
         assert_eq!(defense_kind("ArrowTower").unwrap().range_hexes, 2);
@@ -806,9 +953,64 @@ mod tests {
         assert_eq!(chest.hp, 60);
     }
 
+    /// REV4 buildable expansion — every kind's config stays sane and the
+    /// rows stay strictly category-separated (wall / tower / trap).
     #[test]
-    fn structure_levels_scale_hp_and_dps() {
-        let tower = defense_kind("ArrowTower").unwrap();
+    fn new_buildable_kinds_stay_sane() {
+        // All 12 kinds resolve + have positive HP.
+        for k in &DEFENSE_KINDS {
+            assert!(defense_kind(k.name).is_some(), "{} resolves", k.name);
+            assert!(k.hp > 0, "{} hp", k.name);
+            assert!(!k.cost.is_empty(), "{} cost", k.name);
+        }
+        // Walls: exactly the three wall kinds, no attack, no trap bits.
+        let walls: Vec<&str> = DEFENSE_KINDS
+            .iter()
+            .filter(|k| k.is_wall)
+            .map(|k| k.name)
+            .collect();
+        assert_eq!(
+            walls,
+            vec![ITEM_BONE_BARRICADE, ITEM_WOOD_WALL, ITEM_IRON_WALL]
+        );
+        for w in walls.iter() {
+            let k = defense_kind(w).unwrap();
+            assert_eq!(k.dps, 0);
+            assert_eq!(k.trap_dmg + k.pin_secs + k.burn_secs, 0);
+        }
+        // Towers: track range/dps, carry zero trap flags.
+        for t in [ITEM_ARROW_TOWER, ITEM_BALLISTA, ITEM_LANTERN_TOWER, ITEM_COCONUT_TOWER, ITEM_FROST_TOWER] {
+            let k = defense_kind(t).unwrap();
+            assert!(!k.is_wall);
+            assert!(k.dps > 0 && k.range_hexes >= 2, "{t} dps/range");
+            assert!(!is_trap(k), "{t} is not a trap");
+        }
+        // Frost is the only slow aura; ice does not melt walls.
+        let frost = defense_kind(ITEM_FROST_TOWER).unwrap();
+        assert_eq!(frost.slow_radius, 2);
+        assert!(DEFENSE_KINDS.iter().filter(|k| k.slow_radius > 0).count() == 1);
+        // Traps: consumable, cheap, never walls, never level-dps generic.
+        for t in [ITEM_SPIKE_TRAP, ITEM_WEB_TRAP, ITEM_FIRE_TRAP] {
+            let k = defense_kind(t).unwrap();
+            assert!(!k.is_wall && is_trap(k), "{t}");
+        }
+        let spike = defense_kind(ITEM_SPIKE_TRAP).unwrap();
+        assert!(spike.trap_dmg >= mob_kind("Slime").unwrap().hp, "spike one-shots fodder");
+        assert_eq!(spike.pin_secs, 0);
+        let web = defense_kind(ITEM_WEB_TRAP).unwrap();
+        assert_eq!(web.pin_secs, 5);
+        assert_eq!(web.trap_dmg, 0);
+        // Fire trap ticks dps while burning; fuel 10 = burnout budget.
+        let fire = defense_kind(ITEM_FIRE_TRAP).unwrap();
+        assert_eq!(fire.dps, 6);
+        assert_eq!(fire.range_hexes, 1);
+        assert_eq!(fire.hp, fire.burn_secs, "hp doubles as fuel");
+        // Chest is untouched by the trap flags (utility).
+        assert!(!is_trap(defense_kind(ITEM_STORAGE_CHEST).unwrap()));
+    }
+
+    #[test]
+    fn structure_levels_scale_hp_and_dps() {        let tower = defense_kind("ArrowTower").unwrap();
         // HP: +30%/level (80 → 104 → … → 176 at the L5 cap).
         assert_eq!(structure_max_hp(tower, 0), 80, "legacy rows read as L1");
         assert_eq!(structure_max_hp(tower, 1), 80);

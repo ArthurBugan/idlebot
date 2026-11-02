@@ -234,6 +234,8 @@ fn setup(mut commands: Commands) {
             owned_vehicle: None,
             avatar: "alienA".to_string(),
             position_restored: false,
+            last_action_seen: 0,
+            action_cd_until_utc: 0,
         },
     ));
 }

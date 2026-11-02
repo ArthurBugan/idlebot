@@ -323,12 +323,30 @@ pub mod atlas {
     pub const TD_BARRICADE: &str = "td_barricade";
     pub const TD_ARROW_TOWER: &str = "td_arrow_tower";
     pub const TD_BALLISTA: &str = "td_ballista";
+    // REV4 buildable expansion arts (walls / towers / traps).
+    pub const TD_WOOD_WALL: &str = "td_wood_wall";
+    pub const TD_IRON_WALL: &str = "td_iron_wall";
+    pub const TD_LANTERN: &str = "td_lantern";
+    pub const TD_COCONUT: &str = "td_coconut";
+    pub const TD_SNOWMAN: &str = "td_snowman";
+    pub const TD_TRAP: &str = "td_trap";
+    pub const TD_WEB: &str = "td_web";
+    pub const TD_FIRE: &str = "td_fire";
     pub const ICON_CAPITAL_CORE: &str = "icon_capital_core";
     pub const ICON_METAL_PART: &str = "icon_metal_part";
     pub const ICON_BONE: &str = "icon_bone";
     pub const ICON_BONE_BARRICADE: &str = "icon_bone_barricade";
     pub const ICON_ARROW_TOWER: &str = "icon_arrow_tower";
     pub const ICON_BALLISTA: &str = "icon_ballista";
+    // REV4 build-menu icons (same crops as the world arts).
+    pub const ICON_WOOD_WALL: &str = "icon_wood_wall";
+    pub const ICON_IRON_WALL: &str = "icon_iron_wall";
+    pub const ICON_LANTERN: &str = "icon_lantern";
+    pub const ICON_COCONUT: &str = "icon_coconut";
+    pub const ICON_SNOWMAN: &str = "icon_snowman";
+    pub const ICON_SPIKE_TRAP: &str = "icon_spike_trap";
+    pub const ICON_WEB_TRAP: &str = "icon_web_trap";
+    pub const ICON_FIRE_TRAP: &str = "icon_fire_trap";
     // Floor tiles
     pub const FLOOR_GRASS: &str = "floor_grass";
     pub const FLOOR_SAND: &str = "floor_sand";
@@ -575,11 +593,14 @@ pub fn enqueue_model_slices(
     r(atlas::TD_VENOM_BLOOM, "models/Enemy/Venom Bloom/Purple/idle.png", 0, 0, 48, 48);
     // Capital: one full house (128×112) — a city hall reads better than a well.
     r(atlas::TD_CAPITAL, "models/Objects/Exterior/Houses/1.png", 0, 0, 128, 112);
-    // Barricade: the stone chunk sits mid-sheet on the fence border frame.
-    r(atlas::TD_BARRICADE, "models/Objects/Exterior/Fence and Bridge/Fence Stone.png", 24, 32, 16, 16);
-    // Tower: the full scarecrow/guard figure (16×32 — the 16×16 crop was
-    // truncating it mid-body: "sprite broken").
-    r(atlas::TD_ARROW_TOWER, "models/Objects/Exterior/Scarescrow.png", 0, 0, 16, 32);
+    // Barricade: the standing stone chunk at the sheet's center (verified
+    // bbox 8,20 → 40,38; the old 24,32 crop straddled two 16px columns and
+    // stitched two half-walls together).
+    r(atlas::TD_BARRICADE, "models/Objects/Exterior/Fence and Bridge/Fence Stone.png", 8, 20, 32, 18);
+    // Tower: a whole scarecrow — the sheet packs 8 figures at 32px stride
+    // (each figure ~16px wide centered on every other 16px cell boundary),
+    // so a 16px-wide crop grabbed the LEFT HALF of the figure.
+    r(atlas::TD_ARROW_TOWER, "models/Objects/Exterior/Scarescrow.png", 4, 0, 24, 32);
     // Ballista: hay-bale stack, first cell.
     r(atlas::TD_BALLISTA, "models/Objects/Exterior/Hay Bales.png", 0, 0, 16, 16);
     // Icons: metal ingot (2nd cell of the bars row), bone (cell 1), and the
@@ -587,9 +608,26 @@ pub fn enqueue_model_slices(
     r(atlas::ICON_CAPITAL_CORE, "models/Objects/Exterior/Houses/1.png", 0, 0, 128, 112);
     r(atlas::ICON_METAL_PART, "models/Icons/RPG icons/Extras/Bars and ores.png", 16, 0, 16, 16);
     r(atlas::ICON_BONE, "models/Icons/RPG icons/Extras/Bones.png", 0, 0, 16, 16);
-    r(atlas::ICON_BONE_BARRICADE, "models/Objects/Exterior/Fence and Bridge/Fence Stone.png", 24, 32, 16, 16);
-    r(atlas::ICON_ARROW_TOWER, "models/Objects/Exterior/Scarescrow.png", 0, 0, 16, 32);
+    r(atlas::ICON_BONE_BARRICADE, "models/Objects/Exterior/Fence and Bridge/Fence Stone.png", 8, 20, 32, 18);
+    r(atlas::ICON_ARROW_TOWER, "models/Objects/Exterior/Scarescrow.png", 4, 0, 24, 32);
     r(atlas::ICON_BALLISTA, "models/Objects/Exterior/Hay Bales.png", 0, 0, 16, 16);
+    // REV4 buildables — verified crops (world art = icon art).
+    r(atlas::TD_WOOD_WALL, "models/Objects/Exterior/Fence and Bridge/Fence Wood.png", 48, 0, 32, 32);
+    r(atlas::TD_IRON_WALL, "models/Objects/Exterior/Fence and Bridge/Fence Iron.png", 0, 0, 16, 32);
+    r(atlas::TD_LANTERN, "models/Objects/Exterior/Street Lamp.png", 32, 0, 32, 48);
+    r(atlas::TD_COCONUT, "models/Objects/Exterior/Beach/Coconut Tree.png", 0, 0, 48, 48);
+    r(atlas::TD_SNOWMAN, "models/Objects/Exterior/Snowman.png", 0, 8, 16, 24);
+    r(atlas::TD_TRAP, "models/Objects/Exterior/Mine and Dungeon/Trap.png", 32, 0, 16, 32);
+    r(atlas::TD_WEB, "models/Objects/Exterior/Mine and Dungeon/web spider.png", 0, 0, 16, 16);
+    r(atlas::TD_FIRE, "models/Objects/Exterior/Mine and Dungeon/bonfire.png", 16, 0, 16, 32);
+    r(atlas::ICON_WOOD_WALL, "models/Objects/Exterior/Fence and Bridge/Fence Wood.png", 48, 0, 32, 32);
+    r(atlas::ICON_IRON_WALL, "models/Objects/Exterior/Fence and Bridge/Fence Iron.png", 0, 0, 16, 32);
+    r(atlas::ICON_LANTERN, "models/Objects/Exterior/Street Lamp.png", 32, 0, 32, 48);
+    r(atlas::ICON_COCONUT, "models/Objects/Exterior/Beach/Coconut Tree.png", 0, 0, 48, 48);
+    r(atlas::ICON_SNOWMAN, "models/Objects/Exterior/Snowman.png", 0, 8, 16, 24);
+    r(atlas::ICON_SPIKE_TRAP, "models/Objects/Exterior/Mine and Dungeon/Trap.png", 32, 0, 16, 32);
+    r(atlas::ICON_WEB_TRAP, "models/Objects/Exterior/Mine and Dungeon/web spider.png", 0, 0, 16, 16);
+    r(atlas::ICON_FIRE_TRAP, "models/Objects/Exterior/Mine and Dungeon/bonfire.png", 16, 0, 16, 32);
 
     // ---- Floor tiles (plain seamless 16×16 crops) ----
     r(atlas::FLOOR_GRASS, "models/Tileset/Tileset Grass Summer.png", 144, 32, 16, 16);

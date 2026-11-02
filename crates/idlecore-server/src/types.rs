@@ -662,6 +662,9 @@ pub struct Mob {
     pub hp: u32,
     /// Next-step accumulator handled by the 1s scheduler.
     pub step_accum_secs: u32,
+    /// Web-trap pin: the mob cannot march until this timestamp (0 = free).
+    #[default(0)]
+    pub pinned_until_secs: u64,
 }
 
 /// One raid opened against a capital. An open wave (`ended_at IS NULL`) blocks
@@ -699,6 +702,7 @@ pub const CE_BOMB: &str = "bomb"; // Bomb Goblin lob
 pub const CE_SPLASH: &str = "splash"; // bomb AoE echo on an extra target
 pub const CE_STRUCT_FELL: &str = "struct_fell"; // structure destroyed
 pub const CE_CAPITAL_HIT: &str = "capital_hit"; // capital HP took damage
+pub const CE_TRAP: &str = "trap"; // trap triggered (spike burst / web pin)
 
 #[derive(Clone, Debug)]
 #[spacetimedb::table(

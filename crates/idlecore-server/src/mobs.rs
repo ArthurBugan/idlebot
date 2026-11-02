@@ -15,7 +15,7 @@ use crate::objects::add_item;
 use crate::types::{
     capital, combat_event, defense_structure, tile_center, hex_coords_of, tile_distance,
     tile_id_of, hex_tile, mob, now_secs, raid_wave, territory, Capital, DefenseStructure, Mob,
-    RaidWave, CE_BOMB, CE_CAPITAL_HIT, CE_MELEE, CE_SHOT, CE_SPLASH, CE_STRUCT_FELL,
+    RaidWave, CE_BOMB, CE_CAPITAL_HIT, CE_MELEE, CE_SHOT, CE_SPLASH, CE_STRUCT_FELL, CE_TRAP,
 };
 
 const MOB_TICK_AUDIT: &str = "mob_tick";
@@ -196,6 +196,7 @@ fn spawn_wave(ctx: &ReducerContext, capital: &Capital, now: u64) -> bool {
             position_y: sy,
             hp: kind.hp,
             step_accum_secs: 0,
+            pinned_until_secs: 0,
         });
     }
     let mut cap_row = capital.clone();
@@ -515,17 +516,48 @@ pub fn engagement_dps(kind: &cfg::MobKind, target_is_wall: bool) -> u32 {
 /// ends, destruction cascade.
 pub fn tick(ctx: &ReducerContext) {
     let now = now_secs(ctx);
-    let towers_all: Vec<DefenseStructure> = ctx.db.defense_structure().iter().collect();
+    let towers_all: Vec<DefenseStructure> = ctx.db.defense_structure().iter().collect();    // REV4 traps: burn zones tick dps to EVERY raider in range for a fuel
+    // budget (hp), while spike/web traps are consumed the moment a raider
+    // steps onto their hex (handled in the march pass below).
+    let traps_burn: Vec<DefenseStructure> = towers_all
+        .iter()
+        .filter(|s| {
+            cfg::defense_kind(&s.kind)
+                .is_some_and(|k| k.burn_secs > 0 && k.dps > 0)
+        })
+        .cloned()
+        .collect();
+    let traps_step: Vec<(u64, i32, i32, u32, u32, &'static str)> = towers_all
+        .iter()
+        .filter(|s| {
+            cfg::defense_kind(&s.kind).is_some_and(|k| k.trap_dmg > 0 || k.pin_secs > 0)
+        })
+        .map(|s| {
+            let (q, r) = hex_coords_of(s.hex_id);
+            let k = cfg::defense_kind(&s.kind).unwrap();
+            (
+                s.structure_id,
+                q,
+                r,
+                k.trap_dmg,
+                k.pin_secs,
+                k.name,
+            )
+        })
+        .collect();
 
     // ---- Tower fire: nearest mob in range per tower takes dps damage ----
     let mut mob_damage: HashMap<u64, u32> = HashMap::new();
     for tower in towers_all.iter() {
-        let Some(kind) = cfg::defense_kind(&tower.kind) else { continue };
-        if kind.dps == 0 || kind.range_hexes == 0 {
+        // Traps are excluded: they trigger by proximity, they never snipe.
+        if cfg::defense_kind(&tower.kind).is_none_or(|k| k.dps == 0 || k.burn_secs > 0) {
+            continue;
+        }
+        let kind = cfg::defense_kind(&tower.kind).unwrap();
+        if kind.range_hexes == 0 {
             continue;
         }
         // Spec 024: leveled towers hit harder (+25% dps per level).
-        let dps = cfg::structure_dps(kind, tower.level);
         let (tq, tr) = hex_coords_of(tower.hex_id);
         let target = ctx
             .db
@@ -535,10 +567,53 @@ pub fn tick(ctx: &ReducerContext) {
             .filter(|m| tile_distance(m.hex_q, m.hex_r, tq, tr) <= kind.range_hexes as i32)
             .min_by_key(|m| (tile_distance(m.hex_q, m.hex_r, tq, tr), m.mob_id));
         if let Some(target) = target {
-            *mob_damage.entry(target.mob_id).or_insert(0) += dps;
+            *mob_damage.entry(target.mob_id).or_insert(0) += cfg::structure_dps(kind, tower.level);
             // Tracer fx (REV3 §10/§13): towers shoot too; the client tells
             // tower shots from mob shots by attacker_mob == 0.
             crate::mobs::emit_tower_event(ctx, tower, target.hex_id, now);
+        }
+    }
+    // Burn traps hit every raider in range each second, spending 1 hp of
+    // fuel per tick; at 0 fuel the fire burns out.
+    for trap in traps_burn.iter() {
+        let kind = cfg::defense_kind(&trap.kind).unwrap();
+        let (tq, tr) = hex_coords_of(trap.hex_id);
+        let dps = cfg::structure_dps(kind, trap.level);
+        for m in ctx.db.mob().iter().filter(|m| {
+            tile_distance(m.hex_q, m.hex_r, tq, tr) <= kind.range_hexes as i32
+        }) {
+            *mob_damage.entry(m.mob_id).or_insert(0) += dps;
+            // One impact bloom on the trap hex speaks for the zone.
+            emit_event(
+                ctx,
+                trap.capital_id,
+                0,
+                now,
+                CE_TRAP,
+                0,
+                trap.hex_id,
+                (SLOT_CENTER_X, SLOT_CENTER_Y),
+                "fire",
+            );
+        }
+        if trap.hp > 1 {
+            let mut row = trap.clone();
+            row.hp -= 1;
+            ctx.db.defense_structure().structure_id().update(row);
+        } else {
+            ctx.db.defense_structure().structure_id().delete(trap.structure_id);
+            // Burnout crumble fx: same event kind the client already renders.
+            emit_event(
+                ctx,
+                trap.capital_id,
+                0,
+                now,
+                CE_STRUCT_FELL,
+                0,
+                trap.hex_id,
+                (trap.slot_x, trap.slot_y),
+                &trap.kind,
+            );
         }
     }
 
@@ -563,6 +638,12 @@ pub fn tick(ctx: &ReducerContext) {
     let mut capital_damage: HashMap<u64, u32> = HashMap::new();
     let tower_hexes: HashMap<u64, (i32, i32, bool)> = towers_all
         .iter()
+        // REV4 traps are NOT melee targets: they trigger by step/burn and
+        // are consumed; raiders march straight onto them.
+        .filter(|s| {
+            cfg::defense_kind(&s.kind)
+                .is_some_and(|k| !cfg::is_trap(k))
+        })
         .map(|s| {
             let (q, r) = hex_coords_of(s.hex_id);
             (
@@ -591,6 +672,22 @@ pub fn tick(ctx: &ReducerContext) {
         .iter()
         .filter(|(_, (_, _, w))| *w)
         .map(|(sid, (hq, hr, _))| (*sid, *hq, *hr))
+        .collect();
+    // Frost slow aura spots (REV4) — (hex, radius) per built frost tower.
+    let frost_spots: Vec<(i32, i32, u32)> = towers_all
+        .iter()
+        .filter(|s| {
+            cfg::defense_kind(&s.kind)
+                .is_some_and(|k| k.slow_radius > 0)
+        })
+        .map(|s| {
+            let (q, r) = hex_coords_of(s.hex_id);
+            (
+                q,
+                r,
+                cfg::defense_kind(&s.kind).map(|k| k.slow_radius).unwrap_or(0),
+            )
+        })
         .collect();
 
     // Pass 1 — engagement ranks for the encircle ring (REV3 §12): melee
@@ -707,9 +804,23 @@ pub fn tick(ctx: &ReducerContext) {
                 (capital.hex_id, (SLOT_CENTER_X, SLOT_CENTER_Y)),
             );
         } else if kind.step_interval_secs > 0 {
+            // Web-trap pin (REV4): a pinned raider holds its hex.
+            if mob.pinned_until_secs > now {
+                continue;
+            }
+            // Frost aura (REV4): raiders inside any frost tower's slow
+            // radius march every other tick.
+            let interval = if frost_spots.iter().any(|(hx, hr, radius)| {
+                tile_distance(mob.hex_q, mob.hex_r, *hx, *hr) <= *radius as i32
+            }) {
+                kind.step_interval_secs * 2
+            } else {
+                kind.step_interval_secs
+            };
             // Rooted kinds (Venom Bloom, step 0) never march. Otherwise
             // march; a fully walled-in mob chews the nearest wall (REV3 §11).
-            match march(ctx, mob, kind.step_interval_secs, cq, cr, &blocked) {
+            // A step onto a trap hex (REV4) springs the trap instead.
+            match march(ctx, mob, interval, cq, cr, &blocked, &traps_step) {
                 MarchOutcome::Stepped => {}
                 MarchOutcome::WalledIn(Some(sid)) => {
                     *struct_damage.entry(sid).or_insert(0) += engagement_dps(kind, true);
@@ -720,6 +831,37 @@ pub fn tick(ctx: &ReducerContext) {
                     );
                 }
                 MarchOutcome::WalledIn(None) => {}
+                // REV4: a step onto a trap hex springs it — spike bursts
+                // kill/wound the raider, a web pins it; either consumes the
+                // trap (cleared by hand here so the rubble pass skips it).
+                MarchOutcome::Trapped {
+                    structure_id,
+                    hex_id,
+                    trap_dmg,
+                    pin_secs,
+                    trap_kind,
+                } => {
+                    if let Some(t) = ctx.db.defense_structure().structure_id().find(structure_id) {
+                        ctx.db.defense_structure().structure_id().delete(t.structure_id);
+                    }
+                    event(
+                        CE_TRAP,
+                        trap_kind,
+                        (hex_id, (SLOT_CENTER_X, SLOT_CENTER_Y)),
+                    );
+                    if trap_dmg > 0 {
+                        let mut fallen = mob.clone();
+                        fallen.hex_id = hex_id;
+                        kill_or_wound(ctx, &fallen, trap_dmg, &capitals);
+                        continue; // dead this tick — skip the ring reposition
+                    }
+                    if pin_secs > 0 {
+                        if let Some(mut fresh) = ctx.db.mob().mob_id().find(mob.mob_id) {
+                            fresh.pinned_until_secs = now + pin_secs as u64;
+                            ctx.db.mob().mob_id().update(fresh);
+                        }
+                    }
+                }
             }
         }
         // Encircle reposition (REV3 §12): melee attackers within one step of
@@ -773,8 +915,11 @@ pub fn tick(ctx: &ReducerContext) {
                 ctx.db.defense_structure().structure_id().delete(sid);
                 // While the capital survives, leveled structures leave
                 // rubble that rebuilds at half their level (min L1).
+                // REV4: consumable traps never respawn from rubble.
                 if let Some(kind) = kind {
-                    if capitals.get(&s.capital_id).is_some_and(|c| !c.destroyed) {
+                    if !cfg::is_trap(kind)
+                        && capitals.get(&s.capital_id).is_some_and(|c| !c.destroyed)
+                    {
                         let level = crate::buildings::half_level(s.level);
                         let mut reborn = s.clone();
                         reborn.level = level;
@@ -917,6 +1062,16 @@ enum MarchOutcome {
     Stepped,
     /// Fully walled in — `Some(sid)` names the nearest wall to chew.
     WalledIn(Option<u64>),
+    /// The step landed on a live trap (REV4): field carries the structure id,
+    /// the trap's hex, burst damage (0 = pin-only trap), pin seconds and the
+    /// trap kind name for the combat-event detail.
+    Trapped {
+        structure_id: u64,
+        hex_id: u64,
+        trap_dmg: u32,
+        pin_secs: u32,
+        trap_kind: &'static str,
+    },
 }
 
 fn march(
@@ -926,6 +1081,7 @@ fn march(
     target_q: i32,
     target_r: i32,
     blocked: &std::collections::HashSet<(i32, i32)>,
+    traps_step: &[(u64, i32, i32, u32, u32, &'static str)],
 ) -> MarchOutcome {
     let mut row = mob.clone();
     row.step_accum_secs += 1;
@@ -943,6 +1099,17 @@ fn march(
         row.position_x = x;
         row.position_y = y;
         ctx.db.mob().mob_id().update(row);
+        // REV4: spring a live spike/web trap sitting on the destination hex.
+        if let Some(trap) = traps_step.iter().find(|(_, q, r, _, _, _)| (q, r) == (&next.0, &next.1)) {
+            let &(structure_id, _, _, trap_dmg, pin_secs, trap_kind) = trap;
+            return MarchOutcome::Trapped {
+                structure_id,
+                hex_id: tile_id_of(next.0, next.1),
+                trap_dmg,
+                pin_secs,
+                trap_kind,
+            };
+        }
         return MarchOutcome::Stepped;
     }
     // Every strictly-closing step is a standing wall: name the wall to chew
