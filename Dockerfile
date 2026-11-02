@@ -17,6 +17,15 @@ WORKDIR /app
 # crates' heavy deps are never compiled).
 COPY . .
 
+# Docker VMs ship ~8 GB of RAM and the fat-LTO finisher over the Bevy app
+# needs more than that — the final rustc gets SIGKILLed ("cannot allocate
+# memory") right after its 360 s dependency pass. Thin LTO keeps the
+# cross-crate dead-code elimination the wasm size depends on while
+# streaming per-module bitcode across worker threads, so peak RSS stays
+# within the VM. Env override so the local `cargo build --release`
+# profile in Cargo.toml stays untouched.
+ENV CARGO_PROFILE_RELEASE_LTO=thin
+
 # Build the release wasm and generate the web bundle into /app/dist.
 RUN cargo build -p idlecore-client --bin idlecore-client \
         --target wasm32-unknown-unknown --release \
