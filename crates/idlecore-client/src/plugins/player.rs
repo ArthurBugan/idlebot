@@ -19,6 +19,7 @@ impl Plugin for PlayerPlugin {
             .add_systems(Startup, (register_player_orientation, spawn_vehicle_indicator))
             .add_systems(Update, (
                 player_movement,
+                dash_ghosts,
                 update_vehicle_indicator,
                 update_aura_light,
             ));
@@ -80,6 +81,7 @@ fn step_velocity(velocity: Vec2, dir: Vec2, speed: f32, dt: f32) -> Vec2 {
 fn player_movement(
     keyboard: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
+    mut skins: Option<ResMut<crate::skins::PlayerSkins>>,
     mut player_query: Query<(&mut Transform, &mut ClientPlayer), With<PhysicsBody>>,
     player_transform: ResMut<PlayerTransform>,
     orientation: ResMut<PlayerOrientation>,
@@ -116,10 +118,7 @@ fn player_movement(
     // Spec 027 §5.2: dash burst — Space fires the reducer, the local window
     // (0.4 s vs the server's 1-tick rounding) drives the ×3 burst speed now.
     {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0);
+        let now = crate::time_ext::now_unix_secs() as f64;
         if keyboard.just_pressed(KeyCode::Space) {
             let dir = idlecore_core::player_combat::heading_index(orientation.facing_angle);
             if let Some(mut net) = net {
@@ -147,6 +146,16 @@ fn player_movement(
     }
     // Partial joystick tilt scales speed for precise analog movement.
     speed *= input.length().min(1.0);
+
+    // Spec 034 C3 (HLD lunge): a fresh attack start pushes the body toward
+    // the strike heading. The exp-ease recovers the impulse inside the clip.
+    if let Some(mut skins) = skins.as_mut() {
+        if crate::skins::consume_lunge(&mut skins) {
+            let rad = orientation.facing_angle;
+            player.velocity.x += rad.cos() * crate::skins::LUNGE_IMPULSE;
+            player.velocity.y += rad.sin() * crate::skins::LUNGE_IMPULSE;
+        }
+    }
 
     // Exp-lerp the actual velocity toward the commanded one; the player
     // accelerates on key press and decelerates to a stop on release. dt is
@@ -213,6 +222,78 @@ fn walkable_at(world: &StreamingWorldResource, x: f32, y: f32) -> bool {
         }
     }
     true
+}
+
+// ---------------------------------------------------------------------------
+// Dash trail (Spec 034 C7 — HLD afterimages)
+// ---------------------------------------------------------------------------
+
+/// A fading afterimage stamped behind the dashing player.
+#[derive(Component)]
+pub struct DashGhost {
+    pub t: f32,
+}
+
+/// Spawn cadence while the burst lives (seconds between afterimages).
+const GHOST_EVERY: f32 = 0.06;
+
+/// Drive the dash trail: stamp a translucent diamond every 60 ms while the
+/// burst is live, fade it over 0.25 s. The afterimage reads by silhouette —
+/// the skin pose a frame stamped is not knowable here without duplicating
+/// the skins state machine.
+#[allow(clippy::type_complexity)]
+fn dash_ghosts(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    time: Res<Time>,
+    mut next: Local<f32>,
+    player_query: Query<(&Transform, &ClientPlayer), With<PhysicsBody>>,
+    mut ghosts: Query<(Entity, &mut DashGhost, &mut Sprite)>,
+) {
+    let unix_now = crate::time_ext::now_unix_secs() as f64;
+    let Ok((t, player)) = player_query.single() else { return };
+
+    // Fading pass first (runs even between spawns).
+    for (entity, mut ghost, mut sprite) in ghosts.iter_mut() {
+        ghost.t += time.delta_secs();
+        if ghost.t >= 0.25 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        // The stamp stores its own alpha; re-read the sRGB tint and drop it.
+        let base = sprite.color.to_srgba();
+        sprite.color = bevy::color::Color::Srgba(
+            base.with_alpha(0.35 * (1.0 - ghost.t / 0.25)),
+        );
+    }
+
+    // Stamp pass.
+    *next -= time.delta_secs();
+    if player.dashing(unix_now) && *next <= 0.0 {
+        *next = GHOST_EVERY;
+        let img = images.add(bevy::image::Image::new_fill(
+            bevy::render::render_resource::Extent3d {
+                width: 2,
+                height: 2,
+                depth_or_array_layers: 1,
+            },
+            bevy::render::render_resource::TextureDimension::D2,
+            &[255, 255, 255, 255],
+            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+            bevy::asset::RenderAssetUsages::default(),
+        ));
+        commands.spawn((
+            DashGhost { t: 0.0 },
+            Sprite {
+                color: Color::srgba(1.0, 1.0, 1.0, 0.35),
+                custom_size: Some(Vec2::splat(1.4)),
+                image: img,
+                ..default()
+            },
+            Transform::from_xyz(t.translation.x, t.translation.y - 0.9, t.translation.z - 2.0)
+                .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_4)),
+        ));
+    }
 }
 
 // ============================================================================

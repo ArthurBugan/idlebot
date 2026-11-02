@@ -44,7 +44,7 @@ pub const ROAMER_CONTACT_DIST: i32 = 1;
 
 /// Dash (§5.2): 6 s cooldown; the 0.4 s burst rounds up to ONE 1s tick on
 /// the server (integer-second table) — the client trims the tail locally.
-pub const DASH_CD_SECS: u64 = 6;
+pub const DASH_CD_SECS: u64 = 3;
 pub const DASH_TICKS: u64 = 1;
 pub const DASH_SPEED_MULT: u32 = 3;
 /// Client-side exact burst (real 0.4 s, mirrors the spec number).

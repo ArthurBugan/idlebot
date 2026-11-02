@@ -87,6 +87,17 @@ pub(crate) fn kill_or_wound(
         ctx.db.mob().mob_id().update(m);
         return;
     }
+    // Spec 034 S4: the death itself rides out as its own event so the
+    // client can pop a bigger burst — kills must read as kills.
+    emit_player_event(
+        ctx,
+        crate::types::CE_MOB_FELL,
+        mob_row.hex_id,
+        0,
+        mob_row.mob_id,
+        &mob_row.kind,
+        now_secs(ctx),
+    );
     ctx.db.mob().mob_id().delete(mob_row.mob_id);
     let Some(kind) = cfg::mob_kind(&mob_row.kind) else { return };
     let now = now_secs(ctx);
@@ -136,12 +147,10 @@ pub fn player_attack(ctx: &ReducerContext, address: &str, direction: i32) -> Res
     if p.attack_cd_until > now {
         return Err(format!("Attack cooldown ({}s)", p.attack_cd_until - now));
     }
-    if now.saturating_sub(p.last_action_at) < crate::types::ACTION_COOLDOWN_SECS {
-        return Err(format!(
-            "Action cooldown ({}s)",
-            crate::types::ACTION_COOLDOWN_SECS
-        ));
-    }
+    // Spec 034 S1: strikes no longer share the build-action ACTION_COOLDOWN —
+    // the weapon's own cd (≥ 1 server round) is the only attack gate, so a
+    // 1 s weapon actually swings every 1 s. Build/repair keep their 5 s gate
+    // in defense.rs; melee and building stop fighting over one meter.
     let range = weapon.range_hexes.max(1);
     // §14 addendum: the bow draws one Arrow per real strike; a dry stack
     // refuses the shot before the arc pick (empty arcs still cost the cd
@@ -186,14 +195,15 @@ pub fn player_attack(ctx: &ReducerContext, address: &str, direction: i32) -> Res
     }
 
     // Swing fx leaves before the row math (fire-and-forget, §8 exhaustively
-    // pinned kinds).
+    // pinned kinds). Spec 034 S3: the detail carries `"<weapon>|<dmg>"` so
+    // the client floats the number without a schema change.
     emit_player_event(
         ctx,
         CE_PLAYER_HIT,
         mob_row.hex_id,
         0,
         mob_row.mob_id,
-        &weapon.name,
+        &format!("{}|{}", weapon.name, weapon.dmg),
         now,
     );
 

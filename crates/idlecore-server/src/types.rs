@@ -753,6 +753,7 @@ pub const CE_TRAP: &str = "trap"; // trap triggered (spike burst / web pin)
 // damage ("player_hit"), player takes it ("player_hurt").
 pub const CE_PLAYER_HIT: &str = "player_hit"; // player deals damage
 pub const CE_PLAYER_HURT: &str = "player_hurt"; // player takes damage
+pub const CE_MOB_FELL: &str = "mob_fell"; // Spec 034 S4: a mob was slain
 
 #[derive(Clone, Debug)]
 #[spacetimedb::table(

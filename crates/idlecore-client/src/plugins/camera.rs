@@ -28,6 +28,27 @@ pub struct ViewExtent {
     pub half_diagonal: f32,
 }
 
+/// Isometric draw-order base for the shake decay (Spec 034 C6): the
+/// trauma decays at this rate (1/s) once a hit shook the view.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct CameraShake {
+    /// 0..1 trauma; amplitude = trauma², decays by `DECAY` per second.
+    pub trauma: f32,
+}
+
+impl Default for CameraShake {
+    fn default() -> Self {
+        Self { trauma: 0.0 }
+    }
+}
+
+impl CameraShake {
+    /// Bump the trauma (clamped): a hit passes ~0.25, a kill/hurt ~0.5.
+    pub fn shake(&mut self, amount: f32) {
+        self.trauma = (self.trauma + amount).min(1.0);
+    }
+}
+
 impl Default for ViewExtent {
     fn default() -> Self {
         // ~a 1600×900 window at the default zoom until the first update.
@@ -72,6 +93,7 @@ pub struct CameraPlugin;
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ViewExtent>()
+            .init_resource::<CameraShake>()
             .add_systems(Update, (follow_camera, handle_zoom, track_view_extent));
     }
 }
@@ -100,6 +122,7 @@ fn follow_step(cam: Vec2, target: Vec2, dt: f32) -> Vec2 {
 fn follow_camera(
     player_transform: Res<PlayerTransform>,
     zoom: Res<CameraZoom>,
+    mut shake: ResMut<CameraShake>,
     body: Query<&Transform, (With<PhysicsBody>, Without<Camera2d>)>,
     mut camera: Query<(&mut Transform, &mut Projection), With<Camera2d>>,
     time: Res<Time>,
@@ -120,13 +143,30 @@ fn follow_camera(
         target.xy(),
         time.delta_secs(),
     );
-    camera_transform.translation.x = next.x;
-    camera_transform.translation.y = next.y;
+
+    // Spec 034 C6: decay the trauma, lift the camera by the squared
+    // amplitude. Critically-damped-style shake without a noise crate.
+    shake.trauma = (shake.trauma - SHAKE_DECAY * time.delta_secs()).max(0.0);
+    let amp = shake.trauma * shake.trauma * 0.35;
+    let (jx, jy) = pseudo_noise(time.elapsed_secs() * 37.0);
+    camera_transform.translation.x = next.x + jx * amp;
+    camera_transform.translation.y = next.y + jy * amp;
     if let Projection::Orthographic(ortho) = projection.as_mut() {
         // Bevy 0.19 `scale` is world-units-per-pixel (higher = zoomed OUT),
         // while `CameraZoom` tracks pixels per world unit (higher = zoomed IN).
         ortho.scale = 1.0 / zoom.scale.max(1e-4);
     }
+}
+
+/// Shake decay per second (view units at max trauma 0.35).
+const SHAKE_DECAY: f32 = 1.6;
+
+/// Two crossed fast sines — a cheap deterministic shake pair.
+fn pseudo_noise(t: f32) -> (f32, f32) {
+    (
+        (t * 23.7).sin() * (t * 61.0).cos(),
+        (t * 17.3).sin() * (t * 61.0).sin(),
+    )
 }
 
 /// Is the cursor currently over the minimap (top-right corner)?

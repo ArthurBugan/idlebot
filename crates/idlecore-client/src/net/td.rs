@@ -10,7 +10,8 @@
 
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
-use std::time::{SystemTime, UNIX_EPOCH};
+// Spec 034: unix time now resolves through `crate::time_ext` (SystemTime
+// panics on wasm; the js Date bridge is the only web-safe path).
 
 use idlecore_core::defense_config as cfg;
 use idlecore_core::grid::TileCoord;
@@ -85,7 +86,6 @@ impl Plugin for TdPlugin {
                     td_pulse,
                     td_place_hints,
                     td_structure_pick,
-                    td_structure_hover,
                     td_selection_fx,
                     update_select_panel,
                     update_select_refund,
@@ -228,6 +228,11 @@ pub struct TdFx {
     pub toasted_waves: HashSet<u64>,
     /// Player weapon-swing pose timer (Spec 027 §9, set by player_hit rows).
     pub player_swing: f32,
+    /// Spec 034 C5: seconds of hitstop left (whole-loop 0.3× time dip).
+    pub hitstop_left: f32,
+    /// Spec 034 C1: unix secs the last strike attempt was sent (hold-to-swing
+    /// cadence is estimated locally; the server still re-checks authoritatively).
+    pub last_attack_sent: f64,
 }
 
 impl Default for TdFx {
@@ -238,6 +243,8 @@ impl Default for TdFx {
             capital_hit: HashMap::default(),
             toasted_waves: HashSet::default(),
             player_swing: 0.0,
+            hitstop_left: 0.0,
+            last_attack_sent: 0.0,
         }
     }
 }
@@ -283,6 +290,8 @@ fn fx_plan(kind: &str) -> Option<FxBirth> {
         // damage blooms red on YOUR hex.
         "player_hit" => Some(FxBirth::PlayerHit),
         "player_hurt" => Some(FxBirth::Impact([1.0, 0.2, 0.15])),
+        // Spec 034 C8 (S4): the slain mob pops bigger — kills read as kills.
+        "mob_fell" => Some(FxBirth::MobFall),
         _ => None,
     }
 }
@@ -297,6 +306,8 @@ enum FxBirth {
     /// slim swing arc on the attacker's own spot handled client-side already
     /// through the mob pose arm (`attacker_mob` is 0 for player swings).
     PlayerHit,
+    /// Spec 034: the mob died — big burst + shake + hitstop.
+    MobFall,
 }
 
 // ---------------------------------------------------------------------------
@@ -594,13 +605,13 @@ struct FxEventRow {
     target_hex_id: u64,
     slot_x: i32,
     slot_y: i32,
+    /// Spec 034 C8: `player_hit`/`mob_fell` carry `"<weapon>|<dmg>"`.
+    detail: String,
 }
 
 fn unix_now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as u64)
-        .unwrap_or(0)
+    // Web-safe: SystemTime panics on wasm — time_ext bridges js Date.
+    crate::time_ext::now_unix_secs()
 }
 
 fn hex_center(q: i32, r: i32) -> (f32, f32) {
@@ -691,9 +702,18 @@ fn sync_td_entities(
     mode: Res<TdBuildMode>,
     panel: Res<CommandPanel>,
     mut mobs: Query<(Entity, &TdMobAnim, &mut TdMove, &mut Transform), With<TdMobMarker>>,
-    structures: Query<Entity, With<TdStructureMarker>>,
-    capitals: Query<Entity, With<TdCapitalMarker>>,
-    overlays: Query<Entity, With<TdOverlay>>,
+    // Spec 034: merged so CameraShake fits the 16-SystemParam cap — the
+    // structures/capitals/overlays trio respawns wholesale every sync
+    // anyway (note below).
+    mut respawn: Query<
+        Entity,
+        Or<(
+            With<TdStructureMarker>,
+            With<TdCapitalMarker>,
+            With<TdOverlay>,
+        )>,
+    >,
+    mut shake: ResMut<crate::plugins::camera::CameraShake>,
 ) {
     if !td_tex.ready || !hex_tex.ready || !net.poll_td_dirty() {
         return;
@@ -781,6 +801,7 @@ fn sync_td_entities(
                 target_hex_id: e.target_hex_id,
                 slot_x: e.target_slot_x,
                 slot_y: e.target_slot_y,
+                detail: e.detail.clone(),
             })
             .collect();
         (
@@ -885,13 +906,7 @@ fn sync_td_entities(
         // updates glides in place and despawns only mobs whose row left
         // the snapshot — a re-spawn would hard-cut every march (the
         // playtest "mobs kind of teleport" report).
-    for e in structures.iter() {
-        commands.entity(e).despawn();
-    }
-    for e in capitals.iter() {
-        commands.entity(e).despawn();
-    }
-    for e in overlays.iter() {
+    for e in respawn.iter() {
         commands.entity(e).despawn();
     }
 
@@ -1005,17 +1020,9 @@ fn sync_td_entities(
             },
             Transform::from_xyz(0.0, height + 0.3, 0.04),
         ));
-        // Spec 024: green level pip above the HP bar from L2. Kept small —
-        // a tile is ~17 wu, anything past ~3 ru dwarfs the building.
-        if let Some(label) = structure_level_label(row.level) {
-            commands.spawn((
-                Text2d::new(label),
-                TextFont { font_size: 2.2.into(), ..default() },
-                TextColor(Color::srgba(0.35, 1.0, 0.55, 0.95)),
-                TextShadow { color: Color::BLACK, offset: Vec2::new(0.12, 0.12) },
-                Transform::from_xyz(row.x, row.y + height + 0.55, prop_depth(row.y) + 12.0),
-            ));
-        }
+        // The always-on green level pip (Spec 024) is gone per playtest —
+        // floating text over grounded buildables never reads cleanly. Level
+        // now shows only in the hover nameplate.
         let _ = row.structure_id;
     }
 
@@ -1125,8 +1132,8 @@ fn sync_td_entities(
     let live_ids: HashSet<u64> = snap.mobs.iter().map(|m| m.mob_id).collect();
     tracker.last_hp.retain(|id, _| live_ids.contains(id));
 
-    // ---- combat fx feed (REV3 §10/§13) ----
-    process_combat_events(&snap, &mut fx, &mut commands, &player_xf);
+    // ---- combat fx feed (REV3 §10/§13 + Spec 034 juice) ----
+    process_combat_events(&snap, &mut fx, &mut commands, &player_xf, &mut shake);
 }
 
 /// REV5 §18: one-hex glide speed from the server's own step cadence — the
@@ -1292,67 +1299,6 @@ fn td_structure_pick(
 }
 
 /// Hover glance (§3.4): a nameplate above the cursor-hovered structure
-/// (0.25 s throttle, transient `TdHoverLabel` sprites).
-fn td_structure_hover(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut acc: Local<f32>,
-    windows: Query<&Window>,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
-    rows: Res<TdStructRows>,
-    select: Res<TdSelect>,
-    td_tex: Res<TdTextures>,
-    labels: Query<Entity, With<TdHoverLabel>>,
-) {
-    *acc += time.delta_secs();
-    if *acc < 0.25 {
-        return;
-    }
-    *acc = 0.0;
-    for e in labels.iter() {
-        commands.entity(e).despawn();
-    }
-    if select.sid.is_some() {
-        return;
-    }
-    let Ok(window) = windows.single() else { return };
-    let Some(cursor) = window.cursor_position() else { return };
-    let Ok((camera, cam_xf)) = cameras.single() else { return };
-    let Ok(world) = camera.viewport_to_world_2d(cam_xf, cursor) else { return };
-    let world = Vec2::new(world.x, world.y);
-    let Some(hover) = rows.rows.iter().find(|row| {
-        let Some(def) = cfg::defense_kind(&row.kind) else { return false };
-        let (_, aspect, _, height) = structure_sprite(&td_tex, &row.kind);
-        structure_cursor_hit(world, row.x, row.y, aspect, height)
-    }) else {
-        return;
-    };
-    let Some(def) = cfg::defense_kind(&hover.kind) else { return };
-    let (_, aspect, _, height) = structure_sprite(&td_tex, &hover.kind);
-    let _ = aspect;
-    // Nameplate: name + level on the first line, HP beneath it, both on a
-    // small dark chip (TextBackgroundColor) so they stay readable against
-    // any terrain. Kept in the world scale — a tile is ~17 wu.
-    let name = format!(
-        "{}{}",
-        kind_display(&hover.kind),
-        structure_level_label(hover.level)
-            .map(|l| format!(" · {l}"))
-            .unwrap_or_default(),
-    );
-    let hp = format!("HP {}/{}", hover.hp, cfg::structure_max_hp(def, hover.level));
-    commands.spawn((
-        TdHoverLabel,
-        Text2d::new(format!("{name}\n{hp}")),
-        TextFont { font_size: 2.6.into(), ..default() },
-        TextColor(Color::srgb(0.92, 0.88, 0.72)),
-        TextShadow { color: Color::BLACK, offset: Vec2::new(0.15, 0.15) },
-        bevy::text::TextBackgroundColor(Color::srgba(0.04, 0.05, 0.08, 0.72)),
-        // Center-anchored two-line block: lift it so it clears the roof.
-        Transform::from_xyz(hover.x, hover.y + height + 3.6, prop_depth(hover.y) + 42.0),
-    ));
-}
-
 /// Per-kind tint for the attack-area square (§3.2 palette; the world arts
 /// render untinted, areas get one tint each so tower footprint stays
 /// distinct from the ring).
@@ -1957,6 +1903,7 @@ fn process_combat_events(
     fx: &mut TdFx,
     commands: &mut Commands,
     player_xf: &PlayerTransform,
+    shake: &mut crate::plugins::camera::CameraShake,
 ) {
     for row in &snap.events {
         if row.event_id <= fx.last_event_id {
@@ -1972,6 +1919,11 @@ fn process_combat_events(
         // 0 — pose goes on the player fx slot below).
         if row.kind == "player_hit" {
             fx.player_swing = 0.35;
+        }
+        // Spec 034: taking a hit shakes + freezes a beat too.
+        if row.kind == "player_hurt" {
+            shake.shake(0.3);
+            fx.hitstop_left = fx.hitstop_left.max(0.05);
         }
         let (tx, ty) = fx_target_pos(row);
         match plan {
@@ -2032,13 +1984,16 @@ fn process_combat_events(
                     ));
                 }
             }
-            // Spec 027: player weapon swing — a gold tracer from YOU to the
-            // victim's hex + the impact bloom (the arc reads as the swing).
+            // Spec 027 + 034: player weapon swing — a gold tracer from YOU to
+            // the victim's hex + offset impact bloom + damage number; a kill
+            // (mob_fell) pops a bigger burst and shakes harder (kills must
+            // read as kills).
             FxBirth::PlayerHit => {
                 let from = Vec2::new(player_xf.translation.x, player_xf.translation.y - 0.4);
                 let to = Vec2::new(tx, ty);
                 let dist = to.distance(from);
                 if dist > 0.4 {
+                    let dir = (to - from) / dist.max(1e-3);
                     commands.spawn((
                         TdBolt {
                             t: 0.0,
@@ -2053,8 +2008,31 @@ fn process_combat_events(
                         },
                         Transform::from_xyz(from.x, from.y, prop_depth(ty) + 43.0),
                     ));
+                    // C9: the bloom lands smeared TOWARD the strike,
+                    // not dead-center on the victim.
+                    impact_sprite(
+                        commands,
+                        [1.0, 0.9, 0.5],
+                        tx + dir.x * 0.25,
+                        ty + dir.y * 0.25,
+                        1.0,
+                    );
+                } else {
+                    impact_sprite(commands, [1.0, 0.9, 0.5], tx, ty, 0.9);
                 }
-                impact_sprite(commands, [1.0, 0.9, 0.5], tx, ty, 0.9);
+                // C8: the damage number floats at the victim.
+                if let Some(dmg) = strike_damage(&row.detail) {
+                    spawn_float_text(commands, tx, ty, &dmg.to_string());
+                }
+                fx.hitstop_left = fx.hitstop_left.max(0.07);
+                shake.shake(0.18);
+            }
+            FxBirth::MobFall => {
+                impact_sprite(commands, [1.0, 0.85, 0.4], tx, ty, 1.7);
+                // A second white ring reads as the "pop".
+                impact_sprite(commands, [1.0, 1.0, 1.0], tx, ty + 0.1, 1.1);
+                fx.hitstop_left = fx.hitstop_left.max(0.09);
+                shake.shake(0.32);
             }
         }
     }
@@ -2073,6 +2051,29 @@ fn impact_sprite(commands: &mut Commands, color: [f32; 3], x: f32, y: f32, size:
     ));
 }
 
+/// Spec 034 C8 — parse the S3 strike payload `"<weapon>|<dmg>"`. Any other
+/// detail (kind names on mob_sourced events) parses to None.
+fn strike_damage(detail: &str) -> Option<u32> {
+    detail.rsplit_once('|')?.1.trim().parse::<u32>().ok()
+}
+
+/// A rising, fading damage number (Spec 034 C8).
+#[derive(Component)]
+struct TdFloatText {
+    t: f32,
+}
+
+fn spawn_float_text(commands: &mut Commands, x: f32, y: f32, text: &str) {
+    commands.spawn((
+        TdFloatText { t: 0.0 },
+        Text2d::new(text),
+        TextFont { font_size: 20.0.into(), ..default() },
+        TextColor(Color::srgb(1.0, 0.95, 0.75)),
+        TextShadow { color: Color::BLACK, offset: Vec2::new(1.0, 1.0) },
+        Transform::from_xyz(x, y + 0.9, prop_depth(y) + 60.0),
+    ));
+}
+
 /// World position where one event's fx lands: the target hex center, or the
 /// exact slot cell when the event names one.
 fn fx_target_pos(row: &FxEventRow) -> (f32, f32) {
@@ -2085,16 +2086,31 @@ fn fx_target_pos(row: &FxEventRow) -> (f32, f32) {
 }
 
 /// Per-frame fx animation: bolt flight, impact bloom + fade, capital hit
-/// flash, mob attack-pose timers, world toast float.
+/// flash, mob attack-pose timers, world toast float, damage numbers
+/// (Spec 034 C8) + the hitstop dip driver (C5).
+#[allow(clippy::type_complexity)]
 fn combat_fx_tick(
     time: Res<Time>,
+    mut ftime: ResMut<Time<Virtual>>,
     mut fx: ResMut<TdFx>,
     mut commands: Commands,
-    mut bolts: Query<(Entity, &mut TdBolt, &mut Transform), Without<TdMobMarker>>,
+    mut bolts: Query<(Entity, &mut TdBolt, &mut Transform), (Without<TdMobMarker>, Without<TdFloatText>)>,
     mut impacts: Query<(Entity, &mut TdImpact, &mut Sprite), (Without<TdMobMarker>, Without<TdCapitalMarker>)>,
-    mut toasts: Query<(Entity, &mut TdWorldToast, &mut TextColor)>,
+    mut toasts: Query<(Entity, &mut TdWorldToast, &mut TextColor), Without<TdFloatText>>,
+    mut floats: Query<
+        (Entity, &mut TdFloatText, &mut Transform, &mut TextColor),
+        (Without<TdMobMarker>, Without<TdWorldToast>, Without<TdBolt>),
+    >,
     mut capitals: Query<(Entity, &TdCapitalMarker, &mut Sprite), (Without<TdMobMarker>, Without<TdImpact>)>,
 ) {
+    // Spec 034 C5 hitstop: while the dip is live the whole virtual loop runs
+    // at 0.3×; movement dt stays clamped so nothing teleports out of it.
+    if fx.hitstop_left > 0.0 {
+        fx.hitstop_left -= ftime.delta_secs();
+        ftime.set_relative_speed(0.3);
+    } else if ftime.relative_speed() != 1.0 {
+        ftime.set_relative_speed(1.0);
+    }
     let dt = time.delta_secs();
     fx.posing.retain(|_, left| {
         *left -= dt;
@@ -2145,6 +2161,18 @@ fn combat_fx_tick(
             continue;
         }
         text_color.0.set_alpha((1.0 - toast.t / 2.0).max(0.0));
+    }
+
+    // Spec 034 C8 damage numbers: rise 0.9 u and fade over 0.7 s.
+    for (entity, mut float, mut transform, mut text_color) in floats.iter_mut() {
+        float.t += dt;
+        if float.t >= 0.7 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let k = float.t / 0.7;
+        transform.translation.y += dt * 0.9;
+        text_color.0.set_alpha(1.0 - k * k);
     }
 
     // Capital hit: red flicker while the timer runs, idle gold otherwise.
@@ -3004,8 +3032,9 @@ fn update_combat_hud(
     }
 }
 
-/// Spec 027 §5.1 input: `KeyF` strikes the facing arc; clicking a mob
-/// strikes toward ITS hex. Space dashes — fired in `player_movement` where
+/// Spec 027 §5.1 + Spec 034 C1: `KeyF` strikes the facing arc; clicking (or
+/// HOLDING) LMB strikes toward the cursor — Terraria auto-swing on hold, HLD
+/// step-in lunge (skins.rs). Space dashes — fired in `player_movement` where
 /// the ×3 local burst already lives.
 #[allow(clippy::type_complexity)]
 fn td_combat_input(
@@ -3014,8 +3043,8 @@ fn td_combat_input(
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     widgets: Query<&Interaction>,
-    mode: Res<TdBuildMode>,
-    panel: Res<CommandPanel>,
+    // Mode + panel merged into one param: the 16-SystemParam cap.
+    mut mode_panel: ParamSet<(Res<TdBuildMode>, Res<CommandPanel>)>,
     mobs: Query<(&TdMobAnim, &Transform), With<TdMobMarker>>,
     mut net: ResMut<Net>,
     player_xf: Res<PlayerTransform>,
@@ -3025,16 +3054,18 @@ fn td_combat_input(
     td_tex: Res<TdTextures>,
     mut skins: ResMut<crate::skins::PlayerSkins>,
     minimap_state: Res<crate::minimap::MinimapState>,
+    mut fx: ResMut<TdFx>,
 ) {
     if net.address.is_none() {
         return;
     }
+    let armed_build = mode_panel.p0().kind.is_some();
+    let panel_open = mode_panel.p1().open || mode_panel.p1().is_open(Tab::Build);
     let Ok(player) = p.single() else { return };
     let now = unix_now_secs();
     if player.death_until_utc > now {
         return; // dead: reducers reject anyway — save the trip
     }
-    let armed_build = mode.kind.is_some() || panel.is_open(Tab::Build);
 
     // ---- KeyF: strike the facing arc ----
     if keys.just_pressed(KeyCode::KeyF) && !armed_build {
@@ -3043,6 +3074,7 @@ fn td_combat_input(
             &mut skins,
             crate::skins::AttackAnim::of_weapon(player.weapon_def().anim),
         );
+        fx.last_attack_sent = now as f64;
         let tx = net.sender();
         send_reducer(&mut net, |r| {
             r.player_attack_then(dir, reducer_report("attack", tx.clone(), 0))
@@ -3068,13 +3100,14 @@ fn td_combat_input(
         });
     }
 
-    // ---- Click a mob: strike toward its hex; click empty ground: strike
-    // that facing (Spec 030 replaces the old left-click teleport). A
-    // structure under the cursor keeps the 026 selection instead.
+    // ---- Click: strike toward the cursor (mob under cursor → strike at
+    // it; structure → the 026 selection). Spec 034 rev: hold-to-swing was
+    // PLAY-TEST REJECTED — a held button read as endless sliding + machine
+    // swings; only a real click strikes.
     if armed_build || !mouse.just_pressed(MouseButton::Left) {
         return;
     }
-    if panel.open {
+    if panel_open {
         // The shared command panel is up — clicks belong to its widgets
         // (the panel background carries no Interaction, so guard here too).
         return;
@@ -3176,10 +3209,6 @@ struct TdSelRemove;
 struct TdSelRemoveTxt;
 #[derive(Component)]
 struct TdSelRefund;
-
-/// Hover nameplate above the cursor's structure (transient, §3.4).
-#[derive(Component)]
-struct TdHoverLabel;
 
 /// Transient overlay sprites: selection ring, attack area, build preview.
 #[derive(Component)]
@@ -4193,6 +4222,7 @@ mod tests_fx {
             "trap", // REV4 spike/web/fire traps
             "player_hit", // Spec 027 §8: my swing lands
             "player_hurt", // I take damage
+            "mob_fell", // Spec 034 S4: a mob was slain
         ];
         for kind in server_kinds {
             assert!(
@@ -4210,6 +4240,27 @@ mod tests_fx {
         }
         assert!(matches!(fx_plan("player_hit"), Some(FxBirth::PlayerHit)));
         assert!(matches!(fx_plan("player_hurt"), Some(FxBirth::Impact(_))));
+        assert!(matches!(fx_plan("mob_fell"), Some(FxBirth::MobFall)));
+    }
+
+    /// Spec 034 C8: the S3 strike payload `"<weapon>|<dmg>"` parses; every
+    /// other detail shape (mob kind names) parses to None.
+    #[test]
+    fn strike_damage_parses_the_pipe_payload() {
+        assert_eq!(strike_damage("Gold Sword|16"), Some(16));
+        assert_eq!(strike_damage("Wood Sickle|8"), Some(8));
+        assert_eq!(strike_damage("Slime"), None, "mob kinds have no pipe");
+        assert_eq!(strike_damage("kind|notanumber"), None);
+        assert_eq!(strike_damage(""), None);
+    }
+
+    /// Spec 034 T2: dash cadence — 3 s, not the old 6 s.
+    #[test]
+    fn dash_cd_is_three_secs() {
+        assert_eq!(
+            idlecore_core::player_combat::DASH_CD_SECS,
+            3
+        );
     }
 
     #[test]

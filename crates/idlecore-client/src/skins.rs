@@ -269,6 +269,11 @@ pub struct PlayerSkins {
     /// the clip and falls back to idle/walk.
     pub attack: Option<AttackAnim>,
     pub attack_time: f32,
+    /// Spec 034 C3 (HLD lunge): set alongside a fresh `attack` start, then
+    /// consumed by `player_movement` as a single velocity impulse toward the
+    /// strike — the exp-ease recovers it inside the clip, so nothing has to
+    /// reverse it by hand.
+    pub lunge_pending: bool,
 }
 
 /// Advance (and wrap) the run frame index.
@@ -594,7 +599,25 @@ pub fn start_attack(skins: &mut PlayerSkins, anim: AttackAnim) {
     if skins.attack != Some(anim) || skins.attack_time != 0.0 {
         skins.attack = Some(anim);
         skins.attack_time = 0.0;
+        // Spec 034 C3: every fresh swing arms a lunge impulse (HLD step.
+        // Player movement consumes + disarms it once).
+        skins.lunge_pending = true;
     }
+}
+
+/// Spec 034 C3: lunge impulse size (u/s) — an exp-ease at the movement
+/// controller's rate covers ≈ 0.2 tile forward inside the recovery, then
+/// falls back under the commanded speed. Pure so the feel is unit-testable.
+pub const LUNGE_IMPULSE: f32 = 6.0;
+
+/// True when a lunge impulse should fire this frame (a fresh swing started
+/// since the last movement step).
+pub fn consume_lunge(skins: &mut PlayerSkins) -> bool {
+    if skins.lunge_pending {
+        skins.lunge_pending = false;
+        return true;
+    }
+    false
 }
 
 /// Eight-way facing derived from the movement angle (0 = east, +PI/2 = north).

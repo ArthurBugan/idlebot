@@ -606,7 +606,7 @@ pub fn enqueue_model_slices(
     r(atlas::TD_MYCONID_RED, "models/Enemy/Myconid/Red/Idle.png", 0, 0, 32, 32);
     r(atlas::TD_MYCONID_RED_W0, "models/Enemy/Myconid/Red/Walk.png", 0, 0, 32, 32);
     r(atlas::TD_MYCONID_RED_W1, "models/Enemy/Myconid/Red/Walk.png", 32, 0, 32, 32);
-    r(atlas::TD_VENOM_BLOOM, "models/Enemy/Venom Bloom/Purple/idle.png", 0, 0, 48, 48);
+    r(atlas::TD_VENOM_BLOOM, "models/Enemy/Venom Bloom/Purple/Idle.png", 0, 0, 48, 48);
     // Capital: one full house (128×112) — a city hall reads better than a well.
     r(atlas::TD_CAPITAL, "models/Objects/Exterior/Houses/1.png", 0, 0, 128, 112);
     // Barricade: the standing stone chunk at the sheet's center (verified

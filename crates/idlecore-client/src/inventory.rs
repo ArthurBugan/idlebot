@@ -603,11 +603,9 @@ fn update_hotbar_xp_bar(
 }
 
 /// Unix seconds now (cooldown endpoints come from the server clock).
+/// Web-safe: `SystemTime` panics on wasm (time_ext has the js Date path).
 fn unix_now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    crate::time_ext::now_unix_secs()
 }
 
 /// Animated 5 s action-cooldown over the ACTIVE hotbar slot (global game
