@@ -720,6 +720,26 @@ pub struct Mob {
     /// Spawn stamp for the 300 s roamer lifetime (0 = legacy row).
     #[default(0)]
     pub born_at_secs: u64,
+    /// REV (line spawn): the mob is LAUNCHED at this timestamp — before it,
+    /// it is invisible to combat, march, targeting and the client render.
+    /// The wave's raiders rip in one-by-one so the column queues along the
+    /// lane. 0 = already active.
+    #[default(0)]
+    pub spawn_at_secs: u64,
+    /// REV (lane discipline): the next `path_hexes` node this raider must
+    /// reach before it may advance. A knock or a chase never moves it past
+    /// this index — the walk back always re-enters the lane where it left,
+    /// so raiders cannot skip ahead and cut a bend across the grass.
+    /// Index `0` / unused when the trace is empty (roamers, legacy capital).
+    #[default(0)]
+    pub path_idx: u32,
+}
+
+/// Active-mob gate (REV line spawn): rows not yet born stay out of every
+/// combat/march/target pass — the wave's raiders join battle one-by-one.
+#[inline]
+pub fn mob_is_active(m: &Mob, now: u64) -> bool {
+    m.spawn_at_secs <= now
 }
 
 /// One raid opened against a capital. An open wave (`ended_at IS NULL`) blocks

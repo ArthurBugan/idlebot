@@ -73,6 +73,9 @@ pub fn load_item_icons(
     by_item.insert("CapitalCore".to_string(), td.icon_core.clone());
     by_item.insert("MetalPart".to_string(), td.icon_part.clone());
     by_item.insert("Bone".to_string(), td.icon_bone.clone());
+    // REV (drop icons): every mob drop renders a real sprite — SlimeGel is
+    // the green potion vial crop from our own Extras sheet.
+    by_item.insert("SlimeGel".to_string(), td.icon_gel.clone());
     // Spec 027 §14: real weapon icons + the proper arrow art (the tower
     // "arrow" icon is a scarecrow crop — never an ammo pictogram).
     by_item.insert("Arrow".to_string(), props.icon_arrow_item.clone());

@@ -341,6 +341,9 @@ pub mod atlas {
     pub const ICON_CAPITAL_CORE: &str = "icon_capital_core";
     pub const ICON_METAL_PART: &str = "icon_metal_part";
     pub const ICON_BONE: &str = "icon_bone";
+    // REV (drop icons): slime gel — the green potion vial cell from the
+    // Extras sheet; every mob drop now has a real sprite.
+    pub const ICON_SLIME_GEL: &str = "icon_slime_gel";
     pub const ICON_BONE_BARRICADE: &str = "icon_bone_barricade";
     pub const ICON_ARROW_TOWER: &str = "icon_arrow_tower";
     pub const ICON_BALLISTA: &str = "icon_ballista";
@@ -624,6 +627,8 @@ pub fn enqueue_model_slices(
     r(atlas::ICON_CAPITAL_CORE, "models/Objects/Exterior/Houses/1.png", 0, 0, 128, 112);
     r(atlas::ICON_METAL_PART, "models/Icons/RPG icons/Extras/Bars and ores.png", 16, 0, 16, 16);
     r(atlas::ICON_BONE, "models/Icons/RPG icons/Extras/Bones.png", 0, 0, 16, 16);
+    // REV: the gel drop icon — green potion vial (row 1, col 0).
+    r(atlas::ICON_SLIME_GEL, "models/Icons/RPG icons/Extras/Potions.png", 0, 16, 16, 16);
     r(atlas::ICON_BONE_BARRICADE, "models/Objects/Exterior/Fence and Bridge/Fence Stone.png", 8, 20, 32, 18);
     r(atlas::ICON_ARROW_TOWER, "models/Objects/Exterior/Scarescrow.png", 4, 0, 24, 32);
     r(atlas::ICON_BALLISTA, "models/Objects/Exterior/Hay Bales.png", 0, 0, 16, 16);

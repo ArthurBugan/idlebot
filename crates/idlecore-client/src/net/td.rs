@@ -83,6 +83,7 @@ impl Plugin for TdPlugin {
                     mob_spawn_pop,
                     mob_fade_tick,
                     combat_fx_tick,
+                    load_dmg_font,
                     td_pulse,
                     td_place_hints,
                     td_structure_pick,
@@ -176,6 +177,8 @@ pub struct TdTextures {
     pub icon_core: Handle<Image>,
     pub icon_part: Handle<Image>,
     pub icon_bone: Handle<Image>,
+    /// REV (drop icons): slime gel — green potion vial slice.
+    pub icon_gel: Handle<Image>,
     pub icon_barricade: Handle<Image>,
     pub icon_arrow: Handle<Image>,
     pub icon_ballista: Handle<Image>,
@@ -238,6 +241,11 @@ pub struct TdFx {
     /// Spec 034 C1: unix secs the last strike attempt was sent (hold-to-swing
     /// cadence is estimated locally; the server still re-checks authoritatively).
     pub last_attack_sent: f64,
+    /// REV (Cabal numbers): rolling salt for the per-hit jitter — back-to-back
+    /// hits scatter left/right so rapid strikes stack a readable column.
+    pub dmg_salt: u32,
+    /// REV (Zelda numbers): the bold game font for the pop numbers.
+    pub font_dmg: Option<Handle<Font>>,
 }
 
 impl Default for TdFx {
@@ -250,6 +258,8 @@ impl Default for TdFx {
             player_swing: 0.0,
             hitstop_left: 0.0,
             last_attack_sent: 0.0,
+            dmg_salt: 0,
+            font_dmg: None,
         }
     }
 }
@@ -294,7 +304,7 @@ fn fx_plan(kind: &str) -> Option<FxBirth> {
         // swing reads as an arc + impact on the hit mob's hex; taking
         // damage blooms red on YOUR hex.
         "player_hit" => Some(FxBirth::PlayerHit),
-        "player_hurt" => Some(FxBirth::Impact([1.0, 0.2, 0.15])),
+        "player_hurt" => Some(FxBirth::PlayerHurt),
         // Spec 034 C8 (S4): the slain mob pops bigger — kills read as kills.
         "mob_fell" => Some(FxBirth::MobFall),
         _ => None,
@@ -311,6 +321,9 @@ enum FxBirth {
     /// slim swing arc on the attacker's own spot handled client-side already
     /// through the mob pose arm (`attacker_mob` is 0 for player swings).
     PlayerHit,
+    /// REV (damage numbers): the PLAYER takes a hit — red impact + a small
+    /// red number popping at your hex.
+    PlayerHurt,
     /// Spec 034: the mob died — big burst + shake + hitstop.
     MobFall,
 }
@@ -432,6 +445,10 @@ fn init_td_textures(atlas: Res<crate::slice::SlicedAtlas>, mut td: ResMut<TdText
     ) else {
         return;
     };
+    // REV (drop icons): every mob drop must render a real sprite.
+    let Some(icon_gel) = g(atlas::ICON_SLIME_GEL) else {
+        return;
+    };
     let (Some(icon_barricade), Some(icon_arrow), Some(icon_ballista)) = (
         g(atlas::ICON_BONE_BARRICADE),
         g(atlas::ICON_ARROW_TOWER),
@@ -481,6 +498,7 @@ fn init_td_textures(atlas: Res<crate::slice::SlicedAtlas>, mut td: ResMut<TdText
     td.icon_core = icon_core;
     td.icon_part = icon_part;
     td.icon_bone = icon_bone;
+    td.icon_gel = icon_gel;
     td.icon_barricade = icon_barricade;
     td.icon_arrow = icon_arrow;
     td.icon_ballista = icon_ballista;
@@ -676,6 +694,8 @@ struct StructRow {
 struct MobRow {
     mob_id: u64,
     wave_id: u64,
+    // REV (line spawn): the launch timestamp — unborn mobs are invisible.
+    spawn_at: u64,
     x: f32,
     y: f32,
     kind: String,
@@ -888,6 +908,7 @@ fn sync_td_entities(
             .map(|m| MobRow {
                 mob_id: m.mob_id,
                 wave_id: m.wave_id,
+                spawn_at: m.spawn_at_secs,
                 x: m.position_x,
                 y: m.position_y,
                 kind: m.kind.clone(),
@@ -1139,6 +1160,13 @@ fn sync_td_entities(
         .map(|(e, anim, _, _)| (anim.mob_id, e))
         .collect();
     for row in &snap.mobs {
+        // Line spawn REV: unborn raiders are invisible to the world — their
+        // entity only pops in once `spawn_at` arrives (spawn-pop fx rides the
+        // fresh-marker branch below).
+        if row.spawn_at > snap.now {
+            alive.remove(&row.mob_id);
+            continue;
+        }
         let Some(mob) = cfg::mob_kind(&row.kind) else { continue };
         let ms = mob_sprite_kind(&td_tex, &row.kind);
         let aspect = ms.aspect;
@@ -2076,6 +2104,25 @@ fn process_combat_events(
                 let size = if row.kind == "struct_fell" { 1.6 } else { 1.0 };
                 impact_sprite(commands, color, tx, ty, size);
             }
+            FxBirth::PlayerHurt => {
+                // REV: red impact on YOUR hex + the hot-red damage number
+                // pops near you (shake/hitstop run in the `player_hurt`
+                // pre-match block above).
+                impact_sprite(commands, [1.0, 0.2, 0.15], tx, ty, 1.0);
+                if let Some(dmg) = strike_damage(&row.detail) {
+                    let jitter = dmg_jitter(fx.dmg_salt);
+                    fx.dmg_salt = fx.dmg_salt.wrapping_add(1);
+                    spawn_zelda_number(
+                        commands,
+                        zelda_font(fx),
+                        tx,
+                        ty,
+                        &dmg.to_string(),
+                        Color::srgb(1.0, 0.28, 0.18),
+                        jitter,
+                    );
+                }
+            }
             FxBirth::CapitalHit => {                fx.capital_hit.insert(row.capital_id, 0.5);
                 if row.wave_id != 0 && fx.toasted_waves.insert(row.wave_id) {
                     commands.spawn((
@@ -2127,9 +2174,19 @@ fn process_combat_events(
                 } else {
                     impact_sprite(commands, [1.0, 0.9, 0.5], tx, ty, 0.9);
                 }
-                // C8: the damage number floats at the victim.
+                // C8 + REV (Zelda numbers): ember pop above the victim.
                 if let Some(dmg) = strike_damage(&row.detail) {
-                    spawn_float_text(commands, tx, ty, &dmg.to_string());
+                    let jitter = dmg_jitter(fx.dmg_salt);
+                    fx.dmg_salt = fx.dmg_salt.wrapping_add(1);
+                    spawn_zelda_number(
+                        commands,
+                        zelda_font(fx),
+                        tx,
+                        ty,
+                        &dmg.to_string(),
+                        Color::srgb(1.0, 0.52, 0.24),
+                        jitter,
+                    );
                 }
                 fx.hitstop_left = fx.hitstop_left.max(0.07);
                 shake.shake(0.18);
@@ -2164,21 +2221,73 @@ fn strike_damage(detail: &str) -> Option<u32> {
     detail.rsplit_once('|')?.1.trim().parse::<u32>().ok()
 }
 
-/// A rising, fading damage number (Spec 034 C8).
+/// REV (Zelda numbers) — a hurt-number pop rebuilt from scratch after two
+/// rejected drafts (20 wu billboard, 7 wu seed). The units trap: Text2d
+/// `font_size` is WORLD units, and a raider sprite is 1.8 wu — glyphs must
+/// live in the 0.6–1.0 band. Motion mirrors Breath of the Wild: spawn
+/// zero-scale, an overshoot pop to 1.18, an ease-out rise, alpha solid in
+/// the first 65% so fast strikes stack before they fade.
 #[derive(Component)]
 struct TdFloatText {
     t: f32,
+    /// Spawn anchor (head of the victim, jitter already applied).
+    base: Vec2,
+    /// Total rise budget in wu.
+    rise: f32,
 }
 
-fn spawn_float_text(commands: &mut Commands, x: f32, y: f32, text: &str) {
+/// REV (Zelda numbers): per-hit lateral scatter in ±0.35 world units —
+/// rapid strikes land as a jittered column.
+fn dmg_jitter(salt: u32) -> f32 {
+    // golden-ratio mix, deterministic.
+    let h = salt.wrapping_mul(0x9E37_79B9).wrapping_mul(0x9E37_79B9);
+    let tap = (h >> 16) % 9;
+    (tap as f32 - 4.0) * 0.088
+}
+
+/// REV (Zelda numbers): a bold caption with a warm ember fill and a dark
+/// outline. `fill` distinguishes the victim: ember-orange on a mob, hot red
+/// when YOU eat it. Spawns at zero scale — the pop-in lives in
+/// `combat_fx_tick`.
+fn spawn_zelda_number(
+    commands: &mut Commands,
+    font: Option<&Handle<Font>>,
+    x: f32,
+    y: f32,
+    text: &str,
+    fill: Color,
+    jitter: f32,
+) {
+    let base = Vec2::new(x + jitter, y + 0.55);
     commands.spawn((
-        TdFloatText { t: 0.0 },
+        TdFloatText { t: 0.0, base, rise: 0.85 },
         Text2d::new(text),
-        TextFont { font_size: 20.0.into(), ..default() },
-        TextColor(Color::srgb(1.0, 0.95, 0.75)),
-        TextShadow { color: Color::BLACK, offset: Vec2::new(1.0, 1.0) },
-        Transform::from_xyz(x, y + 0.9, prop_depth(y) + 60.0),
+        TextFont {
+            font: font.map(bevy::text::FontSource::from).unwrap_or_default(),
+            font_size: 0.85.into(),
+            ..default()
+        },
+        TextColor(fill),
+        TextShadow {
+            color: Color::srgb(0.3, 0.06, 0.03),
+            offset: Vec2::new(0.034, 0.034),
+        },
+        Transform::from_translation(Vec3::new(base.x, base.y, prop_depth(y) + 60.0))
+            .with_scale(Vec3::ZERO),
     ));
+}
+
+/// Lazily loads the bold game font once so the pop numbers can thread it
+/// through `TdFx`.
+fn load_dmg_font(mut fx: ResMut<TdFx>, asset: Res<AssetServer>) {
+    if fx.font_dmg.is_none() {
+        fx.font_dmg = Some(asset.load("fonts/FiraSans-Bold.ttf"));
+    }
+}
+
+/// Font accessor: the fx birth path reads the handle through `TdFx`.
+fn zelda_font(fx: &TdFx) -> Option<&Handle<Font>> {
+    fx.font_dmg.as_ref()
 }
 
 /// World position where one event's fx lands: the target hex center, or the
@@ -2270,16 +2379,32 @@ fn combat_fx_tick(
         text_color.0.set_alpha((1.0 - toast.t / 2.0).max(0.0));
     }
 
-    // Spec 034 C8 damage numbers: rise 0.9 u and fade over 0.7 s.
+    // REV (Zelda numbers): zero-scale spawn → overshoot pop → ease-out rise
+    // → fade only in the tail, so rapid strikes stack as a solid column.
     for (entity, mut float, mut transform, mut text_color) in floats.iter_mut() {
         float.t += dt;
-        if float.t >= 0.7 {
+        const T_POP: f32 = 0.14;
+        const T_LIFE: f32 = 0.8;
+        if float.t >= T_LIFE {
             commands.entity(entity).despawn();
             continue;
         }
-        let k = float.t / 0.7;
-        transform.translation.y += dt * 0.9;
-        text_color.0.set_alpha(1.0 - k * k);
+        let k = (float.t / T_LIFE).clamp(0.0, 1.0);
+        // Ease-out quad rise off the base anchor.
+        let eased = 1.0 - (1.0 - k) * (1.0 - k);
+        transform.translation.x = float.base.x;
+        transform.translation.y = float.base.y + float.rise * eased;
+        // Overshoot scale-in: 0 → ~1.18 → 1.0 inside T_POP.
+        let scale = if float.t < T_POP {
+            let p = float.t / T_POP;
+            p * (1.0 + 0.18 * (p * std::f32::consts::PI).sin())
+        } else {
+            1.0
+        };
+        transform.scale = Vec3::splat(scale);
+        // Fade only in the final 35% of the life.
+        let fade_k = ((k - 0.65) / 0.35).clamp(0.0, 1.0);
+        text_color.0.set_alpha(1.0 - fade_k);
     }
 
     // Capital hit: red flicker while the timer runs, idle gold otherwise.
@@ -3055,6 +3180,7 @@ fn update_combat_hud(
     time: Res<Time>,
     inv: Res<crate::inventory::Inventory>,
     player: Query<&crate::player::ClientPlayer>,
+    net: Option<Res<crate::net::plugin::Net>>,
     mut throttle: Local<f32>,
     mut ps: ParamSet<(
         Query<(&mut Node, &mut BackgroundColor), With<TdHpFill>>,
@@ -3073,9 +3199,13 @@ fn update_combat_hud(
     let Ok(p) = player.single() else { return };
     let now = unix_now_secs();
 
-    // The combat columns mirror only once logged in (0 everywhere before) —
-    // keep the chip and veil hidden until a real stamp arrives.
-    let known = p.dash_cd_until_utc != 0 || p.hostile_until_utc != 0 || p.grace_until_utc != 0;
+    // REV (hp bar): show as soon as we are CONNECTED — the old gate needed
+    // a dash/aggro stamp first, so a fresh player never saw the bar until
+    // they fought. Unseeded hp renders full (server `hp_of` mirror).
+    let known = net
+        .as_ref()
+        .map(|n| n.address.is_some())
+        .unwrap_or(false);
     if !known {
         if let Ok(mut text) = ps.p2().single_mut() {
             **text = String::new();
@@ -4339,6 +4469,10 @@ mod tests_fx {
         }
         assert!(fx_plan("unknown-later").is_none());
         assert!(matches!(fx_plan("capital_hit"), Some(FxBirth::CapitalHit)));
+        assert!(
+            matches!(fx_plan("player_hurt"), Some(FxBirth::PlayerHurt)),
+            "REV: player_hurt pops a red damage number"
+        );
         for kind in ["shot", "bomb", "spore"] {
             assert!(matches!(fx_plan(kind), Some(FxBirth::Bolt(_))));
         }
@@ -4346,7 +4480,6 @@ mod tests_fx {
             assert!(matches!(fx_plan(kind), Some(FxBirth::Impact(_))));
         }
         assert!(matches!(fx_plan("player_hit"), Some(FxBirth::PlayerHit)));
-        assert!(matches!(fx_plan("player_hurt"), Some(FxBirth::Impact(_))));
         assert!(matches!(fx_plan("mob_fell"), Some(FxBirth::MobFall)));
     }
 
@@ -4361,12 +4494,26 @@ mod tests_fx {
         assert_eq!(strike_damage(""), None);
     }
 
-    /// Spec 034 T2: dash cadence — 3 s, not the old 6 s.
+    /// REV (Cabal numbers): the per-hit jitter hugs the head and varies.
     #[test]
-    fn dash_cd_is_three_secs() {
+    fn cabal_jitter_stays_near_the_head_and_varies() {
+        let base = dmg_jitter(0);
+        assert!(base.abs() <= 0.36, "jitter {base} leaves the head zone");
+        let mut varied = false;
+        for salt in 0..40u32 {
+            if dmg_jitter(salt) != dmg_jitter(salt.wrapping_add(1)) {
+                varied = true;
+            }
+        }
+        assert!(varied, "back-to-back hits should scatter");
+    }
+
+    /// REV polish: dash cadence — 2 s (was 3, before that 6).
+    #[test]
+    fn dash_cd_is_two_secs() {
         assert_eq!(
             idlecore_core::player_combat::DASH_CD_SECS,
-            3
+            2
         );
     }
 

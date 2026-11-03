@@ -11,7 +11,7 @@ use crate::economy::{add_xp, find_player};
 use crate::types::{
     match_recipe, object_removed, player, player_item, world_object, BENCH_LOG_COST,
     CRAFT_XP, GATHER_XP, GRASS_GROWTH_SECS, GRASS_PER_TUFT, HARVEST_TREE_XP, ITEM_AXE, ITEM_GRASS,
-    ITEM_LOG, ITEM_METAL_PART, ITEM_SEED, ITEM_STONE, ITEM_WOOD, ITEM_WORKBENCH, MAX_OBJECTS_PER_HEX, OBJ_CRAFT_BENCH,
+    ITEM_LOG, ITEM_METAL_PART, ITEM_PICKAXE, ITEM_SEED, ITEM_STONE, ITEM_WOOD, ITEM_WORKBENCH, MAX_OBJECTS_PER_HEX, OBJ_CRAFT_BENCH,
     OBJ_GRASS,
     OBJ_LOG,
     OBJ_ROCK, OBJ_TREE, mined_metal_part, STONE_PER_ROCK, TREE_GROWTH_SECS, WOOD_PER_TREE,
@@ -285,6 +285,19 @@ pub fn count_item(ctx: &ReducerContext, address: &str, item: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// Tool ownership gate (REV starter kit): either the plain tool item
+/// ("Axe", "Pickaxe", "Hoe") or ANY weapon-ladder variant of it ("Wood
+/// Axe", "Iron Pickaxe", ...) counts. Starter tools keep every player
+/// enabled; material upgrades stay optional purchases.
+pub fn has_tool(ctx: &ReducerContext, address: &str, kind: &str) -> bool {
+    if count_item(ctx, address, kind) > 0 {
+        return true;
+    }
+    idlecore_core::player_combat::WEA_MATERIALS
+        .iter()
+        .any(|(mat, _)| count_item(ctx, address, &format!("{mat} {kind}")) > 0)
+}
+
 /// Record a consumed natural slot so the deterministic roller never
 /// resurrects it (and so planted trees keep their slot reserved).
 /// Deterministic respawn delay for one consumed slot: 10-60 minutes.
@@ -384,6 +397,14 @@ pub fn gather_object(
             tracing::info!("GATHER {address}: grass @hex {}", obj.hex_id);
         }
         OBJ_ROCK => {
+            // REV starter kit: mining stone needs the Pickaxe family —
+            // bare hands can still gather grass/logs.
+            if !has_tool(ctx, &p.address, ITEM_PICKAXE) {
+                return Err(
+                    "You need a Pickaxe to mine stone — gather logs, build a bench, then craft one"
+                        .to_string(),
+                );
+            }
             ctx.db.world_object().object_id().delete(object_id);
             consume_slot(ctx, obj.hex_id, obj.slot);
             add_item(ctx, &p.address, ITEM_STONE, STONE_PER_ROCK);
@@ -410,7 +431,8 @@ pub fn gather_object(
             }
             // Trees require an axe (Spec 022 progression: logs -> bench -> axe,
             // only then can the tree be felled). Bare hands cannot chop wood.
-            if count_item(ctx, &p.address, ITEM_AXE) == 0 {
+            // REV starter kit: any material tier of the axe qualifies.
+            if !has_tool(ctx, &p.address, "Axe") {
                 return Err(
                     "You need an Axe to chop a tree — gather logs, build a bench, then craft an Axe"
                         .to_string(),

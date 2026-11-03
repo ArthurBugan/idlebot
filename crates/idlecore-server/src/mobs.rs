@@ -31,42 +31,45 @@ const RAID_TICK_AUDIT: &str = "raid_tick";
 
 /// March target for one raider on the FIXED path (pure, unit-testable):
 /// `path` is the stamped trace, spawn hex first, the capital hex last.
-/// The target is the next path hex toward the capital. The re-entry rule
-/// after a hunt chase: the mob snaps back to the nearest path node
-/// (ties → the node closer to the spawn) and steps from there.
 ///
-/// An empty path = legacy capital without a stamped trace → the target
-/// stays the capital hex itself (the old free march).
-pub fn raid_march_target(
+/// REV (lane discipline): the raider carrying `path_idx` must reach
+/// `path[path_idx]` IN ORDER before advancing further. Standing ON the
+/// trace is progress — the position itself derives the claimed node, so a
+/// shove onto a later node just continues from there (on the lane).
+/// OFF-trace (a knock or a player chase): the target is the NEAREST node
+/// at or before the claimed index — never a later one — so the walk back
+/// cannot cut a bend across the grass or skip ahead. Ties → spawn side.
+///
+/// An empty path = legacy capital without a stamped trace → the caller
+/// keeps the old free march at the capital hex itself.
+pub fn raid_lane_target(
     mob_q: i32,
     mob_r: i32,
     path: &[(i32, i32)],
-    cap_q: i32,
-    cap_r: i32,
-) -> (i32, i32) {
+    path_idx: u32,
+) -> (usize, (i32, i32)) {
     if path.is_empty() {
-        return (cap_q, cap_r);
+        // Defensive: the caller keeps the legacy free march for a traceless
+        // capital; this branch only exists so the pure fn can't panic.
+        return (0, (mob_q, mob_r));
     }
-    if (mob_q, mob_r) == (cap_q, cap_r) {
-        return (cap_q, cap_r);
+    let last = path.len().saturating_sub(1);
+    // Standing ON the trace: progress IS the position; the next node in
+    // order is the target (capped at the capital — standing there holds).
+    if let Some(j) = path.iter().position(|&n| n == (mob_q, mob_r)) {
+        let next = (j + 1).min(last);
+        return (next, path[next]);
     }
-    // Nearest path node; deterministic tie → smaller index (spawn side).
+    // Off-trace: the nearest node at or BEFORE the claimed index.
+    let cap = (path_idx as usize).min(last);
     let mut best: (i32, usize) = (i32::MAX, 0);
-    for (i, &(nq, nr)) in path.iter().enumerate() {
+    for (i, &(nq, nr)) in path[..=cap].iter().enumerate() {
         let d = tile_distance(mob_q, mob_r, nq, nr);
         if (d, i) < best {
             best = (d, i);
         }
     }
-    let (dist, idx) = best;
-    // Standing exactly on the last node non-capital? Can't (capital is the
-    // goal). Standing ON a node: its successor. Off-trace: the step onto
-    // the node (the first re-entry keeps free movement honest).
-    let on_node = dist == 0;
-    if on_node && idx + 1 < path.len() {
-        return path[idx + 1];
-    }
-    path[idx]
+    (best.1, path[best.1])
 }
 
 // ---------------------------------------------------------------------------
@@ -231,11 +234,18 @@ fn spawn_wave(ctx: &ReducerContext, capital: &Capital, now: u64) -> bool {
     for (i, kind_name) in composition.iter().enumerate() {
         let Some(kind) = cfg::mob_kind(kind_name) else { continue };
         // Rooted kinds spawn on an inner territory hex; everyone else on a
-        // pushed-out border point.
-        let (sq, sr) = if kind.step_interval_secs == 0 {
-            inner_iter.next().unwrap_or(points[i % points.len()])
+        // pushed-out border point. REV: raiders pop in STAGGERED — raider i
+        // launches `i` ticks after the wave opened, so each previous mob
+        // already marched one hex down the lane (a walking line, no pile).
+        let (sq, sr, spawn_at) = if kind.step_interval_secs == 0 {
+            let (iq, ir) = inner_iter.next().unwrap_or(points[i % points.len()]);
+            (iq, ir, now)
         } else {
-            points[i % points.len()]
+            (
+                points[i % points.len()].0,
+                points[i % points.len()].1,
+                now + i as u64,
+            )
         };
         let (sx, sy) = tile_center(sq, sr);
         ctx.db.mob().insert(Mob {
@@ -255,6 +265,10 @@ fn spawn_wave(ctx: &ReducerContext, capital: &Capital, now: u64) -> bool {
             aggro_until_secs: 0,
             pack_id: 0,
             born_at_secs: 0,
+            spawn_at_secs: spawn_at,
+            // Lane discipline: the mob stands on path[0] and must reach
+            // path[1] next (legacy capitals without a trace start flat 0).
+            path_idx: if capital.path_hexes.is_empty() { 0 } else { 1 },
         });
     }
     let mut cap_row = capital.clone();
@@ -630,6 +644,7 @@ pub fn tick(ctx: &ReducerContext) {
             .mob()
             .iter()
             .filter(|m| m.hp > mob_damage.get(&m.mob_id).copied().unwrap_or(0))
+            .filter(|m| crate::types::mob_is_active(m, now))
             .filter(|m| tile_distance(m.hex_q, m.hex_r, tq, tr) <= kind.range_hexes as i32)
             .min_by_key(|m| (tile_distance(m.hex_q, m.hex_r, tq, tr), m.mob_id));
         if let Some(target) = target {
@@ -650,7 +665,8 @@ pub fn tick(ctx: &ReducerContext) {
         let (tq, tr) = hex_coords_of(trap.hex_id);
         let dps = cfg::structure_dps(kind, trap.level);
         for m in ctx.db.mob().iter().filter(|m| {
-            tile_distance(m.hex_q, m.hex_r, tq, tr) <= kind.range_hexes as i32
+            crate::types::mob_is_active(m, now)
+                && tile_distance(m.hex_q, m.hex_r, tq, tr) <= kind.range_hexes as i32
         }) {
             *mob_damage.entry(m.mob_id).or_insert(0) += dps;
             // Roamer kills credit the trap owner (Spec 027 §7).
@@ -809,6 +825,9 @@ pub fn tick(ctx: &ReducerContext) {
     for mob in mob_rows.iter() {
         if mob_damage.contains_key(&mob.mob_id) {
             continue; // fell to tower fire this tick
+        }
+        if !crate::types::mob_is_active(mob, now) {
+            continue; // line spawn REV: not launched yet — no logic at all
         }
         // Roamers (Spec 027 §7) marched/striked in `combat::roamer_pass` —
         // the raid pipeline owns capital-raiders only.
@@ -976,17 +995,25 @@ pub fn tick(ctx: &ReducerContext) {
             // strictly-closing greedy can only step onto it (walls/traps
             // machinery intact). REV: the trace is the stamped curved path,
             // not the straight spawn→capital line.
-            let (mq, mr) = raid_march_target(
-                mob.hex_q,
-                mob.hex_r,
-                path_nodes
-                    .get(&capital.capital_id)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]),
-                cq,
-                cr,
-            );
-            match march(ctx, mob, interval, mq, mr, &blocked, &traps_step) {
+            let path_slice = path_nodes
+                .get(&capital.capital_id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            // REV (lane discipline): the raider advances through the trace
+            // nodes IN ORDER, carrying its claimed next index (persisted on
+            // the Mob). Off-trace returns stay at or before that index.
+            let (lane_mob, mq, mr) = if path_slice.is_empty() {
+                (mob.clone(), cq, cr)
+            } else {
+                let (idx, (tq, tr)) =
+                    raid_lane_target(mob.hex_q, mob.hex_r, path_slice, mob.path_idx);
+                let mut m2 = mob.clone();
+                m2.path_idx = idx as u32;
+                // march() rewrites the whole row (step accumulation), so the
+                // claimed index persists with the same write.
+                (m2, tq, tr)
+            };
+            match march(ctx, &lane_mob, interval, mq, mr, &blocked, &traps_step) {
                 MarchOutcome::Stepped => {}
                 MarchOutcome::WalledIn(Some(sid)) => {
                     *struct_damage.entry(sid).or_insert(0) += engagement_dps(kind, true);
@@ -1486,44 +1513,68 @@ mod tests {
     fn path_target_walks_the_line_node_by_node() {
         let (sq, sr, cq, cr) = (0, 0, 6, 2);
         let line = idlecore_core::grid::hex_line(sq, sr, cq, cr);
-        // Standing on the spawn: first path hex.
-        assert_eq!(raid_march_target(sq, sr, &line, cq, cr), line[1]);
+        // Standing on the spawn: claimed = line[1] (spawn starts at id 1).
+        assert_eq!(raid_lane_target(sq, sr, &line, 1), (1, line[1]));
         // Mid-trace: the next node, never the capital directly.
         let mid = line[3];
-        assert_eq!(raid_march_target(mid.0, mid.1, &line, cq, cr), line[4]);
+        assert_eq!(raid_lane_target(mid.0, mid.1, &line, 4), (4, line[4]));
         // One node before the gate: the capital hex itself.
         let near = line[line.len() - 2];
-        assert_eq!(raid_march_target(near.0, near.1, &line, cq, cr), (cq, cr));
+        assert_eq!(raid_lane_target(near.0, near.1, &line, (line.len() - 1) as u32), (line.len() - 1, (cq, cr)));
+        // Standing ON the capital: hold (claimed stays the last node).
+        assert_eq!(raid_lane_target(cq, cr, &line, (line.len() - 1) as u32), (line.len() - 1, (cq, cr)));
     }
 
     #[test]
-    fn path_target_reenters_the_line_after_a_chase() {
-        let (sq, sr, cq, cr) = (0, 0, 6, 0);
-        let line = idlecore_core::grid::hex_line(sq, sr, cq, cr);
-        // A chaser wandered off-trace: target = the NEAREST node (ties →
-        // spawn side), so the free walk ends by snapping back.
-        let target = raid_march_target(2, 2, &line, cq, cr);
-        let (d, i) = line
+    fn lane_reentry_never_skips_past_the_claim() {
+        let line = idlecore_core::grid::hex_line(0, 0, 6, 0);
+        let (cq, cr) = (6, 0);
+        // A knocked raider near a LATER node (idx 5) but with claimed = 2:
+        // the nearest node AT OR BEFORE 2 wins — no skip-ahead over the bend.
+        let (idx, target) = raid_lane_target(5, -1, &line, 2);
+        assert!(idx <= 2, "off-trace re-entry may not claim beyond {idx}");
+        assert!(target != (cq, cr) || idx <= 2);
+        // Off-trace with the claim reachable: the NEAREST node at or before
+        // the claim (ties → spawn side), computed like the impl.
+        let (idx, target) = raid_lane_target(2, -1, &line, 3);
+        let (d, i) = line[..=3]
             .iter()
             .enumerate()
-            .map(|(i, &(nq, nr))| (tile_distance(2, 2, nq, nr), i))
+            .map(|(i, &(nq, nr))| (tile_distance(2, -1, nq, nr), i))
             .min()
             .unwrap();
+        assert_eq!(idx, i);
         assert_eq!(target, line[i]);
-        assert!(target != (cq, cr) || d <= 1, "re-entry goes node-ward");
+        assert_eq!(d, tile_distance(2, -1, target.0, target.1));
+    }
+
+    #[test]
+    fn off_trace_claim_walks_back_instead_of_forward() {
+        let line = idlecore_core::grid::hex_line(0, 0, 6, 0);
+        // Chased far off: claimed 3 untouched → the walk back targets a node
+        // at or BEFORE line[3] (Chebyshev ties resolve to the spawn side).
+        let (idx, target) = raid_lane_target(9, 9, &line, 3);
+        assert!(idx <= 3, "target index {idx} never beyond the claim");
+        assert_eq!(target, line[idx]);
+        // Nearer-than-the-claim, gone BEYOND it: (4,-1) is uniquely closest
+        // to the claimed node — still the claim, never node 5/6.
+        let (idx, target) = raid_lane_target(4, -1, &line, 3);
+        assert_eq!(idx, 3);
+        assert_eq!(target, line[3]);
     }
 
     #[test]
     fn legacy_capital_without_spawn_keeps_free_march() {
-        // Empty trace: the old behavior — the capital hex target.
-        assert_eq!(raid_march_target(2, 3, &[], 0, 0), (0, 0));
+        // Empty trace: the caller keeps the old free march at the capital
+        // hex; the pure lane fn defensively echoes the mob's own hex.
+        assert_eq!(raid_lane_target(2, 3, &[], 0), (0, (2, 3)));
     }
 
     #[test]
     fn path_target_at_the_capital_stays_put() {
         // A raider standing on the capital hex never marches away.
         let line = idlecore_core::grid::hex_line(0, 0, 4, 2);
-        assert_eq!(raid_march_target(4, 2, &line, 4, 2), (4, 2));
+        assert_eq!(raid_lane_target(4, 2, &line, (line.len() - 1) as u32), (line.len() - 1, (4, 2)));
     }
 
     /// March-sim over a STAMPED curved trace, mirroring the server tick:
@@ -1543,11 +1594,13 @@ mod tests {
             let blocked: std::collections::HashSet<(i32, i32)> =
                 [(cap.0, cap.1)].into_iter().collect();
             let mut mob = path[0];
+            let mut claim: u32 = 1;
             let mut steps = 0;
             let mut on_trace = true;
             while steps < 200 {
                 let (mq, mr) = mob;
-                let (tq, tr) = raid_march_target(mq, mr, &path, cap.0, cap.1);
+                let (idx, (tq, tr)) = raid_lane_target(mq, mr, &path, claim);
+                claim = idx as u32;
                 if (tq, tr) == (mq, mr) {
                     break;
                 }

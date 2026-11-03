@@ -172,6 +172,7 @@ pub fn player_attack(ctx: &ReducerContext, address: &str, direction: i32) -> Res
         .db
         .mob()
         .iter()
+        .filter(|m| crate::types::mob_is_active(m, now))
         .filter(|m| tile_distance(m.hex_q, m.hex_r, pq, pr) <= range)
         .map(|m| {
             let d = tile_distance(m.hex_q, m.hex_r, pq, pr);
@@ -230,6 +231,30 @@ pub fn player_attack(ctx: &ReducerContext, address: &str, direction: i32) -> Res
     if let Some(mut fresh) = ctx.db.mob().mob_id().find(target) {
         fresh.aggro_target = p.address.clone();
         fresh.aggro_until_secs = now + combat::MOB_AGGRO_SECS;
+        // Zelda feel REV: a hit SHOVES the wounded raider one hex along the
+        // swing direction. Rooted kinds and water absolve it in place.
+        let kind = cfg::mob_kind(&mob_row.kind);
+        let (dx, dy) = idlecore_core::player_combat::DIR_VECS
+            [(((direction % 8) + 8) % 8) as usize];
+        // The vectors are ×20 fixed-point; the shove is ONE king-step.
+        let (kq, kr) = (dx.signum(), dy.signum());
+        if fresh.hp > 0
+            && kind.is_some_and(|k| k.step_interval_secs > 0)
+            && !ctx
+                .db
+                .hex_tile()
+                .hex_id()
+                .find(tile_id_of(fresh.hex_q + kq, fresh.hex_r + kr))
+                .map(|t| t.terrain == "Water")
+                .unwrap_or(false)
+        {
+            fresh.hex_q += kq;
+            fresh.hex_r += kr;
+            fresh.hex_id = tile_id_of(fresh.hex_q, fresh.hex_r);
+            let (kx, ky) = tile_center(fresh.hex_q, fresh.hex_r);
+            fresh.position_x = kx;
+            fresh.position_y = ky;
+        }
         ctx.db.mob().mob_id().update(fresh);
     }
 
@@ -503,6 +528,9 @@ fn mob_spawner_pass(ctx: &ReducerContext, now: u64) {
             aggro_until_secs: 0,
             pack_id: now,
             born_at_secs: now,
+            spawn_at_secs: 0,
+            // Roamers march free (no capital trace) — lane index unused.
+            path_idx: 0,
         });
     }
     tracing::info!("ROAMER-PACK #{now} slimes={count} at ({sq},{sr})");
@@ -712,7 +740,17 @@ fn apply_player_damage(
     // immune — armor only softens hits).
     let dmg = dmg.saturating_sub(player_defense(ctx, &target.address)).max(1);
     let cur = hp_of(target);
-    emit_player_event(ctx, CE_PLAYER_HURT, target.hex_id, 0, attacker_mob, detail, now);
+    // REV (damage numbers): the detail carries the dmg (`"<kind>|<dmg>"`)
+    // so the client pops a red number where the player got hit.
+    emit_player_event(
+        ctx,
+        CE_PLAYER_HURT,
+        target.hex_id,
+        0,
+        attacker_mob,
+        &format!("{detail}|{dmg}"),
+        now,
+    );
     let mut s = target.clone();
     if cur > dmg {
         s.player_hp = cur - dmg;

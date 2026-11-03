@@ -34,9 +34,9 @@ pub const BASE_SPEED: f32 = 10.0;
 pub const SPRINT_MULTIPLIER: f32 = 2.0;
 
 /// Acceleration/deceleration rate (1/s): the actual velocity converges on the
-/// commanded speed with a 1/k time constant. Smooth start/stop; when input
-/// stops the desired velocity is zero and the player glides briefly.
-const ACCELERATION: f32 = 12.0;
+/// commanded speed with a 1/k time constant. REV polish: 16 instead of 12 —
+/// starts bite ~30% sooner, stops still glide as intended.
+const ACCELERATION: f32 = 16.0;
 
 /// Below this speed (u/s) with no input, snap to zero instead of gliding —
 /// long exponential tails read as laggy input, especially on web where frame

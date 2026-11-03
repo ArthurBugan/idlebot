@@ -181,6 +181,11 @@ pub fn till(ctx: &ReducerContext, address: &str, hex_id: u64, slot_x: i32, slot_
         Ok(v) => v,
         Err(e) => return Outcome::err(e),
     };
+    // REV starter kit: tilling needs the Hoe family (the starter kit hands
+    // every player one), keeping the tool's meaning beyond a comment.
+    if !crate::objects::has_tool(ctx, &p.address, "Hoe") {
+        return Outcome::err("You need a Hoe to till the soil — craft one first");
+    }
 
     if hex.is_polluted {
         return Outcome::err("Cannot till a polluted hex — clean it first");

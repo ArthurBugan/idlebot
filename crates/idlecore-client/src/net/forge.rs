@@ -681,13 +681,14 @@ mod tests {
     #[test]
     fn cost_lines_join_in_display_order() {
         assert_eq!(cost_text(&[]), "");
+        // REV drop economy: mats past Wood are paid in raid drops.
         assert_eq!(
             cost_text(&weapon_by_name("Gold Sword").cost),
-            "8 Bone + 4 MetalPart"
+            "4 MetalPart + 3 Bone + 6 SlimeGel"
         );
         assert_eq!(
             cost_text(&weapon_by_name("Obsidian Bow").cost),
-            "20 Wood + 10 MetalPart + 10 Grass"
+            "10 MetalPart + 9 Bone + 18 SlimeGel + 10 Grass"
         );
     }
 
@@ -696,11 +697,14 @@ mod tests {
         let c = counts(&[("Wood", 2), ("Bone", 2), ("MetalPart", 1), ("Grass", 1)]);
         assert!(affordable(&weapon_by_name("Wood Bow").cost, &c));
         let wood_only = counts(&[("Wood", 9)]);
-        assert!(!affordable(&weapon_by_name("Wood Bow").cost, &wood_only), "needs Bone too");
+        assert!(
+            !affordable(&weapon_by_name("Copper Axe").cost, &wood_only),
+            "mats need drops too"
+        );
         let metal_only = counts(&[("MetalPart", 9)]);
         assert!(
             !affordable(&weapon_by_name("Copper Axe").cost, &metal_only),
-            "needs Wood too"
+            "needs Bone + SlimeGel too"
         );
         assert!(affordable(&weapon_by_name("Fists").cost, &counts(&[])), "fists are free");
     }

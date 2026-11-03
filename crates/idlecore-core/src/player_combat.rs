@@ -3,7 +3,7 @@
 //! the 1s tick, integer-only math, no per-frame combat simulation.
 
 use crate::defense_config::{
-    ITEM_ARROW, ITEM_BONE, ITEM_GRASS, ITEM_METAL_PART, ITEM_STONE, ITEM_WOOD,
+    ITEM_ARROW, ITEM_BONE, ITEM_GRASS, ITEM_METAL_PART, ITEM_SLIME_GEL, ITEM_STONE, ITEM_WOOD,
 };
 
 /// Spec 033 — the RPG-icons `Weapons and Armor` ladder: every material
@@ -44,7 +44,7 @@ pub const ROAMER_CONTACT_DIST: i32 = 1;
 
 /// Dash (§5.2): 6 s cooldown; the 0.4 s burst rounds up to ONE 1s tick on
 /// the server (integer-second table) — the client trims the tail locally.
-pub const DASH_CD_SECS: u64 = 3;
+pub const DASH_CD_SECS: u64 = 2;
 pub const DASH_TICKS: u64 = 1;
 pub const DASH_SPEED_MULT: u32 = 3;
 /// Client-side exact burst (real 0.4 s, mirrors the spec number).
@@ -172,10 +172,24 @@ fn build_weapons() -> Vec<Weapon> {
     }];
     for (kind_i, kind) in WEA_KINDS.iter().enumerate() {
         for (mat_i, (mat_name, _dir)) in WEA_MATERIALS.iter().enumerate() {
-            let mut cost: Vec<(&'static str, u32)> = vec![
-                (kind.primary, 2 * (mat_i as u32 + 1)),
-                (ITEM_METAL_PART, mat_i as u32 + 1),
-            ];
+            // REV (drop economy): the starter's Wood tiers (mat 0) craft from
+            // gathered materials as before — every upgrade past Wood is
+            // paid in MONSTER DROPS, Enemy loot drives base weapon
+            // upgrades: raiders drop SlimeGel / Bone / MetalPart, so waves
+            // themselves fund the escalation. Costs scale with the tier.
+            let mut cost: Vec<(&'static str, u32)> = if mat_i == 0 {
+                vec![
+                    (kind.primary, 2),
+                    (ITEM_METAL_PART, 1),
+                ]
+            } else {
+                let t = mat_i as u32;
+                vec![
+                    (ITEM_METAL_PART, t + 1),
+                    (ITEM_BONE, t),
+                    (ITEM_SLIME_GEL, 2 * t),
+                ]
+            };
             let mut ammo = None;
             if kind.anim == WeaponAnim::Bow {
                 ammo = Some(ITEM_ARROW);

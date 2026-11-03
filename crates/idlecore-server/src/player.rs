@@ -119,6 +119,14 @@ pub fn login(
         // Spec 023 §2: every new player receives exactly one Capital Core —
         // the item that founds their capital city.
         crate::objects::add_item(ctx, &lower, crate::types::ITEM_CAPITAL_CORE, 1);
+        // REV (starter kit): the comment above (spawned kit) — every new
+        // player must wake up ABLE — a Wood Sword equipped (row dies with
+        // `weapon: 1`), plus Hoe / Pickaxe / Axe tools so farming, mining
+        // and tree felling works from second one. Their material upgrades
+        // stay optional purchases.
+        for tool in ["Wood Sword", "Wood Hoe", "Wood Pickaxe", "Wood Axe"] {
+            crate::objects::add_item(ctx, &lower, tool, 1);
+        }
     } else {
         ctx.db.player().address().update(outcome.player.clone());
     }
@@ -168,7 +176,12 @@ fn new_player(address: &str, identity: &str, now: u64) -> Player {
         // Spec 027 §3 combat state: fresh spawns open at full HP, Fists, no
         // cooldowns outstanding.
         player_hp: 0, // 0 = unseeded → hp_of() reads full for the level
-        weapon: 0,
+        // REV (starter kit): new players arrive already geared. A Wood
+        // Sword is EQUIPPED (the kit's `Wood Sword` item row makes the
+        // tier purchasable-free), plus Hoe / Pickaxe / Axe tool items so
+        // farming, mining and tree felling work from second one. Their
+        // material upgrades stay optional purchases.
+        weapon: 1,
         weapons_owned: 0,
         attack_cd_until: 0,
         dash_cd_until: 0,
