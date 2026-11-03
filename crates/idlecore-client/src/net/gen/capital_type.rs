@@ -17,6 +17,9 @@ pub struct Capital {
     pub placed_at: u64,
     pub last_raid_at: u64,
     pub destroyed: bool,
+    pub spawn_q: i32,
+    pub spawn_r: i32,
+    pub path_hexes: Vec<u64>,
 }
 
 impl __sdk::InModule for Capital {
@@ -37,6 +40,9 @@ pub struct CapitalCols {
     pub placed_at: __sdk::__query_builder::Col<Capital, u64>,
     pub last_raid_at: __sdk::__query_builder::Col<Capital, u64>,
     pub destroyed: __sdk::__query_builder::Col<Capital, bool>,
+    pub spawn_q: __sdk::__query_builder::Col<Capital, i32>,
+    pub spawn_r: __sdk::__query_builder::Col<Capital, i32>,
+    pub path_hexes: __sdk::__query_builder::Col<Capital, Vec<u64>>,
 }
 
 impl __sdk::__query_builder::HasCols for Capital {
@@ -53,6 +59,9 @@ impl __sdk::__query_builder::HasCols for Capital {
             placed_at: __sdk::__query_builder::Col::new(table_name, "placed_at"),
             last_raid_at: __sdk::__query_builder::Col::new(table_name, "last_raid_at"),
             destroyed: __sdk::__query_builder::Col::new(table_name, "destroyed"),
+            spawn_q: __sdk::__query_builder::Col::new(table_name, "spawn_q"),
+            spawn_r: __sdk::__query_builder::Col::new(table_name, "spawn_r"),
+            path_hexes: __sdk::__query_builder::Col::new(table_name, "path_hexes"),
         }
     }
 }

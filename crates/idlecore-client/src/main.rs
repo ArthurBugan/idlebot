@@ -101,6 +101,7 @@ fn main() {
         .insert_resource(world_floor::FloorTiles::default())
         .insert_resource(world_floor::WaterTextures::default())
         .insert_resource(world_floor::SolidFloorTextures::default())
+        .insert_resource(world_floor::RaidPathSlots::default())
         .insert_resource(world_floor::CityTextures::default())
         .insert_resource(world_floor::PropTextures::default())
         .insert_resource(world_floor::DecoTextures::default())

@@ -36,6 +36,9 @@ pub const SICKLE_FRAMES: usize = 6;
 pub const PICKAXE_FRAMES: usize = 6;
 pub const HOE_FRAMES: usize = 6;
 pub const SHOVEL_FRAMES: usize = 5;
+/// REV (playtest): the Fists punch reuses `Throwing items.png` — a bare-arm
+/// whiff reads as a jab (5 columns per direction row).
+pub const FISTS_FRAMES: usize = 5;
 /// One-shot attack clip cadence (10 sword frames ≈ 0.70 s, 7 bow ≈ 0.49 s).
 pub const ATTACK_FRAME_TIME: f32 = 0.07;
 
@@ -44,8 +47,8 @@ pub const FRAME_W: u32 = 32;
 pub const FRAME_H: u32 = 32;
 
 /// Build the source sheet paths for a named character: idle, walk, run and
-/// the seven attack sheets.
-fn sheet_paths(name: &str) -> [String; 10] {
+/// the attack sheets (+ the Fists punch sheet, REV playtest).
+fn sheet_paths(name: &str) -> [String; 11] {
     let base = format!("models/Character/Character/Pre-made/{name}/");
     [
         format!("{base}Idle.png"),
@@ -58,6 +61,7 @@ fn sheet_paths(name: &str) -> [String; 10] {
         format!("{base}Pickaxe.png"),
         format!("{base}Hoe.png"),
         format!("{base}Shovel.png"),
+        format!("{base}Throwing items.png"),
     ]
 }
 
@@ -205,6 +209,9 @@ pub struct IsoCharacter {
     pub hoe: Vec<Handle<Image>>,
     /// Shovel lob clip: `shovel[d * SHOVEL_FRAMES + f]` (Spec 033).
     pub shovel: Vec<Handle<Image>>,
+    /// REV (playtest): Fists jab clip: `fists[d * FISTS_FRAMES + f]` — the
+    /// `Throwing items` sheets, arm-forward whiff.
+    pub fists: Vec<Handle<Image>>,
 }
 
 /// One-shot attack clip selector (Spec 031/033) — which sheet a strike plays.
@@ -217,11 +224,13 @@ pub enum AttackAnim {
     Pickaxe,
     Hoe,
     Shovel,
+    /// REV (playtest): bare-fist jab (`Throwing items` sheet).
+    Fists,
 }
 
 impl AttackAnim {
     /// Sheet choice for an equipped tier (Spec 033): the core tier carries
-    /// its animation; Fists share the sword slash.
+    /// its animation; REV: Fists play their own punch, not the sword slash.
     pub fn of_weapon(core_anim: idlecore_core::player_combat::WeaponAnim) -> Self {
         use idlecore_core::player_combat::WeaponAnim as W;
         match core_anim {
@@ -232,6 +241,7 @@ impl AttackAnim {
             W::Pickaxe => AttackAnim::Pickaxe,
             W::Hoe => AttackAnim::Hoe,
             W::Shovel => AttackAnim::Shovel,
+            W::Fists => AttackAnim::Fists,
         }
     }
 
@@ -244,6 +254,7 @@ impl AttackAnim {
             AttackAnim::Pickaxe => PICKAXE_FRAMES,
             AttackAnim::Hoe => HOE_FRAMES,
             AttackAnim::Shovel => SHOVEL_FRAMES,
+            AttackAnim::Fists => FISTS_FRAMES,
         }
     }
 }
@@ -352,7 +363,7 @@ fn setup_skins(
     let mut map = HashMap::new();
     for (i, name) in CHARACTERS.iter().enumerate() {
         let h: &Vec<Handle<Image>> = &handles;
-        let base = i * 10;
+        let base = i * 11;
         let sheet = |idx: usize| -> (u32, u32, Vec<u8>) {
             let img = images.get(&h[base + idx]).expect(
                 "attack sheet loaded",
@@ -373,6 +384,7 @@ fn setup_skins(
         let (pw, ph, pickaxe_data) = sheet(7);
         let (ow, oh, hoe_data) = sheet(8);
         let (vw, vh, shovel_data) = sheet(9);
+        let (fw, fh, fists_data) = sheet(10);
         let character = IsoCharacter {
             name: name.to_string(),
             idle: build_action_frames(&mut images, &idle_data, iw, ih, iw / FRAME_W),
@@ -385,6 +397,7 @@ fn setup_skins(
             pickaxe: build_action_frames(&mut images, &pickaxe_data, pw, ph, pw / FRAME_W),
             hoe: build_action_frames(&mut images, &hoe_data, ow, oh, ow / FRAME_W),
             shovel: build_action_frames(&mut images, &shovel_data, vw, vh, vw / FRAME_W),
+            fists: build_action_frames(&mut images, &fists_data, fw, fh, fw / FRAME_W),
         };
         map.insert(name.to_string(), character);
     }
@@ -475,6 +488,7 @@ fn animate_player_sprite(
                 AttackAnim::Pickaxe => &character.pickaxe,
                 AttackAnim::Hoe => &character.hoe,
                 AttackAnim::Shovel => &character.shovel,
+                AttackAnim::Fists => &character.fists,
             };
             attack.len() / DIRECTIONS
         };
@@ -494,6 +508,7 @@ fn animate_player_sprite(
                     AttackAnim::Pickaxe => &character.pickaxe,
                     AttackAnim::Hoe => &character.hoe,
                     AttackAnim::Shovel => &character.shovel,
+                    AttackAnim::Fists => &character.fists,
                 };
                 attack[base + idx].clone()
             };

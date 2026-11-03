@@ -100,6 +100,43 @@ pub fn tile_distance(x1: i32, y1: i32, x2: i32, y2: i32) -> i32 {
     (x1 - x2).abs().max((y1 - y2).abs())
 }
 
+/// Spec 035 S1 — the classic-TD path: an inclusive integer line of king
+/// moves (8-way lattice) from `(x0, y0)` to `(x1, y1)`. Every consecutive
+/// node is exactly one Chebyshev step from the previous one, the first and
+/// last nodes are the endpoints, and the length is `steps + 1`. Pure and
+/// deterministic — both server (march target) and client (dirt overlay)
+/// derive the path from the same two stored coordinates via this fn.
+pub fn hex_line(x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<(i32, i32)> {
+    let total = tile_distance(x0, y0, x1, y1);
+    if total == 0 {
+        return vec![(x0, y0)];
+    }
+    let half = i64::from(total) / 2;
+    // Round-half-away-from-zero on the numerator, computed symmetric:
+    // (t·Δ)/total can land exactly on a boundary; adding half BEFORE
+    // truncating flips exact multiples — the symmetric form keeps the
+    // endpoints exact and the step ≤ 1 (the mid-node ties are the only
+    // rounding choice, and the pick is deterministic).
+    let round = |n: i64| {
+        if n >= 0 {
+            (n + half) / total as i64
+        } else {
+            -((-n + half) / total as i64)
+        }
+    };
+    let mut out = Vec::with_capacity(total as usize + 1);
+    for t in 0..=i64::from(total) {
+        let node = (
+            x0 + round(t * i64::from(x1 - x0)) as i32,
+            y0 + round(t * i64::from(y1 - y0)) as i32,
+        );
+        if out.last() != Some(&node) {
+            out.push(node);
+        }
+    }
+    out
+}
+
 /// Convert a world 2D position to integer tile coordinates (floor).
 pub fn world_pos_to_tile(world_x: f32, world_z: f32, tile_size: f32) -> (i32, i32) {
     WorldGrid::world_to_tile(world_x, world_z, tile_size)
@@ -228,6 +265,45 @@ mod tests {
         assert!(tiles.contains(&TileCoord::new(12, -6)));
         assert!(tiles.contains(&TileCoord::new(8, -2)));
         assert!(!tiles.contains(&TileCoord::new(13, -4)));
+    }
+
+    /// Spec 035 T1: every line node is one king-step from the previous
+    /// one, the endpoints bracket the walk, and the length is dist + 1.
+    #[test]
+    fn hex_line_is_a_king_path() {
+        for &(x0, y0, x1, y1) in &[(0, 0, 6, 2), (1, -1, -5, 4), (0, 0, 8, 8), (-3, 2, 4, -7)] {
+            let line = hex_line(x0, y0, x1, y1);
+            assert_eq!(*line.first().unwrap(), (x0, y0));
+            assert_eq!(*line.last().unwrap(), (x1, y1));
+            assert_eq!(line.len() as i32, tile_distance(x0, y0, x1, y1) + 1);
+            for w in line.windows(2) {
+                assert_eq!(
+                    tile_distance(w[0].0, w[0].1, w[1].0, w[1].1),
+                    1,
+                    "segment not one step"
+                );
+            }
+            // Deterministic.
+            assert_eq!(line, hex_line(x0, y0, x1, y1));
+        }
+    }
+
+    /// Degenerate: same-node path is a single node.
+    #[test]
+    fn hex_line_same_node_is_single() {
+        assert_eq!(hex_line(2, 3, 2, 3), vec![(2, 3)]);
+    }
+
+    /// A node mid-line re-entered maps to its successor — the raid march
+    /// re-entry after a hunt chase relies on this.
+    #[test]
+    fn hex_line_reentry_advances_toward_the_goal() {
+        let line = hex_line(0, 0, 6, 0);
+        let mid = line[3];
+        assert_eq!(mid, (3, 0));
+        // The march helper computes next from (dist to goal, line) — the
+        // node before the goal is line[len-2].
+        assert_eq!(line[line.len() - 2], (5, 0));
     }
 
     #[test]

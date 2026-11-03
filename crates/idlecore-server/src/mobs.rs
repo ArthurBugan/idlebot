@@ -25,6 +25,54 @@ const RAID_TICK_AUDIT: &str = "raid_tick";
 // Wave lifecycle
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// The path (Spec 035) — raiders walk the fixed dirt line
+// ---------------------------------------------------------------------------
+
+/// March target for one raider on the FIXED path (pure, unit-testable):
+/// `path` is the stamped trace, spawn hex first, the capital hex last.
+/// The target is the next path hex toward the capital. The re-entry rule
+/// after a hunt chase: the mob snaps back to the nearest path node
+/// (ties → the node closer to the spawn) and steps from there.
+///
+/// An empty path = legacy capital without a stamped trace → the target
+/// stays the capital hex itself (the old free march).
+pub fn raid_march_target(
+    mob_q: i32,
+    mob_r: i32,
+    path: &[(i32, i32)],
+    cap_q: i32,
+    cap_r: i32,
+) -> (i32, i32) {
+    if path.is_empty() {
+        return (cap_q, cap_r);
+    }
+    if (mob_q, mob_r) == (cap_q, cap_r) {
+        return (cap_q, cap_r);
+    }
+    // Nearest path node; deterministic tie → smaller index (spawn side).
+    let mut best: (i32, usize) = (i32::MAX, 0);
+    for (i, &(nq, nr)) in path.iter().enumerate() {
+        let d = tile_distance(mob_q, mob_r, nq, nr);
+        if (d, i) < best {
+            best = (d, i);
+        }
+    }
+    let (dist, idx) = best;
+    // Standing exactly on the last node non-capital? Can't (capital is the
+    // goal). Standing ON a node: its successor. Off-trace: the step onto
+    // the node (the first re-entry keeps free movement honest).
+    let on_node = dist == 0;
+    if on_node && idx + 1 < path.len() {
+        return path[idx + 1];
+    }
+    path[idx]
+}
+
+// ---------------------------------------------------------------------------
+// Wave lifecycle
+// ---------------------------------------------------------------------------
+
 /// Border hexes of a territory: unowned, walkable hexes adjacent to an owned
 /// hex. Raiders spawn on the frontier and march inward. Deterministic order
 /// (sorted) keeps spawn-point picks stable across ticks.
@@ -155,16 +203,22 @@ fn spawn_wave(ctx: &ReducerContext, capital: &Capital, now: u64) -> bool {
         .collect();
     inner_spots.sort_unstable();
     let mut inner_iter = inner_spots.into_iter();
-    let borders = border_hexes(ctx, capital);
-    if borders.is_empty() {
-        return false;
-    }
-    // Up to two spawn points, pushed out to at least MIN_MARCH_HEXES so the
-    // wave has a visible trek across the frontier before reaching targets.
-    let points: Vec<(i32, i32)> = pick_border_points(&borders)
-        .into_iter()
-        .map(|(q, r)| walk_out(ctx, capital, q, r))
-        .collect();
+
+    // Spec 035 S3: classic TD — every raider enters through the capital's
+    // FIXED spawn point (stamped at placement). REV: presence of a stamped
+    // march trace (empty = legacy) decides; (0, 0) is a legal spawn hex.
+    let points: Vec<(i32, i32)> = if !capital.path_hexes.is_empty() {
+        vec![(capital.spawn_q, capital.spawn_r)]
+    } else {
+        let borders = border_hexes(ctx, capital);
+        if borders.is_empty() {
+            return false;
+        }
+        pick_border_points(&borders)
+            .into_iter()
+            .map(|(q, r)| walk_out(ctx, capital, q, r))
+            .collect()
+    };
 
     let wave = ctx.db.raid_wave().insert(RaidWave {
         wave_id: 0,
@@ -478,7 +532,11 @@ pub fn engagement_target(
     {
         return (Some(sid), false);
     }
-    if capital_dist <= range {
+    // REV (Spec 035 playtest): the capital is a CONTACT target — every kind,
+    // melee or ranged, must WALK the dirt path until it touches the capital
+    // (adjacent hex / the capital hex itself) before it can damage it.
+    // Tower stand-offs keep `range`; the capital does not.
+    if capital_dist <= 1 {
         return (None, true);
     }
     (None, false)
@@ -737,6 +795,17 @@ pub fn tick(ctx: &ReducerContext) {
         }
     }
 
+    // Spec 035 REV: decode each capital's stamped march trace once per tick.
+    let path_nodes: HashMap<u64, Vec<(i32, i32)>> = capitals
+        .values()
+        .map(|c| {
+            (
+                c.capital_id,
+                c.path_hexes.iter().map(|&h| hex_coords_of(h)).collect(),
+            )
+        })
+        .collect();
+
     for mob in mob_rows.iter() {
         if mob_damage.contains_key(&mob.mob_id) {
             continue; // fell to tower fire this tick
@@ -902,7 +971,22 @@ pub fn tick(ctx: &ReducerContext) {
             // Rooted kinds (Venom Bloom, step 0) never march. Otherwise
             // march; a fully walled-in mob chews the nearest wall (REV3 §11).
             // A step onto a trap hex (REV4) springs the trap instead.
-            match march(ctx, mob, interval, cq, cr, &blocked, &traps_step) {
+            // Spec 035 S2: raiders march the FIXED stamped trace — the
+            // march target is the next trace hex, so `march()`'s
+            // strictly-closing greedy can only step onto it (walls/traps
+            // machinery intact). REV: the trace is the stamped curved path,
+            // not the straight spawn→capital line.
+            let (mq, mr) = raid_march_target(
+                mob.hex_q,
+                mob.hex_r,
+                path_nodes
+                    .get(&capital.capital_id)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+                cq,
+                cr,
+            );
+            match march(ctx, mob, interval, mq, mr, &blocked, &traps_step) {
                 MarchOutcome::Stepped => {}
                 MarchOutcome::WalledIn(Some(sid)) => {
                     *struct_damage.entry(sid).or_insert(0) += engagement_dps(kind, true);
@@ -1239,9 +1323,11 @@ mod tests {
         let (t, c) = engagement_target(&NO_STRUCTS, 4, 1);
         assert_eq!(t, None);
         assert!(!c);
-        // A ranged mob reaches the capital from its stand-off too.
+        // REV (playtest): ranged mobs do NOT snipe the capital from their
+        // stand-off — the capital needs TOUCH (dist ≤ 1), so archers walk
+        // the dirt path all the way in.
         let (_, capital_far) = engagement_target(&NO_STRUCTS, 2, 3);
-        assert!(capital_far, "archers hit the capital from 2 hexes out");
+        assert!(!capital_far, "archers never snipe the capital at range");
     }
 
     #[test]
@@ -1377,6 +1463,9 @@ mod tests {
             placed_at: 0,
             last_raid_at,
             destroyed: false,
+            spawn_q: i32::MIN,
+            spawn_r: i32::MIN,
+            path_hexes: Vec::new(),
         }
     }
 
@@ -1387,6 +1476,103 @@ mod tests {
         assert!(!wave_eligible(4_999, cap.grace_until, cap.last_raid_at, false));
         // The instant grace expires the capital becomes attackable.
         assert!(wave_eligible(5_000, cap.grace_until, cap.last_raid_at, false));
+    }
+
+    // -- Spec 035: the fixed dirt path -----------------------------------
+    // REV: the march trace is the STORED curved path; tests drive it with
+    // hex_line as a stand-in node list (the marching rule is identical).
+
+    #[test]
+    fn path_target_walks_the_line_node_by_node() {
+        let (sq, sr, cq, cr) = (0, 0, 6, 2);
+        let line = idlecore_core::grid::hex_line(sq, sr, cq, cr);
+        // Standing on the spawn: first path hex.
+        assert_eq!(raid_march_target(sq, sr, &line, cq, cr), line[1]);
+        // Mid-trace: the next node, never the capital directly.
+        let mid = line[3];
+        assert_eq!(raid_march_target(mid.0, mid.1, &line, cq, cr), line[4]);
+        // One node before the gate: the capital hex itself.
+        let near = line[line.len() - 2];
+        assert_eq!(raid_march_target(near.0, near.1, &line, cq, cr), (cq, cr));
+    }
+
+    #[test]
+    fn path_target_reenters_the_line_after_a_chase() {
+        let (sq, sr, cq, cr) = (0, 0, 6, 0);
+        let line = idlecore_core::grid::hex_line(sq, sr, cq, cr);
+        // A chaser wandered off-trace: target = the NEAREST node (ties →
+        // spawn side), so the free walk ends by snapping back.
+        let target = raid_march_target(2, 2, &line, cq, cr);
+        let (d, i) = line
+            .iter()
+            .enumerate()
+            .map(|(i, &(nq, nr))| (tile_distance(2, 2, nq, nr), i))
+            .min()
+            .unwrap();
+        assert_eq!(target, line[i]);
+        assert!(target != (cq, cr) || d <= 1, "re-entry goes node-ward");
+    }
+
+    #[test]
+    fn legacy_capital_without_spawn_keeps_free_march() {
+        // Empty trace: the old behavior — the capital hex target.
+        assert_eq!(raid_march_target(2, 3, &[], 0, 0), (0, 0));
+    }
+
+    #[test]
+    fn path_target_at_the_capital_stays_put() {
+        // A raider standing on the capital hex never marches away.
+        let line = idlecore_core::grid::hex_line(0, 0, 4, 2);
+        assert_eq!(raid_march_target(4, 2, &line, 4, 2), (4, 2));
+    }
+
+    /// March-sim over a STAMPED curved trace, mirroring the server tick:
+    /// nearest-node target + strictly-closing step, capital hex blocked.
+    #[test]
+    fn stamped_trace_marches_arrive_at_the_capital_ring() {
+        for seed in 1..25u64 {
+            let mut s = seed * 3_771;
+            let mut rand = move || {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                s
+            };
+            let path = crate::capital::generate_raid_path(8, 4, 0, 0, |_, _| true, &mut rand);
+            let cap = *path.last().unwrap();
+            let blocked: std::collections::HashSet<(i32, i32)> =
+                [(cap.0, cap.1)].into_iter().collect();
+            let mut mob = path[0];
+            let mut steps = 0;
+            let mut on_trace = true;
+            while steps < 200 {
+                let (mq, mr) = mob;
+                let (tq, tr) = raid_march_target(mq, mr, &path, cap.0, cap.1);
+                if (tq, tr) == (mq, mr) {
+                    break;
+                }
+                let Some(next) = step_toward_hex_avoiding(mq, mr, tq, tr, &blocked) else {
+                    break;
+                };
+                // Every landed hex must be a trace node (the lane follows it).
+                assert!(
+                    path.contains(&next),
+                    "seed {seed}: mob left the trace at {next:?} (target {tq},{tr}) path {path:?}"
+                );
+                mob = next;
+                steps += 1;
+                if mob == cap {
+                    break;
+                }
+            }
+            let d = tile_distance(mob.0, mob.1, cap.0, cap.1);
+            assert!(
+                d <= 1,
+                "seed {seed}: mob ended {d} hexes from its capital, never touching it (path {path:?})"
+            );
+            assert!(steps > 0, "seed {seed}: mob never moved");
+            let _ = on_trace;
+        }
     }
 
     #[test]

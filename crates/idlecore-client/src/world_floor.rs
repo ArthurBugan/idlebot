@@ -1374,6 +1374,19 @@ fn slot_hash(sx: i32, sy: i32, salt: u32) -> u32 {
 #[derive(Resource, Default)]
 pub struct SolidFloorTextures {
     pub by_terrain: HashMap<TerrainType, Vec<(Handle<Image>, [f32; 3])>>,
+    /// Spec 035: plain dirt cells for the fixed raid lane.
+    pub path_variants: Vec<(Handle<Image>, [f32; 3])>,
+}
+
+/// Spec 035: the fixed raid lane as SLOT keys — `(sx, sy)` slot indices on
+/// the floor grid, so the floor builder itself paints the lane (no overlay
+/// sprites, no stretch). `pad` = the darker spawn block.
+#[derive(Resource, Default)]
+pub struct RaidPathSlots {
+    pub lane: std::collections::HashSet<(i32, i32)>,
+    pub pad: std::collections::HashSet<(i32, i32)>,
+    /// Set when the path set changed and the floor ring must rebuild.
+    pub dirty: bool,
 }
 
 /// Load the floor tile handles from the cropped atlas once the art has
@@ -1397,6 +1410,9 @@ pub fn init_solid_floor_textures(
         return;
     }
     let get = |k: &str| atlas.items.get(k).expect("checked").clone();
+    // Spec 035: the raid-path lane is floor with a warm brown tint — the
+    // same dirt floor cells the plains use, not a stretched overlay sprite.
+    solid.path_variants = vec![(get(atlas::FLOOR_DIRT), [1.0, 0.82, 0.62])];
     for terrain in terrains_iter() {
         let variants: Vec<(Handle<Image>, [f32; 3])> = floor_tiles_for(terrain)
             .into_iter()
@@ -1919,6 +1935,7 @@ pub fn update_world_floor(
     player_transform: Res<PlayerTransform>,
     extent: Res<crate::plugins::camera::ViewExtent>,
     mut tiles: ResMut<FloorTiles>,
+    mut paths: ResMut<RaidPathSlots>,
     water: Res<WaterTextures>,
     solid: Res<SolidFloorTextures>,
     deco: Option<Res<DecoTextures>>,
@@ -1928,6 +1945,30 @@ pub fn update_world_floor(
     // would register empty slots that then never spawn.
     if solid.by_terrain.is_empty() {
         return;
+    }
+    // Spec 035: a lane change (capital placed/re-placed mid-session) must
+    // repaint the tiles it covers. The spawn loop only fills MISSING tiles —
+    // live ones keep their pre-lane texture — so a dirty lane set despawns
+    // every live lane/pad slot right here and the pass below REspawns them
+    // with the dirt variant. Reopen painted correctly only because nothing
+    // was live yet.
+    if paths.dirty {
+        paths.dirty = false;
+        tiles.last_player_slot = None;
+        let repaint: Vec<(i32, i32)> = tiles
+            .live
+            .keys()
+            .filter(|s| paths.lane.contains(s) || paths.pad.contains(s))
+            .copied()
+            .collect();
+        for (sx, sy) in repaint {
+            if let Some(entity) = tiles.live.remove(&(sx, sy)) {
+                commands.entity(entity).despawn();
+                if let Some(be) = tiles.buildings.remove(&(sx, sy)) {
+                    commands.entity(be).despawn();
+                }
+            }
+        }
     }
     let px = player_transform.translation.x;
     let py = player_transform.translation.y;
@@ -2060,17 +2101,30 @@ pub fn update_world_floor(
                 }
             }
         } else {
+            // Spec 035: lane/pad slots resolve to the plain dirt cells from
+            // the same floor sheet — the path is ground, drawn ground-style.
+            let on_path = paths.lane.contains(&(*sx, *sy))
+                || paths.pad.contains(&(*sx, *sy));
             let Some(variants) = solid.by_terrain.get(&terrain) else { continue };
+            let variants: &[(
+                Handle<Image>,
+                [f32; 3],
+            )] = if on_path && !solid.path_variants.is_empty() {
+                &solid.path_variants
+            } else {
+                variants
+            };
             if variants.is_empty() {
                 continue;
             }
             // Noise-driven variant clumping + micro-tint (Hybrid biome detail).
             let d = floor_detail(cx, cy, *terrain, variants.len());
             let (handle, base_tint) = variants[d.variant].clone();
+            let dark = if paths.pad.contains(&(*sx, *sy)) { 0.62 } else { 1.0 };
             let tint = [
-                base_tint[0] * d.tint[0],
-                base_tint[1] * d.tint[1],
-                base_tint[2] * d.tint[2],
+                base_tint[0] * d.tint[0] * dark,
+                base_tint[1] * d.tint[1] * dark,
+                base_tint[2] * d.tint[2] * dark,
             ];
             (handle, tint)
         };

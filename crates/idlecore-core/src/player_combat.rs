@@ -102,6 +102,9 @@ pub enum WeaponAnim {
     Hoe,
     /// `Shovel.png` blunt lob (5 frames).
     Shovel,
+    /// REV (playtest): `Throwing items.png` arm-punch (5 frames) — Fists no
+    /// longer play the sword slash.
+    Fists,
 }
 
 /// Weapon row of the RPG-icons ladder: shader-friendly stat knobs.
@@ -165,7 +168,7 @@ fn build_weapons() -> Vec<Weapon> {
         cd_secs: 1,
         range_hexes: 1,
         ammo: None,
-        anim: WeaponAnim::Sword,
+        anim: WeaponAnim::Fists,
     }];
     for (kind_i, kind) in WEA_KINDS.iter().enumerate() {
         for (mat_i, (mat_name, _dir)) in WEA_MATERIALS.iter().enumerate() {

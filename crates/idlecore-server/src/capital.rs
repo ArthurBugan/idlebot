@@ -22,6 +22,122 @@ use crate::world::ensure_hex;
 pub const OBJ_CAPITAL: &str = "Capital";
 
 // ---------------------------------------------------------------------------
+// Raid path (Spec 035)
+// ---------------------------------------------------------------------------
+
+/// Classic-TD path length floor: the spawn is pushed out to this many hexes
+/// so the dirt trace reads as a path instead of a pad glued to the base.
+/// Playtest REV #3: the spawn still read too close — the walk-out target is
+/// now RANDOM in `PATH_TARGET_MIN..=PATH_TARGET_MAX` (6–9), so each
+/// placement makes its own length AND its own bend-count.
+pub const MIN_PATH_HEXES: i32 = 6;
+pub const PATH_TARGET_MIN: i32 = 6;
+pub const PATH_TARGET_MAX: i32 = 9;
+/// Random walk-out target range: `PATH_TARGET_MIN + rand % range`.
+pub const PATH_TARGET_SPAN: i32 = PATH_TARGET_MAX - PATH_TARGET_MIN + 1;
+/// Bend (sidestep) budget: random in `2..=5` at placement. Sidesteps are
+/// same-distance steps that bend the trace without flattening it.
+pub const CURVE_MIN: i32 = 2;
+pub const CURVE_SPAN: i32 = 4;
+
+/// Pure random curved raid-path generator (Spec 035 REV): a WALK-OUT from
+/// the capital hex with limited sidesteps, returned REVERSED so the path
+/// runs spawn-first, capital-last. Because every step was strictly-farther
+/// or sideways from the capital, the reversed trace monotonically closes in
+/// — curved, no repetition, and it never back-tracks. Land-only steps
+/// (`walkable`, unowned land), water skipped entirely. `rand` gets a
+/// uniform source whenever it wants one (reducer: `ctx.rng()`; tests: a
+/// seeded LCG). Terminates: strictly-farther steps always exist on unshown
+/// terrain (`walkable` defaults true on unmaterialized hexes; the caller
+/// does that), and the walk-out stops at `target_len` with the sidestep
+/// budget bounded.
+pub(crate) fn generate_raid_path(
+    target_len: i32,
+    sidesteps_left: i32,
+    cq: i32,
+    cr: i32,
+    walkable: impl Fn(i32, i32) -> bool,
+    rand: &mut impl FnMut() -> u64,
+) -> Vec<(i32, i32)> {
+    let dist = |q: i32, r: i32| tile_distance(q, r, cq, cr);
+    let mut out: Vec<(i32, i32)> = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    let mut budget = sidesteps_left;
+    let mut cur = (cq, cr);
+    visited.insert(cur);
+    out.push(cur);
+
+    #[allow(clippy::while_let_loop)]
+    while dist(cur.0, cur.1) < target_len {
+        let mut side = Vec::new();
+        let mut fwd = Vec::new();
+        for nq in cur.0 - 1..=cur.0 + 1 {
+            for nr in cur.1 - 1..=cur.1 + 1 {
+                let cand = (nq, nr);
+                if cand == cur || !visited.insert(cand) || !walkable(nq, nr) {
+                    continue;
+                }
+                let d = dist(nq, nr);
+                let cur_d = dist(cur.0, cur.1);
+                if d > cur_d {
+                    fwd.push(cand);
+                } else if d == cur_d {
+                    side.push(cand);
+                }
+            }
+        }
+        // Bend when the roll says so and budget remains; otherwise push out.
+        let step = if !side.is_empty() && budget > 0 && rand() & 1 == 0 {
+            budget -= 1;
+            side[(rand() % side.len() as u64) as usize]
+        } else if !fwd.is_empty() {
+            fwd[(rand() % fwd.len() as u64) as usize]
+        } else if !side.is_empty() {
+            // Forced detour also burns budget so the walk stays bounded.
+            budget -= 1;
+            side[(rand() % side.len() as u64) as usize]
+        } else {
+            break;
+        };
+        cur = step;
+        out.push(cur);
+    }
+
+    // Spawn→capital order: the walk-out was capital→spawn, so reverse.
+    out.reverse();
+    out
+}
+
+/// Reducer wiring: roll the walk-out length (`PATH_TARGET_MIN..=PATH_TARGET_MAX`)
+/// and the bend budget from `ctx.rng()`, then walk. Returns the spawn hex
+/// plus the hex-id list to stamp on the Capital row. Steps are land-only
+/// (unmaterialized hexes count as land, like `walk_out`) and skip owned hexes
+/// so the raiders do not spawn inside a claim.
+pub(crate) fn stamp_raid_path(
+    ctx: &ReducerContext,
+    hex_id: u64,
+) -> ((i32, i32), Vec<u64>) {
+    use spacetimedb::rand::Rng;
+    let target = PATH_TARGET_MIN + (ctx.rng().gen_range(0..PATH_TARGET_SPAN as u64) as i32);
+    let sidesteps = CURVE_MIN + (ctx.rng().gen_range(0..CURVE_SPAN as u64) as i32);
+    let (cq, cr) = crate::types::hex_coords_of(hex_id);
+    let mut rand = move || ctx.rng().gen_range(0..1_000_000u64);
+    let walkable = |q: i32, r: i32| {
+        let id = tile_id_of(q, r);
+        ctx.db
+            .hex_tile()
+            .hex_id()
+            .find(id)
+            .map(|t| t.terrain != "Water")
+            .unwrap_or(true)
+            && !is_owned(ctx, id)
+    };
+    let path = generate_raid_path(target, sidesteps, cq, cr, walkable, &mut rand);
+    let (sq, sr) = path[0];
+    ((sq, sr), path.iter().map(|&(q, r)| tile_id_of(q, r)).collect())
+}
+
+// ---------------------------------------------------------------------------
 // Pure validators (unit-testable without SpacetimeDB)
 // ---------------------------------------------------------------------------
 
@@ -226,11 +342,17 @@ pub fn place_capital(
             row.last_raid_at = 0;
             row.placed_at = now;
             row.destroyed = false;
+            // Spec 035 S1: the path re-rolls (length, bends, direction) at
+            // every re-placement.
+            let ((sq, sr), path) = stamp_raid_path(ctx, hex_id);
+            row.spawn_q = sq;
+            row.spawn_r = sr;
+            row.path_hexes = path;
             capital_id = Some(row.capital_id);
             ctx.db.capital().capital_id().update(row);
         }
         None => {
-            let row = ctx.db.capital().insert(Capital {
+            let mut tx = ctx.db.capital().insert(Capital {
                 capital_id: 0,
                 owner: p.address.clone(),
                 hex_id,
@@ -241,8 +363,17 @@ pub fn place_capital(
                 placed_at: now,
                 last_raid_at: 0,
                 destroyed: false,
+                spawn_q: 0,
+                spawn_r: 0,
+                path_hexes: Vec::new(),
             });
-            capital_id = Some(row.capital_id);
+            // Fresh placement: the first open wave needs the path sent once.
+            let ((sq, sr), path) = stamp_raid_path(ctx, hex_id);
+            tx.spawn_q = sq;
+            tx.spawn_r = sr;
+            tx.path_hexes = path;
+            ctx.db.capital().capital_id().update(tx.clone());
+            capital_id = Some(tx.capital_id);
         }
     }
     // The capital hex is owned outright (no claim cost), and the
@@ -542,5 +673,91 @@ mod tests {
         assert!(!shifted.contains(&(7, -3)));
         assert!(shifted.contains(&(9, -5)));
         assert!(!shifted.contains(&(10, -5)));
+    }
+
+    // -- Spec 035 REV: the random curved raid path ------------------------
+
+    /// Seeded xorshift — the test twin of `ctx.rng()`.
+    fn test_rng(seed: u64) -> impl FnMut() -> u64 {
+        let mut s = seed | 1;
+        move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        }
+    }
+
+    #[test]
+    fn path_starts_far_ends_at_the_capital() {
+        for seed in 1..40u64 {
+            let mut r = test_rng(seed * 7_919);
+            let target = crate::capital::PATH_TARGET_MIN + (seed % 4) as i32;
+            let path = generate_raid_path(target, 3, 0, 0, |_, _| true, &mut r);
+            // Spawn hex FIRST, capital hex LAST — never degenerate.
+            assert!(path.len() >= 3, "seed {seed}: short path {path:?}");
+            assert_eq!(path[path.len() - 1], (0, 0));
+            let spawn_dist = tile_distance(path[0].0, path[0].1, 0, 0);
+            assert!(
+                spawn_dist >= crate::capital::PATH_TARGET_MIN - 1,
+                "seed {seed}: spawn at {spawn_dist}, path {path:?}"
+            );
+            // Consecutive steps are hex-adjacent, no revisits.
+            let mut seen = std::collections::HashSet::new();
+            for (idx, &(q, r)) in path.iter().enumerate() {
+                if let Some(&(pq, pr)) = idx.checked_sub(1).and_then(|i| path.get(i)) {
+                    assert_eq!(
+                        tile_distance(q, r, pq, pr),
+                        1,
+                        "seed {seed}: step {pq},{pr} -> {q},{r} in {path:?}"
+                    );
+                }
+                assert!(seen.insert((q, r)), "seed {seed}: revisit {q},{r}");
+            }
+        }
+    }
+
+    #[test]
+    fn different_seeds_bend_differently() {
+        // True randomness, not determinism: several seeds must produce
+        // several DISTINCT traces.
+        let traces: Vec<Vec<(i32, i32)>> = (0..8)
+            .map(|seed| {
+                let mut r = test_rng((seed as u64 + 41) * 12_997);
+                generate_raid_path(8, 4, 0, 0, |_, _| true, &mut r)
+            })
+            .collect();
+        let all_same = traces[1..].iter().all(|t| t == &traces[0]);
+        assert!(!all_same, "all seeds produced the same trace: {:?}", traces[0]);
+    }
+
+    #[test]
+    fn sidesteps_bend_the_trace_off_the_straight_line() {
+        // With bend budget, at least one node lies OFF hex_line(spawn, cap).
+        let mut r = test_rng(5_555_111);
+        let path = generate_raid_path(8, 4, 0, 0, |_, _| true, &mut r);
+        let straight: Vec<(i32, i32)> =
+            idlecore_core::grid::hex_line(path[0].0, path[0].1, 0, 0);
+        assert!(
+            path.iter().any(|n| !straight.contains(n)),
+            "no bends: {path:?} vs line {straight:?}"
+        );
+    }
+
+    #[test]
+    fn water_blocks_the_walk() {
+        // One impassable hex near the capital: the trace routes around it.
+        let mut r = test_rng(2_222);
+        let path = generate_raid_path(
+            6,
+            3,
+            0,
+            0,
+            |q, r| !(q == 1 && r == -1),
+            &mut r,
+        );
+        assert!(!path.contains(&(1, -1)));
+        assert_eq!(path[path.len() - 1], (0, 0));
+        assert!(path.len() >= 3);
     }
 }

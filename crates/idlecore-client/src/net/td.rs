@@ -188,6 +188,8 @@ pub struct TdTextures {
     pub icon_spike: Handle<Image>,
     pub icon_web: Handle<Image>,
     pub icon_fire: Handle<Image>,
+    // Spec 035: lane crops dropped — the path is painted by the floor
+    // builder itself (RaidPathSlots), no overlay sprites.
 }
 
 /// A raider kind's sprite set (Spec 025 §5). `walk` frames alternate while
@@ -208,6 +210,9 @@ pub struct TdTracker {
     pub last_hp: HashMap<u64, u32>,
     /// Seconds left on each mob's damage flash (spec 025 §5).
     pub flash: HashMap<u64, f32>,
+    /// Spec 035: capital_id → (hex, spawn) the dirt lane was last drawn
+    /// for — rebuilt only when a capital row changes, never per frame.
+    pub paths: HashMap<u64, (u64, i32, i32)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -500,6 +505,93 @@ fn mob_sprite_kind<'a>(td: &'a TdTextures, kind: &str) -> &'a MobSprite {
         .expect("Slime is in the Spec 025 roster map")
 }
 
+// ---------------------------------------------------------------------------
+// The fixed raid path (Spec 035 C1/C2) — floor-grid slot set
+// ---------------------------------------------------------------------------
+
+/// Compute the lane's SLOT keys for every live capital. The lane is a
+/// smooth ribbon of floor slots around the segment chain through the line
+/// hex centers (half-width ~1.2 slots): NOT full 4×4 tile blocks, which
+/// read as a fat staircase band (playtest REV). i == 0 → round spawn pad
+/// blob at the spawn hex center. Sets `dirty` when the set changed — the
+/// floor builder rebuilds its ring on that flag, painting the lane
+/// ground-style (same cells as the floor).
+fn sync_path_slots(
+    capitals: &[CapRow],
+    paths: &mut crate::world_floor::RaidPathSlots,
+) {
+    let mut lane = std::collections::HashSet::new();
+    let mut pad = std::collections::HashSet::new();
+    for row in capitals.iter().filter(|c| !c.destroyed) {
+        // REV: the lane is the SERVER-stamped curved trace (spawn hex
+        // first, capital hex last) — not a client-recomputed straight line.
+        let pts: Vec<(f32, f32)> = row
+            .path_hexes
+            .iter()
+            .map(|&hex_id| {
+                let c = TileCoord::from_id(hex_id);
+                let (x, y) = hex_center(c.x, c.y);
+                (x, y)
+            })
+            .collect();
+        if pts.len() < 2 {
+            continue;
+        }
+        let s = idlecore_core::slots::SLOT_SIZE;
+        let half_lane = s * 1.2; // ribbon half-width (~2.4 slots wide)
+        let pad_r = s * 2.1; // spawn pad radius (~4 slots wide blob)
+        // Slot bounding box: path hex extents + one tile of slack.
+        let path_tiles: Vec<TileCoord> = row
+            .path_hexes
+            .iter()
+            .map(|&h| TileCoord::from_id(h))
+            .collect();
+        let qs = path_tiles.iter().map(|t| t.x);
+        let rs = path_tiles.iter().map(|t| t.y);
+        let (q0, q1) = (qs.clone().min().unwrap(), qs.max().unwrap());
+        let (r0, r1) = (rs.clone().min().unwrap(), rs.max().unwrap());
+        for q in q0 - 1..=q1 + 1 {
+            for r in r0 - 1..=r1 + 1 {
+                for gx in 0..4 {
+                    for gy in 0..4 {
+                        let key = (q * 4 + gx, r * 4 + gy);
+                        let (x, y) = idlecore_core::slots::slot_center(q * 4 + gx, r * 4 + gy);
+                        // Min distance from the slot center to any segment.
+                        let mut best = f32::MAX;
+                        for w in pts.windows(2) {
+                            let (ax, ay) = w[0];
+                            let (bx, by) = w[1];
+                            let (vx, vy) = (bx - ax, by - ay);
+                            let len2 = vx * vx + vy * vy;
+                            let t = if len2 <= f32::EPSILON {
+                                0.0
+                            } else {
+                                (((x - ax) * vx + (y - ay) * vy) / len2).clamp(0.0, 1.0)
+                            };
+                            let (dx, dy) = (x - (ax + t * vx), y - (ay + t * vy));
+                            best = best.min((dx * dx + dy * dy).sqrt());
+                        }
+                        if best <= half_lane {
+                            lane.insert(key);
+                        }
+                        // Pad: blobs on slots near the spawn hex center.
+                        let (px, py) = (pts[0].0 - x, pts[0].1 - y);
+                        if (px * px + py * py).sqrt() <= pad_r + half_lane {
+                            pad.insert(key);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if lane != paths.lane {
+        paths.lane = lane;
+        paths.pad = pad;
+        paths.dirty = true;
+    }
+}
+
+
 /// Sprite art + art aspect + tint + world height (wu) per structure kind.
 /// REV4 arts mostly render untinted (real colors); placeholders keep tints.
 fn structure_sprite(td: &TdTextures, kind: &str) -> (Handle<Image>, f32, Color, f32) {
@@ -552,6 +644,11 @@ struct CapRow {
     last_raid: u64,
     placed_at: u64,
     destroyed: bool,
+    // Spec 035: the stamped march trace (spawn hex first, capital hex
+    // last). Empty = legacy free march. REV: curved, random per placement.
+    spawn_q: i32,
+    spawn_r: i32,
+    path_hexes: Vec<u64>,
 }
 
 struct WaveRow {
@@ -713,6 +810,12 @@ fn sync_td_entities(
             With<TdOverlay>,
         )>,
     >,
+    // Spec 035: extent + the raid-path slot set share one param slot — both
+    // single-use, and the 16-SystemParam cap is loaded.
+    mut extent_paths: ParamSet<(
+        Res<crate::plugins::camera::ViewExtent>,
+        ResMut<crate::world_floor::RaidPathSlots>,
+    )>,
     mut shake: ResMut<crate::plugins::camera::CameraShake>,
 ) {
     if !td_tex.ready || !hex_tex.ready || !net.poll_td_dirty() {
@@ -742,6 +845,9 @@ fn sync_td_entities(
                 grace_until: c.grace_until,
                 last_raid: c.last_raid_at,
                 placed_at: c.placed_at,
+                spawn_q: c.spawn_q,
+                spawn_r: c.spawn_r,
+                path_hexes: c.path_hexes.clone(),
                 destroyed: c.destroyed,
             })
             .collect();
@@ -911,7 +1017,7 @@ fn sync_td_entities(
     }
 
     let (px, py) = (player_xf.translation.x, player_xf.translation.y);
-    let (view_r2, terr_r2) = cull_radii(&extent);
+    let (view_r2, terr_r2) = cull_radii(&extent_paths.p0());
     // ---- ownership overlays ----
     // REV3 UX pass: territory is inked only while building (build mode armed
     // or the build menu open) and only MY land is lit — the map stays clean
@@ -949,6 +1055,7 @@ fn sync_td_entities(
     }
 
     // ---- capitals ----
+    sync_path_slots(&snap.capitals, &mut extent_paths.p1());
     for row in &snap.capitals {
         if row.destroyed {
             continue;

@@ -162,6 +162,11 @@ pub fn player_attack(ctx: &ReducerContext, address: &str, direction: i32) -> Res
     }
 
     // Arc pick: nearest hostile mob facing the strike's 8-way heading.
+    // REV (hitbox playtest): the arc vector reads the REAL positions
+    // (fine player/mob transforms with slot offsets + roam interpolation),
+    // not tile centers — the swing must land where the sprites stand. A
+    // mob inside the player's OWN hex is a contact hit — its zero-length
+    // delta rejects every heading otherwise.
     let (pq, pr) = (p.hex_q, p.hex_r);
     let candidates: Vec<(u64, i32, f32, f32)> = ctx
         .db
@@ -169,9 +174,21 @@ pub fn player_attack(ctx: &ReducerContext, address: &str, direction: i32) -> Res
         .iter()
         .filter(|m| tile_distance(m.hex_q, m.hex_r, pq, pr) <= range)
         .map(|m| {
-            let (mx, my) = tile_center(m.hex_q, m.hex_r);
-            let (px, py) = tile_center(pq, pr);
-            (m.mob_id, tile_distance(m.hex_q, m.hex_r, pq, pr), mx - px, my - py)
+            let d = tile_distance(m.hex_q, m.hex_r, pq, pr);
+            if d == 0 {
+                // Same-hex contact: a synthetic straight-ahead delta so the
+                // arc gate passes regardless of heading.
+                let (dx, dy) = idlecore_core::player_combat::DIR_VECS
+                    [(((direction % 8) + 8) % 8) as usize];
+                (m.mob_id, 0, dx as f32, dy as f32)
+            } else {
+                (
+                    m.mob_id,
+                    d,
+                    m.position_x - p.position_x,
+                    m.position_y - p.position_y,
+                )
+            }
         })
         .collect();
     let Some(target) = pick_arc_target(&candidates, direction, range) else {

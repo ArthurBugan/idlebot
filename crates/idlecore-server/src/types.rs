@@ -600,6 +600,15 @@ pub struct Capital {
     pub last_raid_at: u64,
     /// Destroyed capitals keep their row until the owner re-places.
     pub destroyed: bool,
+    /// Spec 035: the FIXED raid spawn point, stamped once at placement —
+    /// the dirt path is the straight line from here to `hex_id`. (0, 0)
+    /// sentinel on legacy capitals = no path, raiders free-march as before.
+    pub spawn_q: i32,
+    pub spawn_r: i32,
+    /// Spec 035 REV (random curved path): the FULL march trace stamped once
+    /// per placement from `ctx.rng()` — spawn hex first, the capital hex
+    /// last. Empty = legacy free march.
+    pub path_hexes: Vec<u64>,
 }
 
 /// Claimed (owned) hex. Single PK on the hex id makes double-claim races
