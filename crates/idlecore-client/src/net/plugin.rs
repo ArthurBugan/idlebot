@@ -1484,7 +1484,8 @@ fn sync_remote_players(
 /// Map a server-side vehicle string back to the core Vehicle enum.
 fn vehicle_from_str(s: &str) -> Option<idlecore_core::Vehicle> {
     match s {
-        "Car" | "Bicycle" => Some(idlecore_core::Vehicle::Bicycle),
+        // "Horse" is canonical; "Car"/"Bicycle" are the pre-rename rows.
+        "Horse" | "Car" | "Bicycle" => Some(idlecore_core::Vehicle::Bicycle),
         "Scooter" => Some(idlecore_core::Vehicle::Scooter),
         "Motorcycle" => Some(idlecore_core::Vehicle::Motorcycle),
         "Boat" => Some(idlecore_core::Vehicle::Boat),
@@ -1615,6 +1616,8 @@ mod sync_tests {
     #[test]
     fn vehicle_from_str_maps_all_vehicles() {
         use idlecore_core::Vehicle;
+        assert_eq!(vehicle_from_str("Horse"), Some(Vehicle::Bicycle));
+        assert_eq!(vehicle_from_str("Car"), Some(Vehicle::Bicycle));
         assert_eq!(vehicle_from_str("Bicycle"), Some(Vehicle::Bicycle));
         assert_eq!(vehicle_from_str("Scooter"), Some(Vehicle::Scooter));
         assert_eq!(vehicle_from_str("Motorcycle"), Some(Vehicle::Motorcycle));

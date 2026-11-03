@@ -592,39 +592,43 @@ fn roamer_pass(ctx: &ReducerContext, now: u64) {
         // Aggroed: strike at reach and glide toward the hunted player at the
         // march cadence (roamers never siege structures — swing through the
         // capital's defenses stays the player's trick).
+        // Attack-freeze: a landed swing holds this tick's pursuit step —
+        // mobs strike OR move, never both on the same tick.
         if m.aggro_until_secs > now && m.pinned_until_secs <= now {
+            let struck = roamer_strike(ctx, &m, kind, now);
             let mut row = m.clone();
-            row.step_accum_secs += 1;
-            if row.step_accum_secs >= kind.step_interval_secs.max(1) {
-                row.step_accum_secs = 0;
-                // Pursuit step: closest strictly-closing neighbor toward the
-                // player's hex; no target = stationary (player offline/dead).
-                if let Some((_, _, pq, pr)) =
-                    hunted_player_pos(ctx, &row.aggro_target, now)
-                {
-                    let cur = tile_distance(m.hex_q, m.hex_r, pq, pr);
-                    let closing = TileCoord::new(m.hex_q, m.hex_r)
-                        .neighbors()
-                        .into_iter()
-                        .filter(|&(nq, nr)| {
-                            land_at(ctx, tile_id_of(nq, nr))
-                                && !blocked.contains(&(nq, nr))
-                                && tile_distance(nq, nr, pq, pr) < cur
-                        })
-                        .min_by_key(|&(nq, nr)| tile_distance(nq, nr, pq, pr));
-                    if let Some((nq, nr)) = closing {
-                        let (x, y) = tile_center(nq, nr);
-                        row.hex_q = nq;
-                        row.hex_r = nr;
-                        row.hex_id = tile_id_of(nq, nr);
-                        row.position_x = x;
-                        row.position_y = y;
+            if !struck {
+                row.step_accum_secs += 1;
+                if row.step_accum_secs >= kind.step_interval_secs.max(1) {
+                    row.step_accum_secs = 0;
+                    // Pursuit step: closest strictly-closing neighbor toward the
+                    // player's hex; no target = stationary (player offline/dead).
+                    if let Some((_, _, pq, pr)) =
+                        hunted_player_pos(ctx, &row.aggro_target, now)
+                    {
+                        let cur = tile_distance(m.hex_q, m.hex_r, pq, pr);
+                        let closing = TileCoord::new(m.hex_q, m.hex_r)
+                            .neighbors()
+                            .into_iter()
+                            .filter(|&(nq, nr)| {
+                                land_at(ctx, tile_id_of(nq, nr))
+                                    && !blocked.contains(&(nq, nr))
+                                    && tile_distance(nq, nr, pq, pr) < cur
+                            })
+                            .min_by_key(|&(nq, nr)| tile_distance(nq, nr, pq, pr));
+                        if let Some((nq, nr)) = closing {
+                            let (x, y) = tile_center(nq, nr);
+                            row.hex_q = nq;
+                            row.hex_r = nr;
+                            row.hex_id = tile_id_of(nq, nr);
+                            row.position_x = x;
+                            row.position_y = y;
+                        }
                     }
                 }
+                roamer_trap_spring(ctx, &row, now);
             }
-            roamer_trap_spring(ctx, &row, now);
             ctx.db.mob().mob_id().update(row.clone());
-            let _ = roamer_strike(ctx, &row, kind, now);
             continue;
         }
 

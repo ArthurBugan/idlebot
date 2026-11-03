@@ -155,7 +155,7 @@ impl Vehicle {
     pub fn display_name(&self) -> &'static str {
         match self {
             Vehicle::None => "None",
-            Vehicle::Bicycle => "Car",
+            Vehicle::Bicycle => "Horse",
             Vehicle::Scooter => "Scooter",
             Vehicle::Motorcycle => "Motorcycle",
             Vehicle::Boat => "Boat",
@@ -294,7 +294,7 @@ impl BuyableItem {
         match self {
             BuyableItem::Vehicle(v) => match v {
                 Vehicle::None => "None",
-                Vehicle::Bicycle => "Car",
+                Vehicle::Bicycle => "Horse",
                 Vehicle::Scooter => "Electric Scooter",
                 Vehicle::Motorcycle => "Electric Motorcycle",
                 Vehicle::Boat => "Electric Boat",
@@ -443,7 +443,7 @@ mod tests {
     fn buyable_vehicle_name() {
         assert_eq!(
             BuyableItem::Vehicle(Vehicle::Bicycle).name(),
-            "Car"
+            "Horse"
         );
         assert_eq!(
             BuyableItem::Vehicle(Vehicle::Airplane).name(),

@@ -24,6 +24,7 @@ pub struct Mob {
     pub pack_id: u64,
     pub born_at_secs: u64,
     pub spawn_at_secs: u64,
+    pub path_idx: u32,
 }
 
 impl __sdk::InModule for Mob {
@@ -51,6 +52,7 @@ pub struct MobCols {
     pub pack_id: __sdk::__query_builder::Col<Mob, u64>,
     pub born_at_secs: __sdk::__query_builder::Col<Mob, u64>,
     pub spawn_at_secs: __sdk::__query_builder::Col<Mob, u64>,
+    pub path_idx: __sdk::__query_builder::Col<Mob, u32>,
 }
 
 impl __sdk::__query_builder::HasCols for Mob {
@@ -74,6 +76,7 @@ impl __sdk::__query_builder::HasCols for Mob {
             pack_id: __sdk::__query_builder::Col::new(table_name, "pack_id"),
             born_at_secs: __sdk::__query_builder::Col::new(table_name, "born_at_secs"),
             spawn_at_secs: __sdk::__query_builder::Col::new(table_name, "spawn_at_secs"),
+            path_idx: __sdk::__query_builder::Col::new(table_name, "path_idx"),
         }
     }
 }

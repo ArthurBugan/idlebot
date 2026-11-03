@@ -95,7 +95,7 @@ pub fn load_item_icons(
     by_item.insert("ArrowTower".to_string(), td.icon_arrow.clone());
     by_item.insert("Ballista".to_string(), td.icon_ballista.clone());
     // Vehicles appear as inventory items (equip/unequip from the panel).
-    for v in ["Bicycle", "Car", "Scooter", "Motorcycle", "Boat", "Airplane"] {
+    for v in ["Horse", "Bicycle", "Car", "Scooter", "Motorcycle", "Boat", "Airplane"] {
         by_item.insert(v.to_string(), props.icon_car.clone());
     }
     commands.insert_resource(ItemIcons { by_item });
@@ -169,6 +169,8 @@ fn item_badge(item: &str) -> (Color, &'static str) {
         "Shovel" => (Color::srgb(0.50, 0.58, 0.62), "Sh"),
         "Hoe" => (Color::srgb(0.58, 0.50, 0.58), "Ho"),
         "WateringCan" => (Color::srgb(0.45, 0.62, 0.85), "Wc"),
+        // "Horse" is canonical; "Car"/"Bicycle" are the pre-rename rows.
+        "Horse" => (Color::srgb(0.40, 0.44, 0.54), "Ho"),
         "Bicycle" => (Color::srgb(0.40, 0.44, 0.54), "Ca"),
         "Car" => (Color::srgb(0.40, 0.44, 0.54), "Ca"),
         "Scooter" => (Color::srgb(0.40, 0.44, 0.54), "Sc"),
@@ -1153,16 +1155,17 @@ fn sync_inventory_from_panel(
 fn is_vehicle_item(name: &str) -> bool {
     matches!(
         name,
-        "Bicycle" | "Car" | "Scooter" | "Motorcycle" | "Boat" | "Airplane"
+        "Horse" | "Bicycle" | "Car" | "Scooter" | "Motorcycle" | "Boat" | "Airplane"
     )
 }
 
-/// Display name for an inventory item. The legacy pre-rename vehicle is still
-/// stored as "Bicycle" in the DB; surface it as "Car" everywhere it is shown
-/// (the server keeps the old rows, per the no-migration decision).
+/// Display name for an inventory item. The legacy pre-rename vehicle rows
+/// are still stored as "Car"/"Bicycle" in the DB; surface them as "Horse"
+/// everywhere they are shown (the server keeps the old rows, per the
+/// no-migration decision).
 pub fn normalize_item_name<'a>(name: &'a str) -> &'a str {
     match name {
-        "Bicycle" => "Car",
+        "Bicycle" | "Car" => "Horse",
         other => other,
     }
 }
@@ -1175,6 +1178,7 @@ fn toggle_vehicle_equip(
     net: &mut ResMut<crate::net::plugin::Net>,
 ) {
     if let Ok(player) = player_q.single() {
+        let name = normalize_item_name(name);
         let equipped = player
             .owned_vehicle
             .as_ref()
@@ -1241,7 +1245,9 @@ fn auto_unequip_on_deselect(
             .single()
             .ok()
             .and_then(|p| p.owned_vehicle.as_ref())
-            .map(|v| v.display_name() == curr_item.as_deref().unwrap_or(""))
+            .map(|v| {
+                v.display_name() == curr_item.as_deref().map(normalize_item_name).unwrap_or("")
+            })
             .unwrap_or(false);
         if !already {
             if let Some(name) = curr_item {

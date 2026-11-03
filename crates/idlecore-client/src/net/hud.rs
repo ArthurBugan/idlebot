@@ -178,8 +178,8 @@ fn spawn_hud(mut commands: Commands, asset_server: Res<AssetServer>) {
             ("Clean (20G)", HudAction::Clean),
             ("Plant Tree (seed)", HudAction::PlantTree),
             ("Claim Idle Gains", HudAction::ClaimIdle),
-            ("Buy Car (500G)", HudAction::BuyBicycle),
-            ("Equip Car", HudAction::EquipBicycle),
+            ("Buy Horse (100G)", HudAction::BuyBicycle),
+            ("Mount Horse", HudAction::EquipBicycle),
             ("Teleport (hex)", HudAction::Teleport),
             ("Edit Name", HudAction::EditName),
             ("Avatar -> Next", HudAction::AvatarNext),
@@ -585,19 +585,19 @@ fn hud_buttons(
                         send_reducer(&mut net, |r| r.claim_idle_gains_then(reducer_report("claim_idle_gains", tx.clone(), 0)));
                     }
                     HudAction::BuyBicycle => {
-                        send_reducer(&mut net, |r| r.buy_vehicle_then("Car".to_string(), reducer_report("buy_vehicle", tx.clone(), 0)));
+                        send_reducer(&mut net, |r| r.buy_vehicle_then("Horse".to_string(), reducer_report("buy_vehicle", tx.clone(), 0)));
                     }
                     HudAction::EquipBicycle => {
-                        // Toggle: unequip if already riding the car, else equip.
+                        // Toggle: unequip if already riding, else mount.
                         // Use the local ClientPlayer (reliable) rather than a
                         // db lookup that can race with the connection state.
                         let equipped = _player
                             .as_ref()
                             .and_then(|q| q.single().ok())
                             .and_then(|p| p.owned_vehicle.as_ref())
-                            .map(|v| v.display_name() == "Car")
+                            .map(|v| v.display_name() == "Horse")
                             .unwrap_or(false);
-                        let target = if equipped { "None" } else { "Car" };
+                        let target = if equipped { "None" } else { "Horse" };
                         send_reducer(&mut net, |r| r.equip_vehicle_then(target.to_string(), reducer_report("equip_vehicle", tx.clone(), 0)));
                     }
                     HudAction::ForceWave => {

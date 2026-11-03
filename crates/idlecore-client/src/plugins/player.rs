@@ -99,13 +99,22 @@ fn player_movement(
     }
     let Ok((mut transform, mut player)) = player_query.single_mut() else { return };
 
+    // Attack-freeze: while a swing clip plays the player stands it out —
+    // no walking, no dashing until the animation ends (Rev feedback).
+    let attack_playing = skins
+        .as_ref()
+        .map(|s| crate::skins::movement_locked(s))
+        .unwrap_or(false);
+
     let mut input = Vec2::ZERO;
-    if keyboard.pressed(KeyCode::KeyW) { input.y += 1.0; } // north
-    if keyboard.pressed(KeyCode::KeyS) { input.y -= 1.0; } // south
-    if keyboard.pressed(KeyCode::KeyA) { input.x -= 1.0; } // west
-    if keyboard.pressed(KeyCode::KeyD) { input.x += 1.0; } // east
-    // Virtual joystick adds analog movement (magnitude <= 1).
-    input += touch.move_vec;
+    if !attack_playing {
+        if keyboard.pressed(KeyCode::KeyW) { input.y += 1.0; } // north
+        if keyboard.pressed(KeyCode::KeyS) { input.y -= 1.0; } // south
+        if keyboard.pressed(KeyCode::KeyA) { input.x -= 1.0; } // west
+        if keyboard.pressed(KeyCode::KeyD) { input.x += 1.0; } // east
+        // Virtual joystick adds analog movement (magnitude <= 1).
+        input += touch.move_vec;
+    }
 
     let dir = input.normalize_or_zero();
     let mut speed = BASE_SPEED;
@@ -119,7 +128,7 @@ fn player_movement(
     // (0.4 s vs the server's 1-tick rounding) drives the ×3 burst speed now.
     {
         let now = crate::time_ext::now_unix_secs() as f64;
-        if keyboard.just_pressed(KeyCode::Space) {
+        if keyboard.just_pressed(KeyCode::Space) && !attack_playing {
             let dir = idlecore_core::player_combat::heading_index(orientation.facing_angle);
             if let Some(mut net) = net {
                 if net.address.is_some() && player.death_until_utc <= now as u64 {
@@ -394,6 +403,15 @@ fn update_vehicle_indicator(
 
     if let Some(entity) = indicator.plate {
         if let Ok((mut t, mut vis, mut sprite)) = entities.p0().get_mut(entity) {
+            // The Horse mount is the skin itself (the rider rides in the
+            // sprite sheet); only the other vehicles get the plate art.
+            if let Some(m) = &vehicle {
+                if matches!(m, idlecore_core::Vehicle::Bicycle) {
+                    t.translation.y = -1000.0;
+                    *vis = Visibility::Hidden;
+                    return;
+                }
+            }
             match vehicle {
                 Some(v) => {
                     t.translation = Vec3::new(body_t.translation.x, body_t.translation.y, TILE_DEPTH_BASE - body_t.translation.y + PLAYER_DEPTH_OFFSET - 1.0);

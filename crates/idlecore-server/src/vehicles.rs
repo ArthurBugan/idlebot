@@ -9,7 +9,7 @@ use crate::types::{now_secs, player, player_vehicle, VEHICLE_MAINTENANCE_PER_HOU
 /// Vehicle catalog (Spec 006): speed multiplier and gold cost.
 pub fn catalog() -> [(&'static str, f32, u64); 5] {
     [
-        ("Car", 2.0, 500),
+        ("Horse", 2.0, 100),
         ("Scooter", 3.0, 1_000),
         ("Motorcycle", 5.0, 2_500),
         ("Boat", 4.0, 2_000),
@@ -17,13 +17,32 @@ pub fn catalog() -> [(&'static str, f32, u64); 5] {
     ]
 }
 
+/// Legacy names kept readable forever: pre-rename rows store "Car"/"Bicycle";
+/// equip/multiplier/duplicate checks resolve them onto the canonical
+/// "Horse" catalog entry. Canonical type, or `None` when unknown.
+pub fn canonical_type(name: &str) -> Option<&'static str> {
+    match name {
+        // Pre-rename vehicle strings (kept only for the no-migration rows).
+        "Car" | "Bicycle" => Some("Horse"),
+        "Horse" => Some("Horse"),
+        "Scooter" => Some("Scooter"),
+        "Motorcycle" => Some("Motorcycle"),
+        "Boat" => Some("Boat"),
+        "Airplane" => Some("Airplane"),
+        _ => None,
+    }
+}
+
 /// Speed multiplier for a vehicle type (1.0 when un-equipped/unknown).
 /// Single source of truth shared with movement/Spec 003.
 pub fn multiplier(vehicle_type: &str) -> f32 {
+    let Some(t) = canonical_type(vehicle_type) else {
+        return 1.0;
+    };
     catalog()
         .iter()
-        .find(|(t, _, _)| *t == vehicle_type)
-        .map(|(_, m, _)| *m)
+        .find(|(n, _, _)| *n == t)
+        .map(|&(_, m, _)| m)
         .unwrap_or(1.0)
 }
 
@@ -33,10 +52,16 @@ pub fn resolve_purchase(
     owned_types: &[String],
     vehicle_type: &str,
 ) -> Result<(u64, f32), String> {
+    let vehicle_type = canonical_type(vehicle_type)
+        .ok_or_else(|| "Unknown vehicle type".to_string())?;
+    let owned: Vec<&str> = owned_types
+        .iter()
+        .map(|t| canonical_type(t).unwrap_or(t.as_str()))
+        .collect();
     let Some(&(_, mult, cost)) = catalog().iter().find(|(t, _, _)| *t == vehicle_type) else {
         return Err("Unknown vehicle type".to_string());
     };
-    if owned_types.iter().any(|t| t == vehicle_type) {
+    if owned.iter().any(|t| *t == vehicle_type) {
         return Err("Vehicle already owned".to_string());
     }
     if gold < cost {
@@ -61,6 +86,10 @@ pub fn equip_resolution(owned_types: &[(String, bool)], vehicle_type: &str) -> R
 pub fn buy_vehicle(ctx: &ReducerContext, address: &str, vehicle_type: &str) -> Result<String, String> {
     let mut p = crate::economy::find_player(ctx, &address.to_lowercase())
         .ok_or_else(|| "Player not found".to_string())?;
+
+    // Legacy "Car"/"Bicycle" rows buy onto the canonical "Horse" entry.
+    let vehicle_type = canonical_type(vehicle_type)
+        .ok_or_else(|| "Unknown vehicle type".to_string())?;
 
     let owned_types: Vec<String> = ctx
         .db
@@ -94,6 +123,13 @@ pub fn equip_vehicle(ctx: &ReducerContext, address: &str, vehicle_type: &str) ->
     let mut p = crate::economy::find_player(ctx, &address.to_lowercase())
         .ok_or_else(|| "Player not found".to_string())?;
 
+    // Legacy "Car"/"Bicycle" rows equip as the canonical "Horse".
+    let vehicle_type = if vehicle_type == "None" {
+        "None"
+    } else {
+        canonical_type(vehicle_type).ok_or_else(|| "Unknown vehicle type".to_string())?
+    };
+
     let owned_types: Vec<(String, bool)> = ctx
         .db
         .player_vehicle()
@@ -109,10 +145,12 @@ pub fn equip_vehicle(ctx: &ReducerContext, address: &str, vehicle_type: &str) ->
         return Ok(());
     }
 
-    // Unequip the previous one.
+    // Unequip the previous one (rows may carry the legacy "Car" name).
     if let Some(prev_type) = prev {
         for mut v in ctx.db.player_vehicle().iter() {
-            if v.player == p.address && v.vehicle_type == prev_type {
+            if v.player == p.address
+                && canonical_type(&v.vehicle_type).unwrap_or(&v.vehicle_type) == prev_type
+            {
                 v.equipped = false;
                 ctx.db.player_vehicle().vehicle_id().update(v);
             }
@@ -122,7 +160,10 @@ pub fn equip_vehicle(ctx: &ReducerContext, address: &str, vehicle_type: &str) ->
         .db
         .player_vehicle()
         .iter()
-        .find(|v| v.player == p.address && v.vehicle_type == vehicle_type)
+        .find(|v| {
+            v.player == p.address
+                && canonical_type(&v.vehicle_type).unwrap_or(&v.vehicle_type) == vehicle_type
+        })
         .ok_or_else(|| "Vehicle not owned".to_string())?;
     owned.equipped = true;
     ctx.db.player_vehicle().vehicle_id().update(owned);
@@ -194,9 +235,9 @@ mod tests {
     fn faster_vehicles_cost_more() {
         let c = catalog();
         let airplane = c.iter().find(|(n, _, _)| *n == "Airplane").unwrap();
-        let car = c.iter().find(|(n, _, _)| *n == "Car").unwrap();
-        assert!(airplane.1 > car.1, "airplane faster");
-        assert!(airplane.2 > car.2, "airplane costs more");
+        let horse = c.iter().find(|(n, _, _)| *n == "Horse").unwrap();
+        assert!(airplane.1 > horse.1, "airplane faster");
+        assert!(airplane.2 > horse.2, "airplane costs more");
     }
 
     #[test]
@@ -232,17 +273,32 @@ mod tests_pure {
 
     #[test]
     fn purchase_duplicate_rejected() {
+        let owned: Vec<String> = vec!["Horse".into()];
+        let err = resolve_purchase(1_000_000, &owned, "Horse").unwrap_err();
+        assert!(err.contains("already owned"), "{err}");
+        // A legacy pre-rename "Car" row also blocks the Horse purchase.
         let owned: Vec<String> = vec!["Car".into()];
-        let err = resolve_purchase(1_000_000, &owned, "Car").unwrap_err();
+        let err = resolve_purchase(1_000_000, &owned, "Horse").unwrap_err();
         assert!(err.contains("already owned"), "{err}");
     }
 
     #[test]
+    fn legacy_car_names_resolve_to_horse() {
+        assert_eq!(canonical_type("Car"), Some("Horse"));
+        assert_eq!(canonical_type("Bicycle"), Some("Horse"));
+        assert_eq!(canonical_type("Horse"), Some("Horse"));
+        assert_eq!(canonical_type("Rocket"), None);
+        // Old equipped rows keep their 2× speed.
+        assert_eq!(multiplier("Car"), 2.0);
+        assert_eq!(multiplier("Bicycle"), 2.0);
+    }
+
+    #[test]
     fn equip_unequip_cycle() {
-        let owned: Vec<(String, bool)> = vec![("Car".into(), true), ("Boat".into(), false)];
-        // Equip Boat clears Car.
+        let owned: Vec<(String, bool)> = vec![("Horse".into(), true), ("Boat".into(), false)];
+        // Equip Boat clears Horse.
         let prev = equip_resolution(&owned, "Boat").unwrap();
-        assert_eq!(prev.as_deref(), Some("Car"));
+        assert_eq!(prev.as_deref(), Some("Horse"));
         // Unequip all.
         assert_eq!(equip_resolution(&owned, "None").unwrap(), None);
         // Not owned.
@@ -251,7 +307,7 @@ mod tests_pure {
 
     #[test]
     fn speed_multipliers_match_catalog() {
-        assert_eq!(multiplier("Car"), 2.0);
+        assert_eq!(multiplier("Horse"), 2.0);
         assert_eq!(multiplier("Airplane"), 10.0);
         assert_eq!(multiplier("None"), 1.0);
         assert_eq!(multiplier("Rocket"), 1.0);

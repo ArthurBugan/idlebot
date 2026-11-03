@@ -848,8 +848,11 @@ pub fn tick(ctx: &ReducerContext) {
         }
         // Spec 027 §8: an aggroed raider hunts its player — structures and
         // the capital lose its attention (opt-in retaliation, 20 s stamp).
+        // Attack-freeze: a landed swing holds this tick's chase step — raiders
+        // strike OR move, never both on the same tick.
         if let Some((pq, pr)) = crate::combat::hunting_player_hex(ctx, mob, now) {
-            if kind.step_interval_secs > 0 {
+            let struck = crate::combat::raider_strike(ctx, mob, now);
+            if !struck && kind.step_interval_secs > 0 {
                 let frozen = frost_spots.iter().any(|(hx, hr, radius)| {
                     tile_distance(mob.hex_q, mob.hex_r, *hx, *hr) <= *radius as i32
                 });
@@ -906,8 +909,6 @@ pub fn tick(ctx: &ReducerContext) {
                     }
                 }
             }
-            // Strike at reach once per tick regardless of march cadence.
-            crate::combat::raider_strike(ctx, mob, now);
             continue; // rings/repositioning don't apply while hunting
         }
         let (cq, cr) = hex_coords_of(capital.hex_id);

@@ -47,8 +47,9 @@ pub const FRAME_W: u32 = 32;
 pub const FRAME_H: u32 = 32;
 
 /// Build the source sheet paths for a named character: idle, walk, run and
-/// the attack sheets (+ the Fists punch sheet, REV playtest).
-fn sheet_paths(name: &str) -> [String; 11] {
+/// the attack sheets (+ the Fists punch sheet, REV playtest), then the two
+/// Horse mount sheets (`Horse/Horse idle|run.png`).
+fn sheet_paths(name: &str) -> [String; 13] {
     let base = format!("models/Character/Character/Pre-made/{name}/");
     [
         format!("{base}Idle.png"),
@@ -62,6 +63,8 @@ fn sheet_paths(name: &str) -> [String; 11] {
         format!("{base}Hoe.png"),
         format!("{base}Shovel.png"),
         format!("{base}Throwing items.png"),
+        format!("{base}Horse/Horse idle.png"),
+        format!("{base}Horse/Horse run.png"),
     ]
 }
 
@@ -75,6 +78,17 @@ pub const TINY_FIGURE_HEIGHT: f32 = PLAYER_SIZE;
 const WALK_FRAME_TIME: f32 = 0.12;
 const SPRINT_FRAME_TIME: f32 = 0.08;
 const IDLE_FRAME_TIME: f32 = 0.6;
+/// Horse mount sheets (48×48 art): gallop cadence and idle breath.
+const HORSE_RUN_FRAME_TIME: f32 = 0.09;
+const HORSE_IDLE_FRAME_TIME: f32 = 0.4;
+/// Horse sheet layout: 32×48 frames (one pixel-per-unit row taller than the
+/// character sheets). Idle packs all three views in one row (2 frames per
+/// view: front / back / side); run is 6 columns × 3 view rows (down / up /
+/// side like the character sheets).
+pub const HORSE_FRAME_W: u32 = 32;
+pub const HORSE_FRAME_H: u32 = 48;
+pub const HORSE_IDLE_FRAMES: usize = 2;
+pub const HORSE_RUN_FRAMES: usize = 6;
 /// Above this speed the faster cadence plays.
 pub const RUN_SPEED: f32 = BASE_SPEED * 1.6;
 /// Below this speed the character stands idle.
@@ -90,17 +104,42 @@ const ROW_DOWN: u32 = 0;
 const ROW_UP: u32 = 1;
 const ROW_SIDE: u32 = 2;
 
+/// Base row per facing, plus whether the view is mirrored (west side).
+/// Directions 0=NW clockwise to 7=N (matches `direction_index`).
+const DIR_SELECT: [(u32, bool); DIRECTIONS] = [
+    (ROW_UP, false),   // 0: NW  -> back
+    (ROW_SIDE, true),  // 1: W   -> mirrored side
+    (ROW_SIDE, true),  // 2: SW  -> mirrored side
+    (ROW_DOWN, false), // 3: S   -> front
+    (ROW_SIDE, false), // 4: SE  -> side
+    (ROW_SIDE, false), // 5: E   -> side
+    (ROW_UP, false),   // 6: NE  -> back
+    (ROW_UP, false),   // 7: N   -> back
+];
+
 /// One RGBA frame sliced from a sheet (`None` = transparent pixel).
 pub type Frame = [[Option<[u8; 4]>; FRAME_W as usize]; FRAME_H as usize];
 
-/// Extract one frame from a loaded sheet at (col, row) in FRAME_W×FRAME_H
-/// cells and return it as a 2D pixel grid, optionally mirrored horizontally.
-fn slice_frame(data: &[u8], w: u32, h: u32, col: u32, row: u32, flip: bool) -> Frame {
-    let mut out = [[None; FRAME_W as usize]; FRAME_H as usize];
-    for fy in 0..FRAME_H {
-        for fx in 0..FRAME_W {
-            let sx = (col * FRAME_W + fx) as usize;
-            let sy = (row * FRAME_H + fy) as usize;
+/// Variable-size RGBA frame for the Horse sheets (48×48).
+type SizedFrame = Vec<Vec<Option<[u8; 4]>>>;
+
+/// Extract one frame from a loaded sheet at (col, row) in fw×fh cells and
+/// return it as a 2D pixel grid, optionally mirrored horizontally.
+fn slice_frame_at(
+    data: &[u8],
+    w: u32,
+    h: u32,
+    fw: u32,
+    fh: u32,
+    col: u32,
+    row: u32,
+    flip: bool,
+) -> SizedFrame {
+    let mut out = vec![vec![None; fw as usize]; fh as usize];
+    for fy in 0..fh {
+        for fx in 0..fw {
+            let sx = (col * fw + fx) as usize;
+            let sy = (row * fh + fy) as usize;
             if sx >= w as usize || sy >= h as usize {
                 continue;
             }
@@ -116,7 +155,7 @@ fn slice_frame(data: &[u8], w: u32, h: u32, col: u32, row: u32, flip: bool) -> F
                 alpha,
             ];
             let out_x = if flip {
-                (FRAME_W - 1 - fx) as usize
+                (fw - 1 - fx) as usize
             } else {
                 fx as usize
             };
@@ -126,21 +165,21 @@ fn slice_frame(data: &[u8], w: u32, h: u32, col: u32, row: u32, flip: bool) -> F
     out
 }
 
-/// Convert a frame grid back to a Bevy image.
-fn frame_to_image(f: &Frame) -> Image {
-    let mut pixels = vec![0u8; (FRAME_W * FRAME_H * 4) as usize];
-    for y in 0..FRAME_H as usize {
-        for x in 0..FRAME_W as usize {
+/// Convert a variable-size frame grid back to a Bevy image.
+fn frame_to_image_at(f: &SizedFrame, fw: u32, fh: u32) -> Image {
+    let mut pixels = vec![0u8; (fw * fh * 4) as usize];
+    for y in 0..fh as usize {
+        for x in 0..fw as usize {
             if let Some(col) = f[y][x] {
-                let i = (y * FRAME_W as usize + x) * 4;
+                let i = (y * fw as usize + x) * 4;
                 pixels[i..i + 4].copy_from_slice(&col);
             }
         }
     }
     Image::new(
         bevy::render::render_resource::Extent3d {
-            width: FRAME_W,
-            height: FRAME_H,
+            width: fw,
+            height: fh,
             depth_or_array_layers: 1,
         },
         bevy::render::render_resource::TextureDimension::D2,
@@ -148,6 +187,23 @@ fn frame_to_image(f: &Frame) -> Image {
         bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
         bevy::asset::RenderAssetUsages::default(),
     )
+}
+
+/// Extract one frame from a loaded sheet at (col, row) in FRAME_W×FRAME_H
+/// cells and return it as a 2D pixel grid, optionally mirrored horizontally.
+fn slice_frame(data: &[u8], w: u32, h: u32, col: u32, row: u32, flip: bool) -> Frame {
+    slice_frame_at(data, w, h, FRAME_W, FRAME_H, col, row, flip)
+        .iter()
+        .map(|row| row.clone().try_into().expect("frame width stays 32"))
+        .collect::<Vec<_>>()
+        .try_into()
+        .expect("frame height stays 32")
+}
+
+/// Convert a frame grid back to a Bevy image.
+fn frame_to_image(f: &Frame) -> Image {
+    let f: SizedFrame = f.iter().map(|row| row.to_vec()).collect();
+    frame_to_image_at(&f, FRAME_W, FRAME_H)
 }
 
 /// Gather all frames (sliced, per direction) for one action sheet. For each
@@ -160,26 +216,81 @@ fn build_action_frames(
     h: u32,
     cols: u32,
 ) -> Vec<Handle<Image>> {
-    // Base row per facing, plus whether the view is mirrored (west side).
-    // Directions 0=NW clockwise to 7=N (matches `direction_index`).
-    const DIR_SELECT: [(u32, bool); DIRECTIONS] = [
-        (ROW_UP, false),   // 0: NW  -> back
-        (ROW_SIDE, true),  // 1: W   -> mirrored side
-        (ROW_SIDE, true),  // 2: SW  -> mirrored side
-        (ROW_DOWN, false), // 3: S   -> front
-        (ROW_SIDE, false), // 4: SE  -> side
-        (ROW_SIDE, false), // 5: E   -> side
-        (ROW_UP, false),   // 6: NE  -> back
-        (ROW_UP, false),   // 7: N   -> back
-    ];
+    build_action_frames_at(images, data, w, h, FRAME_W, FRAME_H, cols)
+}
+
+/// Variable frame-size builder (the Horse sheets run 48×48).
+fn build_action_frames_at(
+    images: &mut Assets<Image>,
+    data: &[u8],
+    w: u32,
+    h: u32,
+    fw: u32,
+    fh: u32,
+    cols: u32,
+) -> Vec<Handle<Image>> {
     let mut out = Vec::with_capacity(DIRECTIONS * cols as usize);
     for (row, flip) in DIR_SELECT {
         for col in 0..cols {
-            let frame = slice_frame(data, w, h, col, row, flip);
-            out.push(images.add(frame_to_image(&frame)));
+            let frame = slice_frame_at(data, w, h, fw, fh, col, row, flip);
+            out.push(images.add(frame_to_image_at(&frame, fw, fh)));
         }
     }
     out
+}
+
+/// `Horse idle.png`: one 32×48 row packing all three views — columns 0–1
+/// front, 2–3 back, 4–5 side (east-facing; west mirrors) — 2 frames per
+/// view, sliced into the same 8-direction layout as the character sheets.
+fn build_horse_idle_frames(
+    images: &mut Assets<Image>,
+    data: &[u8],
+    w: u32,
+    h: u32,
+) -> Vec<Handle<Image>> {
+    // View row → the idle sheet's two-column group that carries that view.
+    let group = |row: u32| match row {
+        ROW_DOWN => 0u32,  // front  = cols 0–1
+        ROW_UP => 2u32,    // back   = cols 2–3
+        _ => 4u32,         // side   = cols 4–5
+    };
+    let mut out = Vec::with_capacity(DIRECTIONS * HORSE_IDLE_FRAMES);
+    for (row, flip) in DIR_SELECT {
+        let base = group(row);
+        for f in 0..HORSE_IDLE_FRAMES as u32 {
+            let frame = slice_frame_at(
+                data,
+                w,
+                h,
+                HORSE_FRAME_W,
+                HORSE_FRAME_H,
+                base + f,
+                0,
+                flip,
+            );
+            out.push(images.add(frame_to_image_at(&frame, HORSE_FRAME_W, HORSE_FRAME_H)));
+        }
+    }
+    out
+}
+
+/// `Horse run.png`: 6 columns × 3 view rows (down / up / side), sliced in
+/// the same 8-direction layout as the character sheets.
+fn build_horse_run_frames(
+    images: &mut Assets<Image>,
+    data: &[u8],
+    w: u32,
+    h: u32,
+) -> Vec<Handle<Image>> {
+    build_action_frames_at(
+        images,
+        data,
+        w,
+        h,
+        HORSE_FRAME_W,
+        HORSE_FRAME_H,
+        HORSE_RUN_FRAMES as u32,
+    )
 }
 
 // ============================================================================
@@ -212,6 +323,10 @@ pub struct IsoCharacter {
     /// REV (playtest): Fists jab clip: `fists[d * FISTS_FRAMES + f]` — the
     /// `Throwing items` sheets, arm-forward whiff.
     pub fists: Vec<Handle<Image>>,
+    /// Horse mount idle (front view, 4 frames × 8 directions).
+    pub horse_idle: Vec<Handle<Image>>,
+    /// Horse mount gallop (`horse_run[d * HORSE_RUN_FRAMES + f]`).
+    pub horse_run: Vec<Handle<Image>>,
 }
 
 /// One-shot attack clip selector (Spec 031/033) — which sheet a strike plays.
@@ -285,6 +400,26 @@ pub struct PlayerSkins {
     /// strike — the exp-ease recovers it inside the clip, so nothing has to
     /// reverse it by hand.
     pub lunge_pending: bool,
+    /// Horse mount state: when true the sprite plays the 48×48 ride sheets.
+    /// Movement/attack timing keeps running so mount/unmount transitions
+    /// reset the gallop clock exactly once.
+    pub mount: bool,
+    pub mount_time: f32,
+    pub mount_frame: usize,
+    pub mount_run_frame: usize,
+}
+
+/// On-screen size of the mounted 32×48 ride frame, world units. The same
+/// pixel scale as the 32×32 character sheet describes the wider ride: 1 wu
+/// per art pixel, so the frame is the character width × 1.5× the height.
+pub fn mount_sprite_size() -> Vec2 {
+    Vec2::new(TINY_FIGURE_HEIGHT, TINY_FIGURE_HEIGHT * HORSE_FRAME_H as f32 / FRAME_H as f32)
+}
+
+/// Attack-freeze rule: while a swing clip plays the player does not walk —
+/// movement resumes when the animation ends.
+pub fn movement_locked(skins: &PlayerSkins) -> bool {
+    skins.attack.is_some()
 }
 
 /// Advance (and wrap) the run frame index.
@@ -363,7 +498,7 @@ fn setup_skins(
     let mut map = HashMap::new();
     for (i, name) in CHARACTERS.iter().enumerate() {
         let h: &Vec<Handle<Image>> = &handles;
-        let base = i * 11;
+        let base = i * 13;
         let sheet = |idx: usize| -> (u32, u32, Vec<u8>) {
             let img = images.get(&h[base + idx]).expect(
                 "attack sheet loaded",
@@ -385,6 +520,8 @@ fn setup_skins(
         let (ow, oh, hoe_data) = sheet(8);
         let (vw, vh, shovel_data) = sheet(9);
         let (fw, fh, fists_data) = sheet(10);
+        let (hiw, hih, horse_idle_data) = sheet(11);
+        let (hrw, hrh, horse_run_data) = sheet(12);
         let character = IsoCharacter {
             name: name.to_string(),
             idle: build_action_frames(&mut images, &idle_data, iw, ih, iw / FRAME_W),
@@ -398,6 +535,8 @@ fn setup_skins(
             hoe: build_action_frames(&mut images, &hoe_data, ow, oh, ow / FRAME_W),
             shovel: build_action_frames(&mut images, &shovel_data, vw, vh, vw / FRAME_W),
             fists: build_action_frames(&mut images, &fists_data, fw, fh, fw / FRAME_W),
+            horse_idle: build_horse_idle_frames(&mut images, &horse_idle_data, hiw, hih),
+            horse_run: build_horse_run_frames(&mut images, &horse_run_data, hrw, hrh),
         };
         map.insert(name.to_string(), character);
     }
@@ -428,7 +567,11 @@ fn apply_skin_to_sprite(
     };
     sprite.image = start;
     sprite.flip_x = false;
-    sprite.custom_size = Some(Vec2::splat(TINY_FIGURE_HEIGHT));
+    sprite.custom_size = Some(if skins.mount {
+        mount_sprite_size()
+    } else {
+        Vec2::splat(TINY_FIGURE_HEIGHT)
+    });
     // Feet (bottom edge of the frame) on the entity transform.
     *anchor = Anchor::BOTTOM_CENTER;
     skins.anim_time = 0.0;
@@ -456,6 +599,28 @@ fn animate_player_sprite(
     let d = direction_index(Facing::from_angle(orientation.facing_angle));
     let speed = player.velocity.length();
 
+    // Horse mount: an equipped Horse swaps the sprite to the 32×48 ride
+    // sheets in one transition, then animates gallop/idle like the feet.
+    let mounted = matches!(
+        player.owned_vehicle,
+        Some(idlecore_core::Vehicle::Bicycle)
+    );
+    if skins.mount != mounted {
+        skins.mount = mounted;
+        skins.anim_time = 0.0;
+        skins.mount_time = 0.0;
+        skins.mount_frame = 0;
+        skins.mount_run_frame = 0;
+        skins.idle_frame = 0;
+        skins.run_frame = 0;
+        skins.walk_frame = 0;
+        sprite.custom_size = Some(if mounted {
+            mount_sprite_size()
+        } else {
+            Vec2::splat(TINY_FIGURE_HEIGHT)
+        });
+    }
+
     // Snapshot this direction's frames so the animation clock can be
     // mutated below without aliasing the borrow of the character.
     let Some(name) = skins.selected.clone() else {
@@ -464,6 +629,61 @@ fn animate_player_sprite(
     let Some(character) = skins.characters.get(&name) else {
         return;
     };
+
+    if skins.mount {
+        let run_frames: Vec<Handle<Image>> =
+            character.horse_run[d * HORSE_RUN_FRAMES..(d + 1) * HORSE_RUN_FRAMES].to_vec();
+        let idle_frames: Vec<Handle<Image>> =
+            character.horse_idle[d * HORSE_IDLE_FRAMES..(d + 1) * HORSE_IDLE_FRAMES].to_vec();
+        // Attack freeze: keep ticking the one-shot clip (the movement lock
+        // reads it) but the sprite holds the standing mount — the pack ships
+        // no mounted attack sheets, so the rider stands the swing out.
+        if skins.attack.is_some() {
+            let anim = skins.attack.unwrap_or(AttackAnim::Sword);
+            let t = skins.attack_time + time.delta_secs();
+            if (t / ATTACK_FRAME_TIME) as usize >= anim.frames() {
+                skins.attack = None; // clip finished
+                skins.attack_time = 0.0;
+            } else {
+                skins.attack_time = t;
+            }
+            let target = idle_frames[0].clone();
+            if sprite.image != target {
+                sprite.image = target;
+            }
+            transform.scale = Vec3::ONE;
+            transform.rotation = Quat::IDENTITY;
+            return;
+        }
+        if speed > MOVE_EPS {
+            let mut t = skins.mount_time + time.delta_secs();
+            while t >= HORSE_RUN_FRAME_TIME {
+                t -= HORSE_RUN_FRAME_TIME;
+                skins.mount_run_frame = (skins.mount_run_frame + 1) % HORSE_RUN_FRAMES;
+            }
+            skins.mount_time = t;
+            let target = run_frames[skins.mount_run_frame].clone();
+            if sprite.image != target {
+                sprite.image = target;
+            }
+        } else {
+            let mut t = skins.mount_time + time.delta_secs();
+            while t >= HORSE_IDLE_FRAME_TIME {
+                t -= HORSE_IDLE_FRAME_TIME;
+                skins.mount_frame = (skins.mount_frame + 1) % HORSE_IDLE_FRAMES;
+            }
+            skins.mount_time = t;
+            let target = idle_frames[skins.mount_frame].clone();
+            if sprite.image != target {
+                sprite.image = target;
+            }
+        }
+        // The sheet covers all 8 directions — no mirroring, no rotation wobble.
+        transform.scale = Vec3::ONE;
+        transform.rotation = Quat::IDENTITY;
+        return;
+    }
+
     let idle_frames: Vec<Handle<Image>> =
         character.idle[d * IDLE_FRAMES..(d + 1) * IDLE_FRAMES].to_vec();
     let walk_frames: Vec<Handle<Image>> =
@@ -740,6 +960,26 @@ mod tests {
         // RUN_FRAMES = 8: advance at 7 wraps to 0, never mid-run.
         assert_eq!(step_run_frame(0), 1);
         assert_eq!(step_run_frame(7), 0);
+    }
+
+    #[test]
+    fn movement_locks_while_a_swing_plays() {
+        // Attack-freeze rule: the clip gates walking/dashing until it ends.
+        let mut skins = PlayerSkins::default();
+        assert!(!movement_locked(&skins));
+        skins.attack = Some(AttackAnim::Sword);
+        assert!(movement_locked(&skins));
+        skins.attack = None;
+        assert!(!movement_locked(&skins));
+    }
+
+    #[test]
+    fn mount_frame_is_taller_not_wider_than_the_character() {
+        // 32×48 ride art over a 32×32 character sheet keeps the pixel scale:
+        // same world width, 1.5× the world height.
+        let size = mount_sprite_size();
+        assert_eq!(size.x, TINY_FIGURE_HEIGHT);
+        assert_eq!(size.y, TINY_FIGURE_HEIGHT * 1.5);
     }
 
     #[test]
