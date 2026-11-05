@@ -52,9 +52,6 @@ pub struct ClientPlayer {
     pub hostile_until_utc: u64,
     pub death_until_utc: u64,
     pub grace_until_utc: u64,
-    /// Local dash burst deadline (unix secs): fires on the dash key, trimmed
-    /// by the authoritative row a beat later.
-    pub dash_burst_secs: f64,
 }
 
 impl ClientPlayer {
@@ -66,9 +63,12 @@ impl ClientPlayer {
         })
     }
 
-    /// Is the dash burst live right now (local press + server stamp)?
+    /// Is the dash stamp live (server row only; Space dash was removed per
+    /// playtest — the burst read as a streaking line behind a galloping
+    /// mount). The wire field survives; nothing sets it from input anymore.
+    #[allow(dead_code)]
     pub fn dashing(&self, unix_now: f64) -> bool {
-        self.dash_until_utc as f64 > unix_now || self.dash_burst_secs > unix_now
+        self.dash_until_utc as f64 > unix_now
     }
 }
 

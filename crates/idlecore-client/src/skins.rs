@@ -407,6 +407,11 @@ pub struct PlayerSkins {
     pub mount_time: f32,
     pub mount_frame: usize,
     pub mount_run_frame: usize,
+    /// Combat polish: ONE queued swing (heading radians, queued-at unix).
+    /// A press during a live clip or weapon cooldown lands here and fires
+    /// the instant the clip ends and the cooldown clears. Expires fast so
+    /// a queued swing can never autostrike forever.
+    pub buffered_attack: Option<(f32, f64)>,
 }
 
 /// On-screen size of the mounted 32×48 ride frame, world units. The same
@@ -590,12 +595,22 @@ fn apply_skin_to_sprite(
 fn animate_player_sprite(
     time: Res<Time>,
     orientation: Res<PlayerOrientation>,
+    fx: Res<crate::net::td::TdFx>,
     mut skins: ResMut<PlayerSkins>,
     mut player_query: Query<(&mut Sprite, &mut Transform, &ClientPlayer), With<Player>>,
 ) {
     let Ok((mut sprite, mut transform, player)) = player_query.single_mut() else {
         return;
     };
+    // SNES hurt blink (combat polish): the sprite dips red for one beat when
+    // YOU eat the hit — the number/logs say so, the blink makes the body
+    // flinch. Runs before every early return so a blink survives clips.
+    if fx.hurt_flash > 0.0 {
+        let k = (fx.hurt_flash / 0.45).clamp(0.0, 1.0);
+        sprite.color = Color::srgb(1.0, 1.0 - 0.65 * k, 1.0 - 0.65 * k);
+    } else if sprite.color != Color::WHITE {
+        sprite.color = Color::WHITE;
+    }
     let d = direction_index(Facing::from_angle(orientation.facing_angle));
     let speed = player.velocity.length();
 

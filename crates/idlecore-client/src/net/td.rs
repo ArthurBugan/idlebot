@@ -246,6 +246,9 @@ pub struct TdFx {
     pub dmg_salt: u32,
     /// REV (Zelda numbers): the bold game font for the pop numbers.
     pub font_dmg: Option<Handle<Font>>,
+    /// Combat polish: seconds left of the hurt blink on YOUR sprite (set by
+    /// the player_hurt fx, consumed + decayed by the skins animation).
+    pub hurt_flash: f32,
 }
 
 impl Default for TdFx {
@@ -260,6 +263,7 @@ impl Default for TdFx {
             last_attack_sent: 0.0,
             dmg_salt: 0,
             font_dmg: None,
+            hurt_flash: 0.0,
         }
     }
 }
@@ -1180,6 +1184,10 @@ fn sync_td_entities(
         }
         tracker.last_hp.insert(row.mob_id, row.hp);
         let ratio = clamp_ratio(row.hp as f32, mob.hp as f32);
+        // Playtest polish: the bar only exists once the mob is wounded, sits
+        // on a dark slot backplate and FILLS FROM THE LEFT (a shrink-eating
+        // centered bar never reads as health).
+        let bar = (ratio < 0.995).then(|| (1.6 * ratio + 0.14, -(0.8 * (1.0 - ratio))));
         let target = Vec2::new(row.x, row.y);
         // Glide speed from the KIND's server step cadence (REV5 §18): one
         // hex (TILE_SIZE wu) per `step_interval_secs`, not from snapshot
@@ -1197,48 +1205,73 @@ fn sync_td_entities(
             mv.speed = speed;
             // Rate-limited bar: children are transient like markers' other
             // overlays — clear + re-add keeps the ratio fresh for ~free.
-            commands
-                .entity(ent)
-                .despawn_children()
-                .with_child((
+            let mut entity = commands.entity(ent);
+            entity.despawn_children();
+            if let Some((fill_w, fill_x)) = bar {
+                entity.with_child((
                     Sprite {
-                        color: bar_color(ratio),
-                        custom_size: Some(Vec2::new(1.6 * ratio, 0.24)),
+                        color: Color::srgba(0.08, 0.05, 0.05, 0.8),
+                        custom_size: Some(Vec2::new(1.74, 0.32)),
                         ..default()
                     },
-                    Transform::from_xyz(0.0, 1.1, 0.04),
+                    Transform::from_xyz(0.0, 1.1, 0.03),
                 ));
+            }
+            if let Some((fill_w, fill_x)) = bar {
+                entity.with_child((
+                    Sprite {
+                        color: bar_color(ratio),
+                        custom_size: Some(Vec2::new(fill_w, 0.24)),
+                        ..default()
+                    },
+                    Transform::from_xyz(fill_x, 1.1, 0.04),
+                ));
+            }
         } else {
             // Fresh marker: enters with a 0.3 s spawn pop at the server
             // position (no glide — there is no prior position to come from).
             let pos = Vec3::new(row.x, row.y, prop_depth(row.y) + 40.0);
-            commands.spawn((
-                TdMobMarker,
-                TdMobAnim {
-                    mob_id: row.mob_id,
-                    kind: row.kind.clone(),
-                },
-                TdMove {
-                    target,
-                    speed,
-                },
-                TdSpawnPop { left: 0.3 },
-                Sprite {
-                    image: ms.idle.clone(),
-                    color: Color::WHITE,
-                    custom_size: Some(Vec2::new(1.8 * aspect, 1.8)),
-                    ..default()
-                },
-                Transform::from_translation(pos),
-            ))
-            .with_child((
-                Sprite {
-                    color: bar_color(ratio),
-                    custom_size: Some(Vec2::new(1.6 * ratio, 0.24)),
-                    ..default()
-                },
-                Transform::from_xyz(0.0, 1.1, 0.04),
-            ));
+            let spawned = commands
+                .spawn((
+                    TdMobMarker,
+                    TdMobAnim {
+                        mob_id: row.mob_id,
+                        kind: row.kind.clone(),
+                    },
+                    TdMove {
+                        target,
+                        speed,
+                    },
+                    TdSpawnPop {
+                        left: 0.3,
+                    },
+                    Sprite {
+                        image: ms.idle.clone(),
+                        color: Color::WHITE,
+                        custom_size: Some(Vec2::new(1.8 * aspect, 1.8)),
+                        ..default()
+                    },
+                    Transform::from_translation(pos),
+                ))
+                .id();
+            if let Some((fill_w, fill_x)) = bar {
+                commands.entity(spawned).with_child((
+                    Sprite {
+                        color: Color::srgba(0.08, 0.05, 0.05, 0.8),
+                        custom_size: Some(Vec2::new(1.74, 0.32)),
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, 1.1, 0.03),
+                ));
+                commands.entity(spawned).with_child((
+                    Sprite {
+                        color: bar_color(ratio),
+                        custom_size: Some(Vec2::new(fill_w, 0.24)),
+                        ..default()
+                    },
+                    Transform::from_xyz(fill_x, 1.1, 0.04),
+                ));
+            }
         }
     }
     // Funeral pass: rows that left the snapshot die at their last client
@@ -1268,7 +1301,7 @@ fn sync_td_entities(
     tracker.last_hp.retain(|id, _| live_ids.contains(id));
 
     // ---- combat fx feed (REV3 §10/§13 + Spec 034 juice) ----
-    process_combat_events(&snap, &mut fx, &mut commands, &player_xf, &mut shake);
+    process_combat_events(&snap, &mut fx, &mut commands, &player_xf, &mut shake, &mobs);
 }
 
 /// REV5 §18: one-hex glide speed from the server's own step cadence — the
@@ -2030,6 +2063,19 @@ fn animate_mobs(
 // Combat fx systems (REV3 §13) — consume combat_event rows, animate visuals
 // ---------------------------------------------------------------------------
 
+/// Where a damage number anchors: the victim's LIVE marker transform when
+/// the event names a mob (the marker glides — a hex-center anchor trails
+/// behind), else the event's own hex/position.
+fn mob_anchor_pos(
+    mobs_live: &Query<(Entity, &TdMobAnim, &mut TdMove, &mut Transform), With<TdMobMarker>>,
+    mob_id: u64,
+) -> Option<(f32, f32)> {
+    mobs_live
+        .iter()
+        .find(|(_, anim, _, _)| anim.mob_id == mob_id)
+        .map(|(_, _, _, t)| (t.translation.x, t.translation.y))
+}
+
 /// Consume fresh `combat_event` rows once each and birth visuals: tracers
 /// fly from the shooter, impacts pop on the target, capitals flash, the
 /// wave's first capital hit toasts "under attack".
@@ -2039,6 +2085,7 @@ fn process_combat_events(
     commands: &mut Commands,
     player_xf: &PlayerTransform,
     shake: &mut crate::plugins::camera::CameraShake,
+    mobs_live: &Query<(Entity, &TdMobAnim, &mut TdMove, &mut Transform), With<TdMobMarker>>,
 ) {
     for row in &snap.events {
         if row.event_id <= fx.last_event_id {
@@ -2047,7 +2094,9 @@ fn process_combat_events(
         fx.last_event_id = fx.last_event_id.max(row.event_id);
         let Some(plan) = fx_plan(&row.kind) else { continue };
         // Attack cursor: any mob-sourced event arms the attack pose (§13).
-        if row.attacker_mob > 0 {
+        // `player_hit` carries the VICTIM mob id — a hit never poses the
+        // one that got struck.
+        if row.attacker_mob > 0 && row.kind != "player_hit" {
             fx.posing.insert(row.attacker_mob, 0.55);
         }
         // Player swings arm the attacker pose at home too (attacker_mob is
@@ -2059,6 +2108,7 @@ fn process_combat_events(
         if row.kind == "player_hurt" {
             shake.shake(0.3);
             fx.hitstop_left = fx.hitstop_left.max(0.05);
+            fx.hurt_flash = 0.45;
         }
         let (tx, ty) = fx_target_pos(row);
         match plan {
@@ -2106,8 +2156,8 @@ fn process_combat_events(
             }
             FxBirth::PlayerHurt => {
                 // REV: red impact on YOUR hex + the hot-red damage number
-                // pops near you (shake/hitstop run in the `player_hurt`
-                // pre-match block above).
+                // pops on YOU (the live transform, not the hex anchor —
+                // you glide too). Shake/hitstop run in the pre-match block.
                 impact_sprite(commands, [1.0, 0.2, 0.15], tx, ty, 1.0);
                 if let Some(dmg) = strike_damage(&row.detail) {
                     let jitter = dmg_jitter(fx.dmg_salt);
@@ -2115,8 +2165,8 @@ fn process_combat_events(
                     spawn_zelda_number(
                         commands,
                         zelda_font(fx),
-                        tx,
-                        ty,
+                        player_xf.translation.x,
+                        player_xf.translation.y,
                         &dmg.to_string(),
                         Color::srgb(1.0, 0.28, 0.18),
                         jitter,
@@ -2174,15 +2224,19 @@ fn process_combat_events(
                 } else {
                     impact_sprite(commands, [1.0, 0.9, 0.5], tx, ty, 0.9);
                 }
-                // C8 + REV (Zelda numbers): ember pop above the victim.
+                // C8 + REV (Zelda numbers): ember pop pinned to the VICTIM'S
+                // live marker (row.attacker_mob carries the mob id) so the
+                // number glides with the mob — a hex anchor trails behind.
+                let (nx, ny) = mob_anchor_pos(mobs_live, row.attacker_mob)
+                    .unwrap_or((tx, ty));
                 if let Some(dmg) = strike_damage(&row.detail) {
                     let jitter = dmg_jitter(fx.dmg_salt);
                     fx.dmg_salt = fx.dmg_salt.wrapping_add(1);
                     spawn_zelda_number(
                         commands,
                         zelda_font(fx),
-                        tx,
-                        ty,
+                        nx,
+                        ny,
                         &dmg.to_string(),
                         Color::srgb(1.0, 0.52, 0.24),
                         jitter,
@@ -2260,11 +2314,11 @@ fn spawn_zelda_number(
 ) {
     let base = Vec2::new(x + jitter, y + 0.55);
     commands.spawn((
-        TdFloatText { t: 0.0, base, rise: 0.85 },
+        TdFloatText { t: 0.0, base, rise: 1.15 },
         Text2d::new(text),
         TextFont {
             font: font.map(bevy::text::FontSource::from).unwrap_or_default(),
-            font_size: 0.85.into(),
+            font_size: 1.15.into(),
             ..default()
         },
         TextColor(fill),
@@ -2332,6 +2386,8 @@ fn combat_fx_tick(
         *left -= dt;
         *left > 0.0
     });
+    // Hurt blink decay: the skins system reads the timer each frame.
+    fx.hurt_flash = (fx.hurt_flash - dt).max(0.0);
     fx.capital_hit.retain(|_, left| {
         *left -= dt;
         *left > 0.0
@@ -2384,7 +2440,7 @@ fn combat_fx_tick(
     for (entity, mut float, mut transform, mut text_color) in floats.iter_mut() {
         float.t += dt;
         const T_POP: f32 = 0.14;
-        const T_LIFE: f32 = 0.8;
+        const T_LIFE: f32 = 0.95;
         if float.t >= T_LIFE {
             commands.entity(entity).despawn();
             continue;
@@ -3050,13 +3106,6 @@ pub struct TdVeilRoot;
 pub struct TdVeilTxt;
 
 /// Pure dash-cooldown chip text (unit-tested): ready / draining.
-fn dash_chip_text(dash_cd_until_utc: u64, now: u64) -> String {
-    if dash_cd_until_utc <= now {
-        "Dash [Space] — ready".to_string()
-    } else {
-        format!("Dash [Space] — {}", fmt_countdown(dash_cd_until_utc - now))
-    }
-}
 
 /// Pure hp bar fill for attacks (unit-tested): full → green, mid → amber,
 /// low → red — the mirror of the capital chip's server-side HP math.
@@ -3265,7 +3314,9 @@ fn update_combat_hud(
         **text = format!("Wpn: {}{}", p.weapon_def().name, ammo_note);
     }
     if let Ok(mut text) = ps.p4().single_mut() {
-        **text = dash_chip_text(p.dash_cd_until_utc, now);
+        // Space dash removed per playtest — the chip is blanked, the spawn
+        // slot stays (removing it renumbers the ParamSet arm).
+        **text = String::new();
     }
 }
 
@@ -3304,18 +3355,31 @@ fn td_combat_input(
         return; // dead: reducers reject anyway — save the trip
     }
 
+    // ---- Buffered strike (combat polish): a press during a live swing or
+    // cooldown queues ONE swing; it fires the instant the clip ends and the
+    // cooldown clears, so spamming reads as continuous combat instead of
+    // dead clicks. Expires quickly — never autostrikes forever.
+    if let Some((angle, queued_at)) = skins.buffered_attack {
+        if (now as f64) - queued_at > 0.9 {
+            skins.buffered_attack = None;
+        } else if !armed_build
+            && !panel_open
+            && skins.attack.is_none()
+            && player.attack_cd_until_utc <= now
+        {
+            skins.buffered_attack = None;
+            fire_player_strike(&mut skins, &mut orientation, &mut net, player, angle);
+        }
+    }
+
     // ---- KeyF: strike the facing arc ----
     if keys.just_pressed(KeyCode::KeyF) && !armed_build {
-        let dir = idlecore_core::player_combat::heading_index(orientation.facing_angle);
-        crate::skins::start_attack(
-            &mut skins,
-            crate::skins::AttackAnim::of_weapon(player.weapon_def().anim),
-        );
-        fx.last_attack_sent = now as f64;
-        let tx = net.sender();
-        send_reducer(&mut net, |r| {
-            r.player_attack_then(dir, reducer_report("attack", tx.clone(), 0))
-        });
+        let angle = orientation.facing_angle;
+        if skins.attack.is_some() || player.attack_cd_until_utc > now {
+            skins.buffered_attack = Some((angle, now as f64));
+        } else {
+            fire_player_strike(&mut skins, &mut orientation, &mut net, player, angle);
+        }
     }
 
     // ---- KeyC: cycle the OWNED tier upward; KeyV: attempt to buy/equip
@@ -3390,14 +3454,31 @@ fn td_combat_input(
         .unwrap_or(world);
     let angle = (target - me).y.atan2((target - me).x);
     orientation.facing_angle = angle; // the clip + weapon overlay face the strike
+    if skins.attack.is_some() || player.attack_cd_until_utc > now {
+        skins.buffered_attack = Some((angle, now as f64));
+    } else {
+        fire_player_strike(&mut skins, &mut orientation, &mut net, player, angle);
+    }
+}
+
+/// One shared strike fire (Spec 027 §5.1 + playtest polish): arms the clip
+/// and sends the reducer. The buffered-release path reuses it verbatim.
+fn fire_player_strike(
+    skins: &mut crate::skins::PlayerSkins,
+    orientation: &mut crate::player::PlayerOrientation,
+    net: &mut Net,
+    player: &crate::player::ClientPlayer,
+    angle: f32,
+) {
+    orientation.facing_angle = angle;
     crate::skins::start_attack(
-        &mut skins,
+        skins,
         crate::skins::AttackAnim::of_weapon(player.weapon_def().anim),
     );
     let dir = idlecore_core::player_combat::heading_index(angle);
     let tx = net.sender();
-    send_reducer(&mut net, |r| {
-        r.player_attack_then(dir, reducer_report("attack", tx.clone(), 0))
+    send_reducer(net, |r| {
+        r.player_attack_then(dir, reducer_report("attack", tx, 0))
     });
 }
 
@@ -4514,25 +4595,6 @@ mod tests_fx {
         assert_eq!(
             idlecore_core::player_combat::DASH_CD_SECS,
             2
-        );
-    }
-
-    #[test]
-    fn dash_chip_text_flips_between_ready_and_countdown() {
-        assert_eq!(
-            dash_chip_text(0, 1_000),
-            "Dash [Space] — ready",
-            "0 cd = never held = ready"
-        );
-        assert_eq!(
-            dash_chip_text(1_000, 1_000),
-            "Dash [Space] — ready",
-            "at the stamp the cd is spent"
-        );
-        assert_eq!(
-            dash_chip_text(1_005, 1_000),
-            "Dash [Space] — 0:05",
-            "draining chip counts the remaining window"
         );
     }
 

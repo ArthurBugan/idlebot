@@ -260,8 +260,6 @@ fn setup(mut commands: Commands) {
             hostile_until_utc: 0,
             death_until_utc: 0,
             grace_until_utc: 0,
-            // Local dash burst (press → 0.4 s ahead of the server row).
-            dash_burst_secs: 0.0,
         },
     ));
 }

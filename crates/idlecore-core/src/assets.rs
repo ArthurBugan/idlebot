@@ -242,11 +242,13 @@ pub fn vehicle_material_spec(vehicle: VehicleAssetType) -> VehicleMaterialSpec {
             metallic: 0.0, roughness: 0.9, emissive: 0.0,
             has_trail: false, trail_lifetime: 0.0, trail_interval: 0.0,
         },
-        // Painted steel frame.
+        // Painted steel frame. Playtest REV: the Horse rides this variant;
+        // its diamond trail read as a streaking artifact behind a gallop —
+        // has_trail off for the Horse (play, spec 016 trail was car-era).
         VehicleAssetType::Bicycle => VehicleMaterialSpec {
             r: 0.2, g: 0.9, b: 1.0,
             metallic: 0.55, roughness: 0.35, emissive: 0.05,
-            has_trail: true, trail_lifetime: 0.6, trail_interval: 0.05,
+            has_trail: false, trail_lifetime: 0.6, trail_interval: 0.05,
         },
         // Enameled plastic deck.
         VehicleAssetType::Scooter => VehicleMaterialSpec {
@@ -353,7 +355,13 @@ mod spec_tests {
     #[test]
     fn none_has_no_trail_all_real_vehicles_do() {
         assert!(!vehicle_material_spec(VehicleAssetType::None).has_trail);
-        for v in all_vehicle_types().into_iter().skip(1) {
+        // Playtest REV: the Horse (Bicycle variant) rides trail-free — its
+        // diamond stream read as a streaking artifact behind a gallop.
+        assert!(
+            !vehicle_material_spec(VehicleAssetType::Bicycle).has_trail,
+            "Horse carries no trail"
+        );
+        for v in all_vehicle_types().into_iter().skip(2) {
             let s = vehicle_material_spec(v);
             assert!(s.has_trail, "{v:?} should have a trail");
             assert!(s.trail_lifetime > 0.0);

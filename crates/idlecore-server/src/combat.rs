@@ -720,20 +720,29 @@ fn roamer_strike(ctx: &ReducerContext, mob_row: &Mob, kind: &cfg::MobKind, now: 
         return false;
     }
     let dmg = kind.dps;
-    apply_player_damage(ctx, &player_row, dmg, mob_row.mob_id, kind.name, now)
+    apply_player_damage(
+        ctx,
+        &player_row,
+        dmg,
+        mob_row.mob_id,
+        (mob_row.hex_q, mob_row.hex_r),
+        kind.name,
+        now,
+    )
 }
 
-/// Player range checks + real damage application shared by roamers and
-/// aggroed raiders (§8): applies dps, refreshes `hostile_until`, and runs
-/// the death flow at 0 (CE_PLAYER_HURT carries the fx).
 /// Shared player-damage application (§8): dash i-frames and grace block
 /// first; then dps lands, `hostile_until` refreshes, and 0 HP stamps the
-/// death. `CE_PLAYER_HURT` fx rides out.
+/// death. `CE_PLAYER_HURT` fx rides out. SNES-Zelda feel (playtest REV):
+/// surviving a hit SHOVES the player one hex away from the striker (land
+/// only, never off a death, never into a standing wall) — the knock
+/// reads as the swing's weight while dash i-frames keep the dodge alive.
 fn apply_player_damage(
     ctx: &ReducerContext,
     target: &Player,
     dmg: u32,
     attacker_mob: u64,
+    attacker_hex: (i32, i32),
     detail: &str,
     now: u64,
 ) -> bool {
@@ -759,6 +768,33 @@ fn apply_player_damage(
     if cur > dmg {
         s.player_hp = cur - dmg;
         s.hostile_until = now + combat::MOB_AGGRO_SECS;
+        // The knock: one king-step straight away from the striker's hex.
+        let (kq, kr) = (
+            (target.hex_q - attacker_hex.0).signum(),
+            (target.hex_r - attacker_hex.1).signum(),
+        );
+        // Same-hex contact has no away direction — the step stays honest.
+        if (kq, kr) != (0, 0) {
+            let (nq, nr) = (target.hex_q + kq, target.hex_r + kr);
+            let land = ctx
+                .db
+                .hex_tile()
+                .hex_id()
+                .find(tile_id_of(nq, nr))
+                .is_some_and(|t| t.terrain != "Water");
+            let walled = ctx.db.defense_structure().iter().any(|st| {
+                cfg::defense_kind(&st.kind).is_some_and(|k| k.is_wall)
+                    && hex_coords_of(st.hex_id) == (nq, nr)
+            });
+            if land && !walled {
+                s.hex_q = nq;
+                s.hex_r = nr;
+                s.hex_id = tile_id_of(nq, nr);
+                let (kx, ky) = tile_center(nq, nr);
+                s.position_x = kx;
+                s.position_y = ky;
+            }
+        }
     } else {
         // Death (§6): 10 s corpse window, then capital respawn.
         s.player_hp = 0;

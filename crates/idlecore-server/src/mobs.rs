@@ -39,6 +39,9 @@ const RAID_TICK_AUDIT: &str = "raid_tick";
 /// OFF-trace (a knock or a player chase): the target is the NEAREST node
 /// at or before the claimed index — never a later one — so the walk back
 /// cannot cut a bend across the grass or skip ahead. Ties → spawn side.
+/// CORNER clamp (playtest): landing PAST the claim (a shove or a chase
+/// hop onto a later node near a fold) must not jump progress — the
+/// target is the previous node, so the skipped bend is re-tread.
 ///
 /// An empty path = legacy capital without a stamped trace → the caller
 /// keeps the old free march at the capital hex itself.
@@ -54,14 +57,18 @@ pub fn raid_lane_target(
         return (0, (mob_q, mob_r));
     }
     let last = path.len().saturating_sub(1);
-    // Standing ON the trace: progress IS the position; the next node in
-    // order is the target (capped at the capital — standing there holds).
+    let cap = (path_idx as usize).min(last);
+    // Standing ON the trace: walk the nodes IN ORDER.
     if let Some(j) = path.iter().position(|&n| n == (mob_q, mob_r)) {
+        if j > cap {
+            // Landed past the claim: step back to the previous node and
+            // walk the lane back down to the claim — never skip ahead.
+            return (cap, path[j - 1]);
+        }
         let next = (j + 1).min(last);
         return (next, path[next]);
     }
     // Off-trace: the nearest node at or BEFORE the claimed index.
-    let cap = (path_idx as usize).min(last);
     let mut best: (i32, usize) = (i32::MAX, 0);
     for (i, &(nq, nr)) in path[..=cap].iter().enumerate() {
         let d = tile_distance(mob_q, mob_r, nq, nr);
@@ -1569,6 +1576,77 @@ mod tests {
         // Empty trace: the caller keeps the old free march at the capital
         // hex; the pure lane fn defensively echoes the mob's own hex.
         assert_eq!(raid_lane_target(2, 3, &[], 0), (0, (2, 3)));
+    }
+
+    #[test]
+    fn landing_past_the_claim_re_treads_the_bend() {
+        // A shove or chase hop near a fold can land a raider exactly on a
+        // LATER node. Progress must not jump: walk back one node, claim
+        // unchanged — the skipped bend is re-tread instead of cut.
+        let line = idlecore_core::grid::hex_line(0, 0, 6, 0);
+        // Standing on node 2 while the claim is still 1: back to node 1.
+        assert_eq!(raid_lane_target(line[2].0, line[2].1, &line, 1), (1, line[1]));
+        // Standing on the node two past the claim: also one node back...
+        let (idx, target) = raid_lane_target(line[3].0, line[3].1, &line, 1);
+        assert_eq!(idx, 1, "claim never jumps past a shove");
+        assert_eq!(target, line[2]);
+        // Standing exactly ON the claim: that arrival advances normally.
+        assert_eq!(raid_lane_target(line[1].0, line[1].1, &line, 1), (2, line[2]));
+    }
+
+    /// March-sim WITH a mid-lane knockback: a raider shoved forward across
+    /// a bend must walk the lane back and regain the claim, never reach
+    /// the capital having skipped nodes without standing on them first.
+    #[test]
+    fn knockback_never_lets_a_raider_skip_a_bend() {
+        for seed in 1..25u64 {
+            let mut s = seed * 9_317;
+            let mut rand = move || {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                s
+            };
+            let path = crate::capital::generate_raid_path(8, 4, 0, 0, |_, _| true, &mut rand);
+            let cap = *path.last().unwrap();
+            let blocked: std::collections::HashSet<(i32, i32)> =
+                [(cap.0, cap.1)].into_iter().collect();
+            let mut mob = path[0];
+            let mut claim: u32 = 1;
+            let mut steps = 0;
+            while steps < 300 {
+                if steps == 6 {
+                    // One king-step shove sideways at a bend: the knock may
+                    // land off-lane or on a later node — both must re-chase.
+                    let side = [(0, -1), (-1, 0), (1, 0), (0, 1), (-1, -1), (1, 1)]
+                        [((rand() >> 4) % 6) as usize];
+                    mob = (mob.0 + side.0, mob.1 + side.1);
+                }
+                let (mq, mr) = mob;
+                let old_claim = claim;
+                let (idx, (tq, tr)) = raid_lane_target(mq, mr, &path, claim);
+                claim = idx as u32;
+                // The claim only advances when the mob stands ON that node —
+                // a shove landing on a later node must clamp it backward.
+                assert!(
+                    idx as u32 <= old_claim + 1,
+                    "seed {seed}: claim jumped from a shove (idx {idx} > old {old_claim})"
+                );
+                if (tq, tr) == (mq, mr) {
+                    break; // arrived (capital hex) or wedged
+                }
+                let Some(next) = step_toward_hex_avoiding(mq, mr, tq, tr, &blocked) else {
+                    break; // walked into the capital's blocked ring
+                };
+                mob = next;
+                steps += 1;
+            }
+            let d = tile_distance(mob.0, mob.1, cap.0, cap.1);
+            assert!(
+                d <= 1,
+                "seed {seed}: knocked raider ended {d} hexes from its capital (path {path:?})"
+            );
+        }
     }
 
     #[test]

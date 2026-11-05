@@ -19,7 +19,6 @@ impl Plugin for PlayerPlugin {
             .add_systems(Startup, (register_player_orientation, spawn_vehicle_indicator))
             .add_systems(Update, (
                 player_movement,
-                dash_ghosts,
                 update_vehicle_indicator,
                 update_aura_light,
             ));
@@ -124,34 +123,10 @@ fn player_movement(
     if keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight) || touch.sprint {
         speed *= SPRINT_MULTIPLIER;
     }
-    // Spec 027 §5.2: dash burst — Space fires the reducer, the local window
-    // (0.4 s vs the server's 1-tick rounding) drives the ×3 burst speed now.
-    {
-        let now = crate::time_ext::now_unix_secs() as f64;
-        if keyboard.just_pressed(KeyCode::Space) && !attack_playing {
-            let dir = idlecore_core::player_combat::heading_index(orientation.facing_angle);
-            if let Some(mut net) = net {
-                if net.address.is_some() && player.death_until_utc <= now as u64 {
-                    let tx = net.sender();
-                    use crate::net::gen::player_dash;
-                    crate::net::hud::send_reducer(&mut net, |r| {
-                        r.player_dash_then(
-                            dir,
-                            crate::net::hud::reducer_report("dash", tx.clone(), 0),
-                        )
-                    });
-                    // Immediate burst: the server row confirms a beat later.
-                    player.dash_burst_secs = now
-                        + idlecore_core::player_combat::DASH_DURATION_SECS as f64
-                        + 0.1;
-                }
-            }
-        }
-        if player.death_until_utc > now as u64 {
-            speed = 0.0; // dead: stand still until respawn
-        } else if player.dashing(now) {
-            speed *= idlecore_core::player_combat::DASH_SPEED_MULT as f32;
-        }
+    // Death gate: stand still until respawn (dead reducers reject anyway).
+    let now = crate::time_ext::now_unix_secs() as f64;
+    if player.death_until_utc > now as u64 {
+        speed = 0.0;
     }
     // Partial joystick tilt scales speed for precise analog movement.
     speed *= input.length().min(1.0);
@@ -231,78 +206,6 @@ fn walkable_at(world: &StreamingWorldResource, x: f32, y: f32) -> bool {
         }
     }
     true
-}
-
-// ---------------------------------------------------------------------------
-// Dash trail (Spec 034 C7 — HLD afterimages)
-// ---------------------------------------------------------------------------
-
-/// A fading afterimage stamped behind the dashing player.
-#[derive(Component)]
-pub struct DashGhost {
-    pub t: f32,
-}
-
-/// Spawn cadence while the burst lives (seconds between afterimages).
-const GHOST_EVERY: f32 = 0.06;
-
-/// Drive the dash trail: stamp a translucent diamond every 60 ms while the
-/// burst is live, fade it over 0.25 s. The afterimage reads by silhouette —
-/// the skin pose a frame stamped is not knowable here without duplicating
-/// the skins state machine.
-#[allow(clippy::type_complexity)]
-fn dash_ghosts(
-    mut commands: Commands,
-    mut images: ResMut<Assets<Image>>,
-    time: Res<Time>,
-    mut next: Local<f32>,
-    player_query: Query<(&Transform, &ClientPlayer), With<PhysicsBody>>,
-    mut ghosts: Query<(Entity, &mut DashGhost, &mut Sprite)>,
-) {
-    let unix_now = crate::time_ext::now_unix_secs() as f64;
-    let Ok((t, player)) = player_query.single() else { return };
-
-    // Fading pass first (runs even between spawns).
-    for (entity, mut ghost, mut sprite) in ghosts.iter_mut() {
-        ghost.t += time.delta_secs();
-        if ghost.t >= 0.25 {
-            commands.entity(entity).despawn();
-            continue;
-        }
-        // The stamp stores its own alpha; re-read the sRGB tint and drop it.
-        let base = sprite.color.to_srgba();
-        sprite.color = bevy::color::Color::Srgba(
-            base.with_alpha(0.35 * (1.0 - ghost.t / 0.25)),
-        );
-    }
-
-    // Stamp pass.
-    *next -= time.delta_secs();
-    if player.dashing(unix_now) && *next <= 0.0 {
-        *next = GHOST_EVERY;
-        let img = images.add(bevy::image::Image::new_fill(
-            bevy::render::render_resource::Extent3d {
-                width: 2,
-                height: 2,
-                depth_or_array_layers: 1,
-            },
-            bevy::render::render_resource::TextureDimension::D2,
-            &[255, 255, 255, 255],
-            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
-            bevy::asset::RenderAssetUsages::default(),
-        ));
-        commands.spawn((
-            DashGhost { t: 0.0 },
-            Sprite {
-                color: Color::srgba(1.0, 1.0, 1.0, 0.35),
-                custom_size: Some(Vec2::splat(1.4)),
-                image: img,
-                ..default()
-            },
-            Transform::from_xyz(t.translation.x, t.translation.y - 0.9, t.translation.z - 2.0)
-                .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_4)),
-        ));
-    }
 }
 
 // ============================================================================

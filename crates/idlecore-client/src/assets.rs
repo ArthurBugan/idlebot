@@ -135,7 +135,9 @@ mod tests {
         let spec = vehicle_material_spec(VehicleAssetType::Bicycle);
         assert!(spec.metallic > 0.5);
         assert!(spec.roughness < 0.5);
-        assert!(spec.has_trail);
+        // Playtest REV: the Horse rides this variant — its diamond trail
+        // read as a streaking artifact, so the spec carries none.
+        assert!(!spec.has_trail);
     }
 
     #[test]
