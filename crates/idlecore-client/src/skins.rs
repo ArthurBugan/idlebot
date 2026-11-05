@@ -48,7 +48,7 @@ pub const FRAME_H: u32 = 32;
 
 /// Build the source sheet paths for a named character: idle, walk, run and
 /// the attack sheets (+ the Fists punch sheet, REV playtest), then the two
-/// Horse mount sheets (`Horse/Horse idle|run.png`).
+/// Horse mount sheets (`Horse/Horse_idle|run.png`).
 fn sheet_paths(name: &str) -> [String; 13] {
     let base = format!("models/Character/Character/Pre-made/{name}/");
     [
@@ -56,15 +56,15 @@ fn sheet_paths(name: &str) -> [String; 13] {
         format!("{base}Walk.png"),
         format!("{base}Run.png"),
         format!("{base}Sword.png"),
-        format!("{base}Bow and Arrow.png"),
+        format!("{base}Bow_and_Arrow.png"),
         format!("{base}Axe.png"),
         format!("{base}Sickle.png"),
         format!("{base}Pickaxe.png"),
         format!("{base}Hoe.png"),
         format!("{base}Shovel.png"),
-        format!("{base}Throwing items.png"),
-        format!("{base}Horse/Horse idle.png"),
-        format!("{base}Horse/Horse run.png"),
+        format!("{base}Throwing_items.png"),
+        format!("{base}Horse/Horse_idle.png"),
+        format!("{base}Horse/Horse_run.png"),
     ]
 }
 

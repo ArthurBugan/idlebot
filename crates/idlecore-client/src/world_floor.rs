@@ -377,7 +377,7 @@ pub mod atlas {
     pub const WATER: &str = "water";
     // Living-ground garnish: foliage/mushroom/pebble/water decal crops from
     // the "ALL props seasons.png" prop sheet.
-    pub const GARNISH_SHEET: &str = "models/Tileset/ALL props seasons.png";
+    pub const GARNISH_SHEET: &str = "models/Tileset/ALL_props_seasons.png";
     pub const G_TUFT: &str = "g_tuft";
     pub const G_FLOWERS_PINK: &str = "g_flowers_pink";
     pub const G_FLOWERS_PURPLE: &str = "g_flowers_purple";
@@ -538,29 +538,29 @@ pub fn enqueue_model_slices(
     // Tree: a clean full-canopy mahogany tree. The sheet stacks a sapling
     // (with a pale trunk) above the mature tree, so the crop must take only
     // the bottom mature tree to avoid a stray white trunk.
-    r(atlas::TREE, "models/Objects/Tree/Common/Shadow/Mahogany Tree.png", 123, 60, 38, 34);
+    r(atlas::TREE, "models/Objects/Tree/Common/Shadow/Mahogany_Tree.png", 123, 60, 38, 34);
     // Sapling: a young blade sprout, tinted green at render time.
     r(atlas::SAPLING, "models/Crops/Summer/Wheat.png", 0, 0, 16, 16);
     // Rock: a single rounded ground stone (not a two-stone cluster).
-    r(atlas::ROCK, "models/Objects/Props/Spring/Ground stones.png", 16, 16, 16, 16);
+    r(atlas::ROCK, "models/Objects/Props/Spring/Ground_stones.png", 16, 16, 16, 16);
     // Log: a proper cut-log with bark rim (not the flat plank it used to be).
     // The trunk sheet is 128×32 = 32×16 cells; the log spans the full first
     // cell (x4..29), so a 16×16 crop sliced it in half.
-    r(atlas::LOG, "models/Objects/Tree/TREE TRUNKS copiar.png", 0, 0, 32, 16);
+    r(atlas::LOG, "models/Objects/Tree/TREE_TRUNKS_copiar.png", 0, 0, 32, 16);
     // Craft bench: the whole Workbench sprite.
-    r(atlas::BENCH, "models/Objects/Work Benches/Workbench.png", 0, 0, 32, 32);
+    r(atlas::BENCH, "models/Objects/Work_Benches/Workbench.png", 0, 0, 32, 32);
 
     // ---- Inventory icons ----
-    r(atlas::ICON_SEED, "models/Crops/Summer/Adzuki Bean.png", 0, 16, 16, 16);
-    r(atlas::ICON_WOOD, "models/Icons/RPG icons/Extras/Wood.png", 0, 0, 32, 16);
-    r(atlas::ICON_STONE, "models/Objects/Props/Spring/Ground stones.png", 0, 0, 16, 16);
+    r(atlas::ICON_SEED, "models/Crops/Summer/Adzuki_Bean.png", 0, 16, 16, 16);
+    r(atlas::ICON_WOOD, "models/Icons/RPG_icons/Extras/Wood.png", 0, 0, 32, 16);
+    r(atlas::ICON_STONE, "models/Objects/Props/Spring/Ground_stones.png", 0, 0, 16, 16);
     r(atlas::ICON_GRASS, "models/Crops/Summer/Wheat.png", 80, 0, 16, 16);
-    r(atlas::ICON_LOG, "models/Objects/Tree/TREE TRUNKS copiar.png", 0, 0, 32, 16);
-    r(atlas::ICON_PICKAXE, "models/Icons/RPG icons/Weapons and Armor/1. Wood/Pickaxe.png", 2, 2, 28, 13);
-    r(atlas::ICON_AXE, "models/Icons/RPG icons/Weapons and Armor/1. Wood/Axe.png", 2, 0, 27, 15);
-    r(atlas::ICON_SHOVEL, "models/Icons/RPG icons/Weapons and Armor/1. Wood/Shovel.png", 2, 2, 28, 13);
-    r(atlas::ICON_HOE, "models/Icons/RPG icons/Weapons and Armor/1. Wood/Hoe.png", 2, 2, 28, 13);
-    r(atlas::ICON_WATERING_CAN, "models/Icons/RPG icons/Weapons and Armor/1. Wood/Watering can.png", 2, 2, 28, 13);
+    r(atlas::ICON_LOG, "models/Objects/Tree/TREE_TRUNKS_copiar.png", 0, 0, 32, 16);
+    r(atlas::ICON_PICKAXE, "models/Icons/RPG_icons/Weapons_and_Armor/1._Wood/Pickaxe.png", 2, 2, 28, 13);
+    r(atlas::ICON_AXE, "models/Icons/RPG_icons/Weapons_and_Armor/1._Wood/Axe.png", 2, 0, 27, 15);
+    r(atlas::ICON_SHOVEL, "models/Icons/RPG_icons/Weapons_and_Armor/1._Wood/Shovel.png", 2, 2, 28, 13);
+    r(atlas::ICON_HOE, "models/Icons/RPG_icons/Weapons_and_Armor/1._Wood/Hoe.png", 2, 2, 28, 13);
+    r(atlas::ICON_WATERING_CAN, "models/Icons/RPG_icons/Weapons_and_Armor/1._Wood/Watering_can.png", 2, 2, 28, 13);
     r(atlas::ICON_CAR, "models/Objects/Exterior/Bus.png", 8, 6, 99, 55);
 
     // ---- Tower-defense layer (Spec 023) — existing art, tinted at render ----
@@ -582,18 +582,18 @@ pub fn enqueue_model_slices(
     r(atlas::TD_SLIME_BLACK, "models/Enemy/Slimes/Black/Slime/Idle.png", 0, 0, 32, 32);
     r(atlas::TD_SLIME_BLACK_W0, "models/Enemy/Slimes/Black/Slime/Walk.png", 0, 0, 32, 32);
     r(atlas::TD_SLIME_BLACK_W1, "models/Enemy/Slimes/Black/Slime/Walk.png", 32, 0, 32, 32);
-    r(atlas::TD_BIG_SLIME, "models/Enemy/Slimes/Golden/Big Slime/Idle.png", 0, 0, 32, 32);
-    r(atlas::TD_BIG_SLIME_W0, "models/Enemy/Slimes/Golden/Big Slime/Walk.png", 0, 0, 32, 32);
-    r(atlas::TD_BIG_SLIME_W1, "models/Enemy/Slimes/Golden/Big Slime/Walk.png", 32, 0, 32, 32);
-    r(atlas::TD_GOBLIN_SPEAR, "models/Enemy/Goblins/Spear Goblin/Idle.png", 0, 0, 32, 32);
-    r(atlas::TD_GOBLIN_SPEAR_W0, "models/Enemy/Goblins/Spear Goblin/Walk.png", 0, 0, 32, 32);
-    r(atlas::TD_GOBLIN_SPEAR_W1, "models/Enemy/Goblins/Spear Goblin/Walk.png", 32, 0, 32, 32);
-    r(atlas::TD_GOBLIN_ARCHER, "models/Enemy/Goblins/Archer Goblin/Idle.png", 0, 0, 32, 32);
-    r(atlas::TD_GOBLIN_ARCHER_W0, "models/Enemy/Goblins/Archer Goblin/Walk.png", 0, 0, 32, 32);
-    r(atlas::TD_GOBLIN_ARCHER_W1, "models/Enemy/Goblins/Archer Goblin/Walk.png", 32, 0, 32, 32);
-    r(atlas::TD_GOBLIN_BOMB, "models/Enemy/Goblins/Bomb Goblin/Idle.png", 0, 0, 32, 32);
-    r(atlas::TD_GOBLIN_BOMB_W0, "models/Enemy/Goblins/Bomb Goblin/Walk bomb.png", 0, 0, 32, 32);
-    r(atlas::TD_GOBLIN_BOMB_W1, "models/Enemy/Goblins/Bomb Goblin/Walk bomb.png", 32, 0, 32, 32);
+    r(atlas::TD_BIG_SLIME, "models/Enemy/Slimes/Golden/Big_Slime/Idle.png", 0, 0, 32, 32);
+    r(atlas::TD_BIG_SLIME_W0, "models/Enemy/Slimes/Golden/Big_Slime/Walk.png", 0, 0, 32, 32);
+    r(atlas::TD_BIG_SLIME_W1, "models/Enemy/Slimes/Golden/Big_Slime/Walk.png", 32, 0, 32, 32);
+    r(atlas::TD_GOBLIN_SPEAR, "models/Enemy/Goblins/Spear_Goblin/Idle.png", 0, 0, 32, 32);
+    r(atlas::TD_GOBLIN_SPEAR_W0, "models/Enemy/Goblins/Spear_Goblin/Walk.png", 0, 0, 32, 32);
+    r(atlas::TD_GOBLIN_SPEAR_W1, "models/Enemy/Goblins/Spear_Goblin/Walk.png", 32, 0, 32, 32);
+    r(atlas::TD_GOBLIN_ARCHER, "models/Enemy/Goblins/Archer_Goblin/Idle.png", 0, 0, 32, 32);
+    r(atlas::TD_GOBLIN_ARCHER_W0, "models/Enemy/Goblins/Archer_Goblin/Walk.png", 0, 0, 32, 32);
+    r(atlas::TD_GOBLIN_ARCHER_W1, "models/Enemy/Goblins/Archer_Goblin/Walk.png", 32, 0, 32, 32);
+    r(atlas::TD_GOBLIN_BOMB, "models/Enemy/Goblins/Bomb_Goblin/Idle.png", 0, 0, 32, 32);
+    r(atlas::TD_GOBLIN_BOMB_W0, "models/Enemy/Goblins/Bomb_Goblin/Walk_bomb.png", 0, 0, 32, 32);
+    r(atlas::TD_GOBLIN_BOMB_W1, "models/Enemy/Goblins/Bomb_Goblin/Walk_bomb.png", 32, 0, 32, 32);
     r(atlas::TD_MYCONID, "models/Enemy/Myconid/Green/Idle.png", 0, 0, 32, 32);
     r(atlas::TD_MYCONID_W0, "models/Enemy/Myconid/Green/Walk.png", 0, 0, 32, 32);
     r(atlas::TD_MYCONID_W1, "models/Enemy/Myconid/Green/Walk.png", 32, 0, 32, 32);
@@ -609,31 +609,31 @@ pub fn enqueue_model_slices(
     r(atlas::TD_MYCONID_RED, "models/Enemy/Myconid/Red/Idle.png", 0, 0, 32, 32);
     r(atlas::TD_MYCONID_RED_W0, "models/Enemy/Myconid/Red/Walk.png", 0, 0, 32, 32);
     r(atlas::TD_MYCONID_RED_W1, "models/Enemy/Myconid/Red/Walk.png", 32, 0, 32, 32);
-    r(atlas::TD_VENOM_BLOOM, "models/Enemy/Venom Bloom/Purple/Idle.png", 0, 0, 48, 48);
+    r(atlas::TD_VENOM_BLOOM, "models/Enemy/Venom_Bloom/Purple/Idle.png", 0, 0, 48, 48);
     // Capital: one full house (128×112) — a city hall reads better than a well.
     r(atlas::TD_CAPITAL, "models/Objects/Exterior/Houses/1.png", 0, 0, 128, 112);
     // Barricade: the standing stone chunk at the sheet's center (verified
     // bbox 8,20 → 40,38; the old 24,32 crop straddled two 16px columns and
     // stitched two half-walls together).
-    r(atlas::TD_BARRICADE, "models/Objects/Exterior/Fence and Bridge/Fence Stone.png", 8, 20, 32, 18);
+    r(atlas::TD_BARRICADE, "models/Objects/Exterior/Fence_and_Bridge/Fence_Stone.png", 8, 20, 32, 18);
     // Tower: a whole scarecrow — the sheet packs 8 figures at 32px stride
     // (each figure ~16px wide centered on every other 16px cell boundary),
     // so a 16px-wide crop grabbed the LEFT HALF of the figure.
     r(atlas::TD_ARROW_TOWER, "models/Objects/Exterior/Scarescrow.png", 4, 0, 24, 32);
     // Ballista: hay-bale stack, first cell.
-    r(atlas::TD_BALLISTA, "models/Objects/Exterior/Hay Bales.png", 0, 0, 16, 16);
+    r(atlas::TD_BALLISTA, "models/Objects/Exterior/Hay_Bales.png", 0, 0, 16, 16);
     // Icons: metal ingot (2nd cell of the bars row), bone (cell 1), and the
     // same placeholders as the world arts above.
     r(atlas::ICON_CAPITAL_CORE, "models/Objects/Exterior/Houses/1.png", 0, 0, 128, 112);
-    r(atlas::ICON_METAL_PART, "models/Icons/RPG icons/Extras/Bars and ores.png", 16, 0, 16, 16);
-    r(atlas::ICON_BONE, "models/Icons/RPG icons/Extras/Bones.png", 0, 0, 16, 16);
+    r(atlas::ICON_METAL_PART, "models/Icons/RPG_icons/Extras/Bars_and_ores.png", 16, 0, 16, 16);
+    r(atlas::ICON_BONE, "models/Icons/RPG_icons/Extras/Bones.png", 0, 0, 16, 16);
     // REV: the gel drop icon — green potion vial (row 1, col 0).
-    r(atlas::ICON_SLIME_GEL, "models/Icons/RPG icons/Extras/Potions.png", 0, 16, 16, 16);
-    r(atlas::ICON_BONE_BARRICADE, "models/Objects/Exterior/Fence and Bridge/Fence Stone.png", 8, 20, 32, 18);
+    r(atlas::ICON_SLIME_GEL, "models/Icons/RPG_icons/Extras/Potions.png", 0, 16, 16, 16);
+    r(atlas::ICON_BONE_BARRICADE, "models/Objects/Exterior/Fence_and_Bridge/Fence_Stone.png", 8, 20, 32, 18);
     r(atlas::ICON_ARROW_TOWER, "models/Objects/Exterior/Scarescrow.png", 4, 0, 24, 32);
-    r(atlas::ICON_BALLISTA, "models/Objects/Exterior/Hay Bales.png", 0, 0, 16, 16);
+    r(atlas::ICON_BALLISTA, "models/Objects/Exterior/Hay_Bales.png", 0, 0, 16, 16);
     // Spec 027 §14 weapon-forge icons (single 16×16 plain cells).
-    r(atlas::ICON_ARROW_ITEM, "models/Icons/RPG icons/Weapons and Armor/1. Wood/Arrow.png", 0, 0, 16, 16);
+    r(atlas::ICON_ARROW_ITEM, "models/Icons/RPG_icons/Weapons_and_Armor/1._Wood/Arrow.png", 0, 0, 16, 16);
     // Spec 033: the material × weapon matrix — every `Weapons and Armor`
     // folder (Wood…Obsidian) × every icon file. Single 16×16 plain cells,
     // verified against the rendered sheets (REV4). Keys mirror the core
@@ -645,7 +645,7 @@ pub fn enqueue_model_slices(
         for (mi, dir) in dirs.iter().enumerate() {
             for ki in 0..WEA_KINDS.len() {
                 let stem = WEA_KINDS[ki].name;
-                let path = format!("models/Icons/RPG icons/Weapons and Armor/{dir}/{stem}.png");
+                let path = format!("models/Icons/RPG_icons/Weapons_and_Armor/{dir}/{stem}.png");
                 r(
                     &format!("wae_{mi}_{ki}"),
                     leak_path(path),
@@ -662,7 +662,7 @@ pub fn enqueue_model_slices(
         use idlecore_core::player_combat::{ARMOR_PIECES, WEA_MATERIALS};
         for (mi, (_, dir)) in WEA_MATERIALS.iter().enumerate() {
             for (pi, (piece, _)) in ARMOR_PIECES.iter().enumerate() {
-                let path = format!("models/Icons/RPG icons/Weapons and Armor/{dir}/{piece}.png");
+                let path = format!("models/Icons/RPG_icons/Weapons_and_Armor/{dir}/{piece}.png");
                 r(
                     &format!("wae_armor_{mi}_{pi}"),
                     leak_path(path),
@@ -675,39 +675,39 @@ pub fn enqueue_model_slices(
         }
     }
     // REV4 buildables — verified crops (world art = icon art).
-    r(atlas::TD_WOOD_WALL, "models/Objects/Exterior/Fence and Bridge/Fence Wood.png", 48, 0, 32, 32);
-    r(atlas::TD_IRON_WALL, "models/Objects/Exterior/Fence and Bridge/Fence Iron.png", 0, 0, 16, 32);
-    r(atlas::TD_LANTERN, "models/Objects/Exterior/Street Lamp.png", 32, 0, 32, 48);
-    r(atlas::TD_COCONUT, "models/Objects/Exterior/Beach/Coconut Tree.png", 0, 0, 48, 48);
+    r(atlas::TD_WOOD_WALL, "models/Objects/Exterior/Fence_and_Bridge/Fence_Wood.png", 48, 0, 32, 32);
+    r(atlas::TD_IRON_WALL, "models/Objects/Exterior/Fence_and_Bridge/Fence_Iron.png", 0, 0, 16, 32);
+    r(atlas::TD_LANTERN, "models/Objects/Exterior/Street_Lamp.png", 32, 0, 32, 48);
+    r(atlas::TD_COCONUT, "models/Objects/Exterior/Beach/Coconut_Tree.png", 0, 0, 48, 48);
     r(atlas::TD_SNOWMAN, "models/Objects/Exterior/Snowman.png", 0, 8, 16, 24);
-    r(atlas::TD_TRAP, "models/Objects/Exterior/Mine and Dungeon/Trap.png", 32, 0, 16, 32);
-    r(atlas::TD_WEB, "models/Objects/Exterior/Mine and Dungeon/web spider.png", 0, 0, 16, 16);
-    r(atlas::TD_FIRE, "models/Objects/Exterior/Mine and Dungeon/bonfire.png", 16, 0, 16, 32);
-    r(atlas::ICON_WOOD_WALL, "models/Objects/Exterior/Fence and Bridge/Fence Wood.png", 48, 0, 32, 32);
-    r(atlas::ICON_IRON_WALL, "models/Objects/Exterior/Fence and Bridge/Fence Iron.png", 0, 0, 16, 32);
-    r(atlas::ICON_LANTERN, "models/Objects/Exterior/Street Lamp.png", 32, 0, 32, 48);
-    r(atlas::ICON_COCONUT, "models/Objects/Exterior/Beach/Coconut Tree.png", 0, 0, 48, 48);
+    r(atlas::TD_TRAP, "models/Objects/Exterior/Mine_and_Dungeon/Trap.png", 32, 0, 16, 32);
+    r(atlas::TD_WEB, "models/Objects/Exterior/Mine_and_Dungeon/web_spider.png", 0, 0, 16, 16);
+    r(atlas::TD_FIRE, "models/Objects/Exterior/Mine_and_Dungeon/bonfire.png", 16, 0, 16, 32);
+    r(atlas::ICON_WOOD_WALL, "models/Objects/Exterior/Fence_and_Bridge/Fence_Wood.png", 48, 0, 32, 32);
+    r(atlas::ICON_IRON_WALL, "models/Objects/Exterior/Fence_and_Bridge/Fence_Iron.png", 0, 0, 16, 32);
+    r(atlas::ICON_LANTERN, "models/Objects/Exterior/Street_Lamp.png", 32, 0, 32, 48);
+    r(atlas::ICON_COCONUT, "models/Objects/Exterior/Beach/Coconut_Tree.png", 0, 0, 48, 48);
     r(atlas::ICON_SNOWMAN, "models/Objects/Exterior/Snowman.png", 0, 8, 16, 24);
-    r(atlas::ICON_SPIKE_TRAP, "models/Objects/Exterior/Mine and Dungeon/Trap.png", 32, 0, 16, 32);
-    r(atlas::ICON_WEB_TRAP, "models/Objects/Exterior/Mine and Dungeon/web spider.png", 0, 0, 16, 16);
-    r(atlas::ICON_FIRE_TRAP, "models/Objects/Exterior/Mine and Dungeon/bonfire.png", 16, 0, 16, 32);
+    r(atlas::ICON_SPIKE_TRAP, "models/Objects/Exterior/Mine_and_Dungeon/Trap.png", 32, 0, 16, 32);
+    r(atlas::ICON_WEB_TRAP, "models/Objects/Exterior/Mine_and_Dungeon/web_spider.png", 0, 0, 16, 16);
+    r(atlas::ICON_FIRE_TRAP, "models/Objects/Exterior/Mine_and_Dungeon/bonfire.png", 16, 0, 16, 32);
 
     // ---- Floor tiles (plain seamless 16×16 crops) ----
-    r(atlas::FLOOR_GRASS, "models/Tileset/Tileset Grass Summer.png", 144, 32, 16, 16);
-    r(atlas::FLOOR_SAND, "models/Tileset/Tileset Grass Summer.png", 144, 224, 16, 16);
-    r(atlas::FLOOR_SNOW, "models/Tileset/Tileset Grass Winter.png", 144, 32, 16, 16);
-    r(atlas::FLOOR_STONE, "models/Tileset/Dungeon tileset.png", 144, 128, 16, 16);
+    r(atlas::FLOOR_GRASS, "models/Tileset/Tileset_Grass_Summer.png", 144, 32, 16, 16);
+    r(atlas::FLOOR_SAND, "models/Tileset/Tileset_Grass_Summer.png", 144, 224, 16, 16);
+    r(atlas::FLOOR_SNOW, "models/Tileset/Tileset_Grass_Winter.png", 144, 32, 16, 16);
+    r(atlas::FLOOR_STONE, "models/Tileset/Dungeon_tileset.png", 144, 128, 16, 16);
     // Living-ground variants: the same seamless interior cell of the Spring
     // and Fall sheets (light/dark per sheet) — real pixel textures, not tint
     // approximations, so the ground mixes seasons instead of only shades.
-    r(atlas::FLOOR_GRASS_SUMMER2, "models/Tileset/Tileset Grass Summer.png", 336, 32, 16, 16);
-    r(atlas::FLOOR_GRASS_SPRING, "models/Tileset/Tileset Grass Spring.png", 144, 32, 16, 16);
-    r(atlas::FLOOR_GRASS_SPRING2, "models/Tileset/Tileset Grass Spring.png", 336, 32, 16, 16);
-    r(atlas::FLOOR_GRASS_FALL, "models/Tileset/Tileset Grass Fall.png", 144, 32, 16, 16);
-    r(atlas::FLOOR_GRASS_FALL2, "models/Tileset/Tileset Grass Fall.png", 336, 32, 16, 16);
-    r(atlas::FLOOR_SNOW2, "models/Tileset/Tileset Grass Winter.png", 336, 32, 16, 16);
+    r(atlas::FLOOR_GRASS_SUMMER2, "models/Tileset/Tileset_Grass_Summer.png", 336, 32, 16, 16);
+    r(atlas::FLOOR_GRASS_SPRING, "models/Tileset/Tileset_Grass_Spring.png", 144, 32, 16, 16);
+    r(atlas::FLOOR_GRASS_SPRING2, "models/Tileset/Tileset_Grass_Spring.png", 336, 32, 16, 16);
+    r(atlas::FLOOR_GRASS_FALL, "models/Tileset/Tileset_Grass_Fall.png", 144, 32, 16, 16);
+    r(atlas::FLOOR_GRASS_FALL2, "models/Tileset/Tileset_Grass_Fall.png", 336, 32, 16, 16);
+    r(atlas::FLOOR_SNOW2, "models/Tileset/Tileset_Grass_Winter.png", 336, 32, 16, 16);
     // Dirt: plain tilled dry-earth cell (furrowed brown soil).
-    r(atlas::FLOOR_DIRT, "models/Tileset/Tilled Soil and wet soil.png", 64, 0, 16, 16);
+    r(atlas::FLOOR_DIRT, "models/Tileset/Tilled_Soil_and_wet_soil.png", 64, 0, 16, 16);
     // ---- Living-ground garnish (prop crops from ALL props seasons) ----
     // Sheet bands verified on the sheet map: y64=flat garnish, y96=pebbles,
     // y112=water sparkles, y128=planks/reeds, y144=driftwood/flowers row.
@@ -732,11 +732,11 @@ pub fn enqueue_model_slices(
     r(atlas::G_REED, atlas::GARNISH_SHEET, 208, 128, 14, 15);
     r(atlas::G_DRIFTWOOD, atlas::GARNISH_SHEET, 144, 144, 32, 16);
     r(atlas::G_MOSS, atlas::GARNISH_SHEET, 0, 144, 32, 16);
-    r(atlas::WATER, "models/Tileset/Water tile.png", 0, 0, 16, 16);
+    r(atlas::WATER, "models/Tileset/Water_tile.png", 0, 0, 16, 16);
 
     // ---- Stardew plots (tilled/wet soil + wheat growth frames) ----
-    r(atlas::PLOT_TILLED, "models/Tileset/Tilled Soil and wet soil.png", 16, 16, 16, 16);
-    r(atlas::PLOT_WET, "models/Tileset/Tilled Soil and wet soil.png", 16, 80, 16, 16);
+    r(atlas::PLOT_TILLED, "models/Tileset/Tilled_Soil_and_wet_soil.png", 16, 16, 16, 16);
+    r(atlas::PLOT_WET, "models/Tileset/Tilled_Soil_and_wet_soil.png", 16, 80, 16, 16);
     r(atlas::CROP_STAGE_1, "models/Crops/Summer/Wheat.png", 0, 0, 16, 16);
     r(atlas::CROP_STAGE_2, "models/Crops/Summer/Wheat.png", 32, 0, 16, 16);
     r(atlas::CROP_STAGE_MATURE, "models/Crops/Summer/Wheat.png", 80, 0, 16, 16);
@@ -753,51 +753,51 @@ pub fn enqueue_model_slices(
     r(atlas::DECO_PUMPKIN, "models/Crops/Fall/Pumpkin.png", 0, 0, 16, 16);
     r(atlas::DECO_CORN, "models/Crops/Fall/Corn.png", 0, 0, 16, 16);
     r(atlas::DECO_EGGPLANT, "models/Crops/Fall/Eggplant.png", 0, 0, 16, 16);
-    r(atlas::DECO_ROCK2, "models/Objects/Props/Summer/Stones Summer.png", 36, 19, 12, 11);
+    r(atlas::DECO_ROCK2, "models/Objects/Props/Summer/Stones_Summer.png", 36, 19, 12, 11);
     // Fruit trees: crop the mature tree from sheets that stack sapling + mature
-    r(atlas::TREE_CHERRY, "models/Crops/Fruits Tree/Spring/Cherry Tree.png", 128, 0, 112, 48);
-    r(atlas::TREE_ORANGE, "models/Crops/Fruits Tree/Summer/Orange Tree.png", 128, 0, 112, 48);
-    r(atlas::TREE_APPLE, "models/Crops/Fruits Tree/Fall/Apple Tree.png", 144, 0, 112, 48);
-    r(atlas::DECO_TREE2, "models/Objects/Tree/Common/Shadow/Mahogany Tree.png", 123, 60, 38, 34);
-    r(atlas::DECO_STONE, "models/Objects/Props/Spring/Ground stones.png", 0, 0, 16, 16);
+    r(atlas::TREE_CHERRY, "models/Crops/Fruits_Tree/Spring/Cherry_Tree.png", 128, 0, 112, 48);
+    r(atlas::TREE_ORANGE, "models/Crops/Fruits_Tree/Summer/Orange_Tree.png", 128, 0, 112, 48);
+    r(atlas::TREE_APPLE, "models/Crops/Fruits_Tree/Fall/Apple_Tree.png", 144, 0, 112, 48);
+    r(atlas::DECO_TREE2, "models/Objects/Tree/Common/Shadow/Mahogany_Tree.png", 123, 60, 38, 34);
+    r(atlas::DECO_STONE, "models/Objects/Props/Spring/Ground_stones.png", 0, 0, 16, 16);
 
     // ---- Critters / animals ----
-    r(atlas::CRIT_CHICKEN, "models/Animals/Farm/Chicken/Chicken White.png", 1, 0, 32, 48);
-    r(atlas::CRIT_SHEEP, "models/Animals/Farm/Sheep/Sheep Male.png", 2, 15, 32, 62);
-    r(atlas::CRIT_COW, "models/Animals/Farm/Cow/Common Cow/Female Cow Brown.png", 0, 13, 32, 62);
-    r(atlas::CRIT_FOX, "models/Animals/Forest/Fox/Red Fox.png", 6, 17, 32, 62);
+    r(atlas::CRIT_CHICKEN, "models/Animals/Farm/Chicken/Chicken_White.png", 1, 0, 32, 48);
+    r(atlas::CRIT_SHEEP, "models/Animals/Farm/Sheep/Sheep_Male.png", 2, 15, 32, 62);
+    r(atlas::CRIT_COW, "models/Animals/Farm/Cow/Common_Cow/Female_Cow_Brown.png", 0, 13, 32, 62);
+    r(atlas::CRIT_FOX, "models/Animals/Forest/Fox/Red_Fox.png", 6, 17, 32, 62);
     r(atlas::CRIT_DEER, "models/Animals/Forest/Deer/Female/Idle.png", 5, 11, 32, 52);
-    r(atlas::CRIT_RABBIT, "models/Animals/Forest/Rabbit/Rabbit Brown.png", 1, 3, 30, 28);
-    r(atlas::CRIT_BUTTERFLY, "models/Animals/Forest/Bugs/Butterfly/Common Butterfly.png", 4, 4, 16, 12);
+    r(atlas::CRIT_RABBIT, "models/Animals/Forest/Rabbit/Rabbit_Brown.png", 1, 3, 30, 28);
+    r(atlas::CRIT_BUTTERFLY, "models/Animals/Forest/Bugs/Butterfly/Common_Butterfly.png", 4, 4, 16, 12);
     r(atlas::CRIT_PENGUIN, "models/Animals/Forest/Penguin/Penguin.png", 1, 3, 16, 16);
-    r(atlas::CRIT_CAPYBARA, "models/Animals/Forest/Capybara/Brown Capybara.png", 6, 13, 32, 62);
+    r(atlas::CRIT_CAPYBARA, "models/Animals/Forest/Capybara/Brown_Capybara.png", 6, 13, 32, 62);
     // New critters
-    r(atlas::CRIT_DUCK, "models/Animals/Farm/Ducks/Duck White.png", 0, 0, 16, 22);
-    r(atlas::CRIT_PIG, "models/Animals/Farm/Pig/Pig Pink.png", 0, 0, 16, 22);
-    r(atlas::CRIT_GOAT, "models/Animals/Farm/Goat/Goat Male Brown.png", 0, 0, 16, 22);
-    r(atlas::CRIT_OSTRICH, "models/Animals/Farm/Ostrich/Ostrich Brown.png", 0, 0, 16, 16);
+    r(atlas::CRIT_DUCK, "models/Animals/Farm/Ducks/Duck_White.png", 0, 0, 16, 22);
+    r(atlas::CRIT_PIG, "models/Animals/Farm/Pig/Pig_Pink.png", 0, 0, 16, 22);
+    r(atlas::CRIT_GOAT, "models/Animals/Farm/Goat/Goat_Male_Brown.png", 0, 0, 16, 22);
+    r(atlas::CRIT_OSTRICH, "models/Animals/Farm/Ostrich/Ostrich_Brown.png", 0, 0, 16, 16);
     r(atlas::CRIT_BEE, "models/Animals/Forest/Bugs/Bee/Bees.png", 0, 0, 16, 16);
     r(atlas::CRIT_CROW, "models/Animals/Forest/Crow/Crow.png", 0, 0, 16, 16);
     r(atlas::CRIT_FROG, "models/Animals/Forest/Frog/Frogs-Sheet.png", 0, 0, 16, 16);
     r(atlas::CRIT_TURTLE, "models/Animals/Forest/Turttle/Green/Idle.png", 0, 0, 16, 16);
-    r(atlas::CRIT_MONARCH, "models/Animals/Forest/Bugs/Butterfly/Monarch Butterfly.png", 0, 0, 16, 16);
+    r(atlas::CRIT_MONARCH, "models/Animals/Forest/Bugs/Butterfly/Monarch_Butterfly.png", 0, 0, 16, 16);
     // Farm props
-    r(atlas::PROP_HAY_BALES, "models/Objects/Exterior/Hay Bales.png", 0, 0, 16, 16);
+    r(atlas::PROP_HAY_BALES, "models/Objects/Exterior/Hay_Bales.png", 0, 0, 16, 16);
     r(atlas::PROP_SCARECROW, "models/Objects/Exterior/Scarescrow.png", 0, 0, 16, 16);
     r(atlas::PROP_BIRDHOUSE, "models/Objects/Exterior/Birdhouse.png", 0, 0, 32, 32);
-    r(atlas::PROP_WELL, "models/Objects/Exterior/Well .png", 0, 0, 16, 16);
-    r(atlas::PROP_FEED_TROUGH, "models/Objects/Exterior/Feed Trough.png", 0, 0, 16, 16);
+    r(atlas::PROP_WELL, "models/Objects/Exterior/Well.png", 0, 0, 16, 16);
+    r(atlas::PROP_FEED_TROUGH, "models/Objects/Exterior/Feed_Trough.png", 0, 0, 16, 16);
     // Fences & paths
-    r(atlas::PROP_FENCE_WOOD, "models/Objects/Exterior/Fence and Bridge/Fence Wood.png", 0, 0, 16, 16);
-    r(atlas::PROP_FENCE_WHITE, "models/Objects/Exterior/Fence and Bridge/White Fence.png", 0, 0, 16, 16);
-    r(atlas::PROP_FENCE_STONE, "models/Objects/Exterior/Fence and Bridge/Fence Stone.png", 0, 0, 16, 16);
-    r(atlas::PROP_PATH_TILE, "models/Tileset/Path tiles.png", 0, 0, 16, 16);
+    r(atlas::PROP_FENCE_WOOD, "models/Objects/Exterior/Fence_and_Bridge/Fence_Wood.png", 0, 0, 16, 16);
+    r(atlas::PROP_FENCE_WHITE, "models/Objects/Exterior/Fence_and_Bridge/White_Fence.png", 0, 0, 16, 16);
+    r(atlas::PROP_FENCE_STONE, "models/Objects/Exterior/Fence_and_Bridge/Fence_Stone.png", 0, 0, 16, 16);
+    r(atlas::PROP_PATH_TILE, "models/Tileset/Path_tiles.png", 0, 0, 16, 16);
     // Weather / water FX
     r(atlas::FX_CLOUDS, "models/Objects/Props/clouds.png", 0, 0, 16, 16);
-    r(atlas::FX_LEAVES_FALL, "models/Objects/Tree/Common/Effects/FX Effects Orange Leafs Fall 2.png", 0, 0, 16, 16);
-    r(atlas::FX_SNOW, "models/Objects/Tree/Common/Effects/FX Effects Snow Leafs Winter 2.png", 0, 0, 16, 16);
-    r(atlas::FX_BONFIRE, "models/Objects/Exterior/Mine and Dungeon/bonfire.png", 0, 0, 16, 16);
-    r(atlas::PROP_WATER_EDGE, "models/Objects/Props/Water props.png", 0, 0, 16, 16);
+    r(atlas::FX_LEAVES_FALL, "models/Objects/Tree/Common/Effects/FX_Effects_Orange_Leafs_Fall_2.png", 0, 0, 16, 16);
+    r(atlas::FX_SNOW, "models/Objects/Tree/Common/Effects/FX_Effects_Snow_Leafs_Winter_2.png", 0, 0, 16, 16);
+    r(atlas::FX_BONFIRE, "models/Objects/Exterior/Mine_and_Dungeon/bonfire.png", 0, 0, 16, 16);
+    r(atlas::PROP_WATER_EDGE, "models/Objects/Props/Water_props.png", 0, 0, 16, 16);
     // Animated frame strips
     // Leaves fall: 96x48 = 6x3 frames (16x16 each), row 0
     for i in 0..6 {
@@ -810,7 +810,7 @@ pub fn enqueue_model_slices(
                 4 => atlas::FX_LEAVES_FALL_4,
                 _ => atlas::FX_LEAVES_FALL_5,
             },
-            "models/Objects/Tree/Common/Effects/FX Effects Orange Leafs Fall 2.png",
+            "models/Objects/Tree/Common/Effects/FX_Effects_Orange_Leafs_Fall_2.png",
             i * 16, 0, 16, 16,
         );
     }
@@ -825,7 +825,7 @@ pub fn enqueue_model_slices(
                 4 => atlas::FX_SNOW_4,
                 _ => atlas::FX_SNOW_5,
             },
-            "models/Objects/Tree/Common/Effects/FX Effects Snow Leafs Winter 2.png",
+            "models/Objects/Tree/Common/Effects/FX_Effects_Snow_Leafs_Winter_2.png",
             i * 16, 0, 16, 16,
         );
     }
@@ -840,7 +840,7 @@ pub fn enqueue_model_slices(
                 4 => atlas::FX_BONFIRE_4,
                 _ => atlas::FX_BONFIRE_5,
             },
-            "models/Objects/Exterior/Mine and Dungeon/bonfire.png",
+            "models/Objects/Exterior/Mine_and_Dungeon/bonfire.png",
             i * 16, 0, 16, 16,
         );
     }
@@ -871,7 +871,7 @@ pub fn enqueue_model_slices(
                 2 => atlas::PROP_WATER_EDGE_2,
                 _ => atlas::PROP_WATER_EDGE_3,
             },
-            "models/Objects/Props/Water props.png",
+            "models/Objects/Props/Water_props.png",
             i * 16, 0, 16, 16,
         );
     }
@@ -887,7 +887,7 @@ pub fn enqueue_model_slices(
                 5 => atlas::CRIT_BUTTERFLY_5,
                 _ => atlas::CRIT_BUTTERFLY_6,
             },
-            "models/Animals/Forest/Bugs/Butterfly/Common Butterfly.png",
+            "models/Animals/Forest/Bugs/Butterfly/Common_Butterfly.png",
             i * 16, 0, 16, 12,
         );
     }
@@ -903,7 +903,7 @@ pub fn enqueue_model_slices(
                 5 => atlas::CRIT_MONARCH_5,
                 _ => atlas::CRIT_MONARCH_6,
             },
-            "models/Animals/Forest/Bugs/Butterfly/Monarch Butterfly.png",
+            "models/Animals/Forest/Bugs/Butterfly/Monarch_Butterfly.png",
             i * 16, 0, 16, 16,
         );
     }

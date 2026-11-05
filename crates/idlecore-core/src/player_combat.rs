@@ -136,16 +136,16 @@ pub const WEA_KINDS: [WeaponKindDef; 7] = [
 /// Material rows: (display tier, icon folder under `RPG icons/Weapons and
 /// Armor`). The folder names keep the pack's original spellings.
 pub const WEA_MATERIALS: [(&str, &str); 10] = [
-    ("Wood", "1. Wood"),
-    ("Copper", "2. Cooper"),
-    ("Iron", "3. Iron"),
-    ("Gold", "4. Gold"),
-    ("Platinum", "5. Platinum"),
-    ("Crimson", "6. Crimson"),
-    ("Frost", "7. Frost"),
-    ("Shadow", "8. Shadow"),
-    ("Fairy", "9. Fairy"),
-    ("Obsidian", "9. Obsidian"),
+    ("Wood", "1._Wood"),
+    ("Copper", "2._Cooper"),
+    ("Iron", "3._Iron"),
+    ("Gold", "4._Gold"),
+    ("Platinum", "5._Platinum"),
+    ("Crimson", "6._Crimson"),
+    ("Frost", "7._Frost"),
+    ("Shadow", "8._Shadow"),
+    ("Fairy", "9._Fairy"),
+    ("Obsidian", "9._Obsidian"),
 ];
 
 /// Armor pieces: (display, per-piece defense weight). Owning a piece
