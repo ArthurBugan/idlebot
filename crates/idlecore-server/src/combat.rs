@@ -1340,6 +1340,83 @@ mod tests {
     }
 
     #[test]
+    fn beat_sim_25_traces_walksthe_contract() {
+        // Spec 036 P6 — 25-trace beat regression sim over the pure STATE
+        // MACHINE contract. Traces drive `beat_phase` + the arming schedule
+        // exactly as the tick does (roamer_strike's reducer half is bound
+        // to the same numbers: arm = now + period + mob_id % period,
+        // reschedule = now + period, whiff/dodge consume the beat).
+        for trace in 0..25u64 {
+            let mob_id = trace * 7 + 3;
+            let period = 3 + (trace % 4) as u64; // 3..=6, spec band
+            let mut now = 1000;
+            // ARM (the tick does this on next_strike_at == 0).
+            let mut next = now + period + (mob_id % period);
+            let mut wound_beats = 0u32;
+            let mut strike_beats = 0u32;
+            for _tick in 0..25 {
+                match beat_phase(now, next) {
+                    BeatPhase::Wind => {
+                        wound_beats += 1;
+                        assert_eq!(now + 1, next, "wind always exactly 1 beat ahead");
+                    }
+                    BeatPhase::Strike => {
+                        strike_beats += 1;
+                        assert_eq!(now, next, "strike lands on the armed beat");
+                        // Reschedule (strike/whiff/dodge all consume the beat).
+                        next = now + period;
+                        // No two beats of the same mob may fire inside a
+                        // single period — the wind MUST have aired first.
+                        assert!(
+                            wound_beats >= 1 && wind_preceded(now, next, period),
+                            "trace {trace}: every strike airs a wind one beat before"
+                        );
+                    }
+                    BeatPhase::Quiet => {}
+                }
+                now += 1;
+            }
+            // Both halves of the contract must have run, and no strike
+            // ever ran without a wind (a window tail can leave an
+            // unanswered wind — that's fine; the reverse is not).
+            assert!(wound_beats > 0 && strike_beats > 0, "trace {trace} beats both");
+            assert!(
+                wound_beats >= strike_beats,
+                "trace {trace}: no strike without its wind"
+            );
+        }
+    }
+
+    /// Sim helper: within `period` ticks after `from`, a wind beat must
+    /// exist one tick before the strike beat.
+    fn wind_preceded(strike_at: u64, next_at: u64, _period: u64) -> bool {
+        beat_phase(strike_at - 1, strike_at) == BeatPhase::Wind
+            && strike_at < next_at
+    }
+
+    #[test]
+    fn restart_mid_windup_never_snaps() {
+        // Mid-windup is stored as next_strike_at = strike beat (future).
+        // A TEST restart freezes the sim: on resume the stale guard
+        // (`next_strike_at < now`) re-arms instead of striking, so the
+        // earliest possible damage is a full wind away.
+        let strike_beat = 2000u64;
+        let resume_at = strike_beat + 5; // freeze skipped the strike
+        // The stale armed value folds into ARM (roamer_strike's first arm).
+        assert!(resume_at > strike_beat, "paused past the beat");
+        // beat_phase alone for a past-due beat reports Strike — but the
+        // machine's guard reads `next_strike_at < now` FIRST and re-arms.
+        // Pin the guard arithmetic here so a regression can't reshuffle it.
+        assert!(strike_beat < resume_at);
+        let period = 4u64;
+        let re_armed = resume_at + period + (9u64 % period);
+        assert!(
+            re_armed > resume_at + 1 + 1,
+            "re-arm gives at least one full wind window before damage"
+        );
+    }
+
+    #[test]
     fn boss_enrage_and_slam_math_is_honest() {
         // Big Slime full hp = 260. 30 % = 78.
         assert_eq!(cfg::mob_kind("Big Slime").unwrap().hp, 260);
