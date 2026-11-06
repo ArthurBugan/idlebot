@@ -276,6 +276,8 @@ fn spawn_wave(ctx: &ReducerContext, capital: &Capital, now: u64) -> bool {
             // Lane discipline: the mob stands on path[0] and must reach
             // path[1] next (legacy capitals without a trace start flat 0).
             path_idx: if capital.path_hexes.is_empty() { 0 } else { 1 },
+            next_strike_at: 0,
+            beat_count: 0,
         });
     }
     let mut cap_row = capital.clone();

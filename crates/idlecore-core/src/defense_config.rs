@@ -186,6 +186,11 @@ pub struct MobKind {
     /// Drop quantity is `drop_qty` when the chance-% roll hits.
     pub drop_chance_pct: u32,
     pub drop_qty: u32,
+    /// Spec 036 - THE BEAT: seconds between telegraphed player-strikes.
+    /// The mob winds one beat before `next_strike_at` lands; per-kind
+    /// periods keep each archetype in a readable rhythm (Biter 4, Sapper
+    /// 4, Skirmisher 5, Bomber 7, Bloom 6, Boss 3).
+    pub strike_period_secs: u32,
 }
 
 /// Spec 025 §3 roster — real enemy art, distinct mechanics. March rule and
@@ -204,6 +209,7 @@ pub const MOB_KINDS: [MobKind; 15] = [
         drop_item: ITEM_SLIME_GEL,
         drop_chance_pct: 35,
         drop_qty: 1,
+        strike_period_secs: 4,
     },
     MobKind {
         name: "Blue Slime",
@@ -217,6 +223,7 @@ pub const MOB_KINDS: [MobKind; 15] = [
         drop_item: ITEM_SLIME_GEL,
         drop_chance_pct: 55,
         drop_qty: 1,
+        strike_period_secs: 4,
     },
     // Elite slime color tiers (Spec 025 rev2): pink is the sprinter, pupple
     // the mid tank, black the heavy charger. Same plain-mechanic family,
@@ -233,6 +240,7 @@ pub const MOB_KINDS: [MobKind; 15] = [
         drop_item: ITEM_SLIME_GEL,
         drop_chance_pct: 45,
         drop_qty: 1,
+        strike_period_secs: 4,
     },
     MobKind {
         name: "Pupple Slime",
@@ -246,6 +254,7 @@ pub const MOB_KINDS: [MobKind; 15] = [
         drop_item: ITEM_SLIME_GEL,
         drop_chance_pct: 55,
         drop_qty: 1,
+        strike_period_secs: 4,
     },
     MobKind {
         name: "Black Slime",
@@ -259,6 +268,7 @@ pub const MOB_KINDS: [MobKind; 15] = [
         drop_item: ITEM_SLIME_GEL,
         drop_chance_pct: 70,
         drop_qty: 2,
+        strike_period_secs: 4,
     },
     MobKind {
         name: "Spear Goblin",
@@ -272,6 +282,7 @@ pub const MOB_KINDS: [MobKind; 15] = [
         drop_item: ITEM_BONE,
         drop_chance_pct: 60,
         drop_qty: 1,
+        strike_period_secs: 4,
     },
     MobKind {
         name: "Archer Goblin",
@@ -285,6 +296,7 @@ pub const MOB_KINDS: [MobKind; 15] = [
         drop_item: ITEM_BONE,
         drop_chance_pct: 40,
         drop_qty: 2,
+        strike_period_secs: 5,
     },
     MobKind {
         name: "Myconid",
@@ -298,6 +310,7 @@ pub const MOB_KINDS: [MobKind; 15] = [
         drop_item: ITEM_SLIME_GEL,
         drop_chance_pct: 45,
         drop_qty: 2,
+        strike_period_secs: 5,
     },
     // Myconid color tiers (Spec 025 rev2): every recolor is a tougher
     // spore-caster; red is the myconid elite that opens at capital L5.
@@ -313,6 +326,7 @@ pub const MOB_KINDS: [MobKind; 15] = [
         drop_item: ITEM_SLIME_GEL,
         drop_chance_pct: 50,
         drop_qty: 2,
+        strike_period_secs: 5,
     },
     MobKind {
         name: "Myconid Pink",
@@ -326,6 +340,7 @@ pub const MOB_KINDS: [MobKind; 15] = [
         drop_item: ITEM_SLIME_GEL,
         drop_chance_pct: 55,
         drop_qty: 2,
+        strike_period_secs: 5,
     },
     MobKind {
         name: "Myconid Purple",
@@ -339,6 +354,7 @@ pub const MOB_KINDS: [MobKind; 15] = [
         drop_item: ITEM_SLIME_GEL,
         drop_chance_pct: 60,
         drop_qty: 3,
+        strike_period_secs: 5,
     },
     MobKind {
         name: "Myconid Red",
@@ -352,6 +368,7 @@ pub const MOB_KINDS: [MobKind; 15] = [
         drop_item: ITEM_SLIME_GEL,
         drop_chance_pct: 90,
         drop_qty: 4,
+        strike_period_secs: 5,
     },
     MobKind {
         name: "Bomb Goblin",
@@ -365,6 +382,7 @@ pub const MOB_KINDS: [MobKind; 15] = [
         drop_item: ITEM_METAL_PART,
         drop_chance_pct: 50,
         drop_qty: 1,
+        strike_period_secs: 7,
     },
     // Rooted turret: never marches — spawns inside the territory ring and
     // spits from up to 3 hexes.
@@ -380,6 +398,7 @@ pub const MOB_KINDS: [MobKind; 15] = [
         drop_item: ITEM_SLIME_GEL,
         drop_chance_pct: 80,
         drop_qty: 3,
+        strike_period_secs: 6,
     },
     MobKind {
         name: "Big Slime",
@@ -393,12 +412,67 @@ pub const MOB_KINDS: [MobKind; 15] = [
         drop_item: ITEM_SLIME_GEL,
         drop_chance_pct: 100,
         drop_qty: 5,
+        strike_period_secs: 3,
     },
 ];
 
 /// Look up a mob kind by name.
 pub fn mob_kind(name: &str) -> Option<&'static MobKind> {
     MOB_KINDS.iter().find(|k| k.name == name)
+}
+
+// ---------------------------------------------------------------------------
+// Spec 036 — THE BEAT: archetypes + strike contract
+// ---------------------------------------------------------------------------
+
+/// The five behavioral archetypes (spec §3.4) every stat kind regroups
+/// into, plus the boss. Client reads none of this — it's the server's
+/// state-machine selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MobArchetype {
+    /// Rushers: on strike, lunge 1 hex toward the player.
+    Biter,
+    /// Stand-off shooters: after each strike, kite 1 hex away.
+    Skirmisher,
+    /// Greedy melee that chews walls; vs player, plain contract.
+    Sapper,
+    /// Area denier: the strike also splashes adjacent structures.
+    Bomber,
+    /// Rooted zone threat: never schedules; its wind paints the zone.
+    Bloom,
+    /// Big Slime's personal rhythm (spec §3.5).
+    Boss,
+}
+
+/// Kind → archetype map (spec §3.4 table, exact): slime lines are Biters,
+/// archer goblin + myconid lines are Skirmishers, Spear Goblin is the
+/// Sapper, Bomb Goblin the Bomber, Venom Bloom the Bloom, Big Slime the
+/// Boss.
+pub fn mob_archetype(kind_name: &str) -> Option<MobArchetype> {
+    match kind_name {
+        "Slime" | "Blue Slime" | "Pink Slime" | "Pupple Slime" | "Black Slime" => {
+            Some(MobArchetype::Biter)
+        }
+        "Archer Goblin" | "Myconid" | "Myconid Blue" | "Myconid Pink" | "Myconid Purple"
+        | "Myconid Red" => Some(MobArchetype::Skirmisher),
+        "Spear Goblin" => Some(MobArchetype::Sapper),
+        "Bomb Goblin" => Some(MobArchetype::Bomber),
+        "Venom Bloom" => Some(MobArchetype::Bloom),
+        "Big Slime" => Some(MobArchetype::Boss),
+        _ => None,
+    }
+}
+
+/// The 1-beat wind: the strike resolves `next_strike_at - 1 >= now` ticks
+/// after arming (pure constant, not a knob).
+pub const WINDUP_BEATS: u64 = 1;
+
+/// `strike_burst` (pure, unit-tested): the discrete damage one telegraphed
+/// strike deals, replacing the per-tick dps aura. `dps × 2`, floored at 4
+/// (spec §3.2 note: standing in a windup stings more than one aura tick,
+/// but leaving after the wind is a real answer).
+pub fn strike_burst(dps: u32) -> u32 {
+    (dps * 2).max(4)
 }
 
 /// Mob kinds eligible for a capital level (unlock order = table order).
@@ -781,6 +855,54 @@ mod tests {
         assert_eq!(capital_level_from_xp(400), 2);
         assert_eq!(capital_xp_for_level(3), 900);
         assert_eq!(capital_level_from_xp(1000), 3);
+    }
+
+    #[test]
+    fn every_kind_has_a_beat_period_and_archetype() {
+        // Spec 036 §3.4: every kind winds and strikes in a readable rhythm.
+        for kind in MOB_KINDS.iter() {
+            assert!(
+                (3..=10).contains(&kind.strike_period_secs),
+                "{} period {} outside the 3..=10 band",
+                kind.name,
+                kind.strike_period_secs
+            );
+            assert!(
+                mob_archetype(kind.name).is_some(),
+                "{} must map to an archetype",
+                kind.name
+            );
+        }
+        // The spec table's exact periods.
+        let pinned: &[(&str, u32)] = &[
+            ("Slime", 4),
+            ("Blue Slime", 4),
+            ("Pink Slime", 4),
+            ("Pupple Slime", 4),
+            ("Black Slime", 4),
+            ("Spear Goblin", 4),
+            ("Archer Goblin", 5),
+            ("Myconid", 5),
+            ("Myconid Blue", 5),
+            ("Myconid Pink", 5),
+            ("Myconid Purple", 5),
+            ("Myconid Red", 5),
+            ("Bomb Goblin", 7),
+            ("Venom Bloom", 6),
+            ("Big Slime", 3),
+        ];
+        for (name, period) in pinned {
+            assert_eq!(mob_kind(name).unwrap().strike_period_secs, *period);
+        }
+        // Archetype shape rules: the bloom is the only rooted one; the boss
+        // is the fastest rhythm.
+        assert_eq!(mob_archetype("Venom Bloom"), Some(MobArchetype::Bloom));
+        assert_eq!(mob_archetype("Big Slime"), Some(MobArchetype::Boss));
+        assert_eq!(mob_archetype("Bomb Goblin"), Some(MobArchetype::Bomber));
+        assert_eq!(mob_archetype("Spear Goblin"), Some(MobArchetype::Sapper));
+        assert_eq!(strike_burst(3), 6);
+        assert_eq!(strike_burst(2), 4, "floored at 4");
+        assert_eq!(strike_burst(14), 28);
     }
 
     #[test]

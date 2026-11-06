@@ -733,6 +733,15 @@ pub struct Mob {
     /// Index `0` / unused when the trace is empty (roamers, legacy capital).
     #[default(0)]
     pub path_idx: u32,
+    /// Spec 036 — THE BEAT: the unix second this mob's next telegraphed
+    /// player-strike LANDS. 0 = unset (the next qualifying tick re-arms +
+    /// staggers). The wind beats at `next_strike_at - 1`.
+    #[default(0)]
+    pub next_strike_at: u64,
+    /// Spec 036 — personal beat counter per mob (boss cadence: slam every
+    /// 3rd beat, summon every other slam). Incremented on every armed tick.
+    #[default(0)]
+    pub beat_count: u32,
 }
 
 /// Active-mob gate (REV line spawn): rows not yet born stay out of every
@@ -783,6 +792,10 @@ pub const CE_TRAP: &str = "trap"; // trap triggered (spike burst / web pin)
 pub const CE_PLAYER_HIT: &str = "player_hit"; // player deals damage
 pub const CE_PLAYER_HURT: &str = "player_hurt"; // player takes damage
 pub const CE_MOB_FELL: &str = "mob_fell"; // Spec 034 S4: a mob was slain
+// Spec 036 — THE BEAT: the wind-up telegraph (one beat before the strike)
+// and the dodge resolution (i-frames ate the strike).
+pub const CE_MOB_WIND: &str = "mob_wind";
+pub const CE_PLAYER_DODGE: &str = "player_dodge";
 
 #[derive(Clone, Debug)]
 #[spacetimedb::table(

@@ -16,9 +16,38 @@ use crate::objects::add_item;
 use crate::types::{
     combat_event,
     capital as cap_table, capital, defense_structure, hex_coords_of, hex_tile, mob, now_secs,
-    player, tile_center, tile_distance, tile_id_of, Capital, Mob, Player, CE_PLAYER_HURT,
-    CE_PLAYER_HIT, CE_TRAP,
+    player, tile_center, tile_distance, tile_id_of, Capital, Mob, Player, CE_MOB_WIND,
+    CE_PLAYER_DODGE, CE_PLAYER_HURT, CE_PLAYER_HIT, CE_TRAP,
 };
+
+// ---------------------------------------------------------------------------
+// Spec 036 — THE BEAT (pure helpers, unit-tested)
+// ---------------------------------------------------------------------------
+
+/// Pure beat phase (spec §3.2): what does this mob owe at `now`, given its
+/// armed strike time?
+/// - `Wind` at `next_strike_at - 1` (the telegraph beat),
+/// - `Strike` at `next_strike_at` (resolve, then reschedule),
+/// - `Quiet` otherwise (between beats — zero damage auras are dead).
+/// A stale/stale-armed mob (`next_strike_at <= now - 1`, e.g. a server
+/// restart mid-wind) reports `Quiet` (the caller re-arms on the next tick —
+/// never a snap strike).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeatPhase {
+    Quiet,
+    Wind,
+    Strike,
+}
+
+pub fn beat_phase(now: u64, next_strike_at: u64) -> BeatPhase {
+    if next_strike_at == 0 || now + 1 < next_strike_at {
+        BeatPhase::Quiet
+    } else if now + 1 == next_strike_at {
+        BeatPhase::Wind
+    } else {
+        BeatPhase::Strike
+    }
+}
 
 // ---------------------------------------------------------------------------
 // HP helpers
@@ -531,6 +560,8 @@ fn mob_spawner_pass(ctx: &ReducerContext, now: u64) {
             spawn_at_secs: 0,
             // Roamers march free (no capital trace) — lane index unused.
             path_idx: 0,
+            next_strike_at: 0,
+            beat_count: 0,
         });
     }
     tracing::info!("ROAMER-PACK #{now} slimes={count} at ({sq},{sr})");
@@ -585,6 +616,14 @@ fn roamer_pass(ctx: &ReducerContext, now: u64) {
                 let mut row = m.clone();
                 row.aggro_target = addr.clone();
                 row.aggro_until_secs = now + combat::MOB_AGGRO_SECS;
+                // Spec 036: contact aggro opens the schedule at HALF the
+                // period — the strike beats fast on contact, then settles
+                // into the full rhythm.
+                let half = (cfg::mob_kind(&m.kind)
+                    .map(|k| k.strike_period_secs / 2)
+                    .unwrap_or(1)
+                    .max(1)) as u64;
+                row.next_strike_at = now + half;
                 ctx.db.mob().mob_id().update(row);
             }
         }
@@ -709,26 +748,89 @@ fn roamer_trap_spring(ctx: &ReducerContext, mob_row: &Mob, now: u64) {
     }
 }
 
-/// Aggroed roamer strike: dps into the hunted player when in reach. Returns
-/// true when damage was applied (i-frame/grace rejections included).
+/// Aggroed roamer strike — THE BEAT (Spec 036 §3.2): replaces the old
+/// per-tick dps aura. State machine per aggroed mob in reach:
+///
+/// 1. `next_strike_at == 0` → ARM silently this tick: `now + period +
+///    (mob_id % period)` stagger (fresh per-mob rhythm), return false (the
+///    chase-step stays open).
+/// 2. Wind beat (`next_strike_at - 1 == now`) → emit `CE_MOB_WIND` against
+///    the hunted player's hex; return true (the mob commits its tick to the
+///    wind — strike OR move, never both).
+/// 3. Strike beat (`next_strike_at == now`) → resolve:
+///    - player gone/offline/out of reach → WHIFF: reschedule, return false
+///      (re-opens the chase-step so the mob repositions).
+///    - i-frames (`dash_until > now`) → DODGE: `CE_PLAYER_DODGE`, reschedule,
+///      zero hp delta.
+///    - else → damage `strike_burst` (armor + knock apply inside
+///      `apply_player_damage`), reschedule, return true.
+/// A stale `next_strike_at < now` (server restart mid-windup) re-arms on
+/// the next tick — one beat of grace, never a snap strike.
 fn roamer_strike(ctx: &ReducerContext, mob_row: &Mob, kind: &cfg::MobKind, now: u64) -> bool {
-    let Some(player_row) = hunted_player(ctx, &mob_row.aggro_target, now) else {
-        return false;
-    };
-    let dist = tile_distance(mob_row.hex_q, mob_row.hex_r, player_row.hex_q, player_row.hex_r);
-    if dist > kind.range_hexes {
+    if mob_row.next_strike_at == 0 || mob_row.next_strike_at < now {
+        // ARM (fresh on spawn/after every strike/restart-grace). Stagger is
+        // the fresh per-mob rhythm: + mob_id % period.
+        let period = u64::from(kind.strike_period_secs.max(1));
+        if let Some(mut fresh) = ctx.db.mob().mob_id().find(mob_row.mob_id) {
+            fresh.next_strike_at = now + period + (mob_row.mob_id % period);
+            ctx.db.mob().mob_id().update(fresh);
+        }
         return false;
     }
-    let dmg = kind.dps;
-    apply_player_damage(
-        ctx,
-        &player_row,
-        dmg,
-        mob_row.mob_id,
-        (mob_row.hex_q, mob_row.hex_r),
-        kind.name,
-        now,
-    )
+    match beat_phase(now, mob_row.next_strike_at) {
+        BeatPhase::Wind => {
+            // The telegraph: idempotent (stateless fx row, 30 s TTL dust).
+            if let Some(p) = hunted_player(ctx, &mob_row.aggro_target, now) {
+                let dist = tile_distance(mob_row.hex_q, mob_row.hex_r, p.hex_q, p.hex_r);
+                if dist <= kind.range_hexes {
+                    emit_player_event(
+                        ctx,
+                        CE_MOB_WIND,
+                        p.hex_id,
+                        0,
+                        mob_row.mob_id,
+                        kind.name,
+                        now,
+                    );
+                    if let Some(mut fresh) = ctx.db.mob().mob_id().find(mob_row.mob_id) {
+                        fresh.beat_count = fresh.beat_count.wrapping_add(1);
+                        ctx.db.mob().mob_id().update(fresh);
+                    }
+                    return true; // the wind consumes this tick (no chase step)
+                }
+            }
+            false
+        }
+        BeatPhase::Strike => {
+            // Reschedule FIRST (spec: on spawn and after every strike —
+            // whiffs and dodges consume the beat too).
+            let period = u64::from(kind.strike_period_secs.max(1));
+            let next_at = now + period;
+            if let Some(mut fresh) = ctx.db.mob().mob_id().find(mob_row.mob_id) {
+                fresh.next_strike_at = next_at;
+                fresh.beat_count = fresh.beat_count.wrapping_add(1);
+                ctx.db.mob().mob_id().update(fresh);
+            }
+            let Some(player_row) = hunted_player(ctx, &mob_row.aggro_target, now) else {
+                return false; // gone: the whiff re-opens the chase
+            };
+            let dist = tile_distance(mob_row.hex_q, mob_row.hex_r, player_row.hex_q, player_row.hex_r);
+            if dist > kind.range_hexes {
+                return false; // walked out: nothing lands, mob repositions
+            }
+            let dmg = cfg::strike_burst(kind.dps);
+            apply_player_damage(
+                ctx,
+                &player_row,
+                dmg,
+                mob_row.mob_id,
+                (mob_row.hex_q, mob_row.hex_r),
+                kind.name,
+                now,
+            )
+        }
+        BeatPhase::Quiet => false,
+    }
 }
 
 /// Shared player-damage application (§8): dash i-frames and grace block
@@ -747,6 +849,17 @@ fn apply_player_damage(
     now: u64,
 ) -> bool {
     if target.dash_until > now {
+        // Spec 036: the dodge is a REAL verb — the eaten strike announces
+        // itself (gray float + ghost, client arm on `player_dodge`).
+        emit_player_event(
+            ctx,
+            CE_PLAYER_DODGE,
+            target.hex_id,
+            0,
+            attacker_mob,
+            detail,
+            now,
+        );
         return false; // i-frames vs. attacks only (§5.2)
     }
     // Spec 033: armor grants flat damage reduction floor 1 (never fully
@@ -920,6 +1033,35 @@ pub(crate) fn emit_player_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn beat_phase_walks_wind_then_strike() {
+        use BeatPhase::*;
+        // Unarmed (0) is always Quiet.
+        assert_eq!(beat_phase(100, 0), Quiet);
+        // Armed at 105 (e.g. period 4 from an arm at 101).
+        // Before the wind: quiet.
+        assert_eq!(beat_phase(103, 105), Quiet);
+        // Exactly one beat before the strike: the wind.
+        assert_eq!(beat_phase(104, 105), Wind);
+        // The strike beat itself.
+        assert_eq!(beat_phase(105, 105), Strike);
+        // Stale (server restart mid-windup): past-due reports Strike only on
+        // the EXACT beat; one beat late the caller re-arms (the stale
+        // `next_strike_at < now` guard) — beat_phase's own job is just the
+        // arithmetic, so it says Strike for any past-due beat.
+        assert_eq!(beat_phase(106, 105), Strike);
+        // Far future arms are Quiet (no snap strikes).
+        assert_eq!(beat_phase(10, 100), Quiet);
+    }
+
+    #[test]
+    fn strike_burst_doubles_dps_floored_at_four() {
+        assert_eq!(cfg::strike_burst(3), 6, "slime: 3 dps → 6 per strike");
+        assert_eq!(cfg::strike_burst(1), 4, "floor 4");
+        assert_eq!(cfg::strike_burst(0), 4, "even zero-dps kinds feel a tap");
+        assert_eq!(cfg::strike_burst(14), 28, "boss 14 dps → 28 base burst");
+    }
 
     #[test]
     fn arc_pick_nearest_in_cone() {
