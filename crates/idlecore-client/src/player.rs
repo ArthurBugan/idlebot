@@ -52,6 +52,10 @@ pub struct ClientPlayer {
     pub hostile_until_utc: u64,
     pub death_until_utc: u64,
     pub grace_until_utc: u64,
+    /// Spec 036 — dodge-step burst deadline (unix secs): fires on the Space
+    /// press (0.6 s ×3 local), trimmed by the authoritative row a beat
+    /// later. The i-frame is the server's `dash_until` (1 s window).
+    pub dash_burst_secs: f64,
 }
 
 impl ClientPlayer {
@@ -63,12 +67,10 @@ impl ClientPlayer {
         })
     }
 
-    /// Is the dash stamp live (server row only; Space dash was removed per
-    /// playtest — the burst read as a streaking line behind a galloping
-    /// mount). The wire field survives; nothing sets it from input anymore.
-    #[allow(dead_code)]
+    /// Is the dodge burst/i-frame live right now (local press + server
+    /// stamp)? Restored Spec 036: the dodge is a real verb again.
     pub fn dashing(&self, unix_now: f64) -> bool {
-        self.dash_until_utc as f64 > unix_now
+        self.dash_until_utc as f64 > unix_now || self.dash_burst_secs > unix_now
     }
 }
 

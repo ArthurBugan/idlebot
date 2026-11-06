@@ -224,12 +224,22 @@ pub struct TdTracker {
 
 /// Transient state for combat fx: what the last snapshot already consumed
 /// and what is still animating.
+/// Spec 036 P2 — the windup pose windows + boss swell (pinned by test).
+pub const WIND_POSE_SECS: f32 = 0.9;
+pub const WIND_POSE_BOSS_SECS: f32 = 1.8;
+pub const WIND_BOSS_SWELL: f32 = 1.35;
+
 #[derive(Resource)]
 pub struct TdFx {
     /// Highest combat_event id consumed (dedup across rebuilds).
     pub last_event_id: u64,
     /// mob_id → seconds left posing (attack cursor, §13 wiring).
     pub posing: HashMap<u64, f32>,
+    /// Spec 036 P2 — mob_id → seconds left of the WINDUP telegraph
+    /// (mob_wind rows; the mob flashes/poses while a strike is incoming).
+    /// Big Slime winds `WIND_POSE_BOSS_SECS` + swells `WIND_BOSS_SWELL` —
+    /// keyed here too.
+    pub winding: HashMap<u64, f32>,
     /// capital_id → seconds left on hit flash + shake.
     pub capital_hit: HashMap<u64, f32>,
     /// Waves whose "under attack" toast already fired (first hit only).
@@ -256,6 +266,7 @@ impl Default for TdFx {
         Self {
             last_event_id: 0,
             posing: HashMap::default(),
+            winding: HashMap::default(),
             capital_hit: HashMap::default(),
             toasted_waves: HashSet::default(),
             player_swing: 0.0,
@@ -311,6 +322,9 @@ fn fx_plan(kind: &str) -> Option<FxBirth> {
         "player_hurt" => Some(FxBirth::PlayerHurt),
         // Spec 034 C8 (S4): the slain mob pops bigger — kills read as kills.
         "mob_fell" => Some(FxBirth::MobFall),
+        // Spec 036 P2: THE BEAT arms — white wind-pulse on the winder.
+        "mob_wind" => Some(FxBirth::MobWind),
+        "player_dodge" => Some(FxBirth::PlayerDodge),
         _ => None,
     }
 }
@@ -330,6 +344,13 @@ enum FxBirth {
     PlayerHurt,
     /// Spec 034: the mob died — big burst + shake + hitstop.
     MobFall,
+    /// Spec 036 P2: the mob is WINDING UP — the strike lands next beat.
+    /// White ring/pulse on the mob's hex; no shake, no hitstop (it hasn't
+    /// hit anything yet — the absence reads as "you still have a beat").
+    MobWind,
+    /// Spec 036 P2: your dodge ATE the strike — gray "DODGED!" float on
+    /// the missed strike hex + no shake (neutral, not red).
+    PlayerDodge,
 }
 
 // ---------------------------------------------------------------------------
@@ -2014,7 +2035,7 @@ fn animate_mobs(
         *left > 0.0
     });
     let walk_flip = (time.elapsed_secs() / 0.25) as usize % 2;
-    for (anim, mv, mut sprite, xf) in &mut mobs {
+    for (anim, mv, mut sprite, mut xf) in &mut mobs {
         let ms = mob_sprite_kind(&td_tex, &anim.kind);
         // REV5 §18: movement gate on ACTUAL distance to the glide target.
         let (tdx, tdy) = (mv.target.x - xf.translation.x, mv.target.y - xf.translation.y);
@@ -2037,10 +2058,22 @@ fn animate_mobs(
         // REV3 §13 attack cursor: while the fx timer is hot, the mob flashes
         // between its idle frame and a bright pose tint, so every hit it
         // lands on a structure/capital visibly reads as *its* act.
+        // Spec 036 P2 — THE WINDUP: a mob armed `mob_wind` telegraphs with
+        // a clean WHITE pulse (distinct from the warm attack tint); the
+        // boss also swells 1.35× while winding so small sprites read.
+        let winding = fx.winding.contains_key(&anim.mob_id);
         let attacking = fx.posing.contains_key(&anim.mob_id);
         let flash_on = tracker.flash.contains_key(&anim.mob_id);
+        let is_boss = anim.kind == "Big Slime";
         let color = if flash_on {
             Color::srgb(1.0, 0.3, 0.25)
+        } else if winding {
+            let pulse = (time.elapsed_secs() / 0.12) as usize % 2 == 0;
+            if pulse {
+                Color::srgb(1.6, 1.6, 1.6)
+            } else {
+                Color::srgb(1.05, 1.05, 1.05)
+            }
         } else if attacking {
             // 0.12 s white pulse while attacking (the sheet ships no attack
             // frames; the bright pulse is the agreed fallback, §13).
@@ -2055,6 +2088,15 @@ fn animate_mobs(
         };
         if sprite.color != color {
             sprite.color = color;
+        }
+        // Spec 036 P2 — boss body swell: 1.35× while the wind is live,
+        // back to the row scale when the beat resolves (spawn-pop keeps
+        // its own scale — this pass only clamps back to 1.0 for the swell).
+        if is_boss {
+            let want = if winding { WIND_BOSS_SWELL } else { 1.0 };
+            let s = xf.scale.x;
+            let ns = s + (want - s) * dt.min(1.0) * 8.0;
+            xf.scale = Vec3::splat(ns);
         }
     }
 }
@@ -2099,6 +2141,23 @@ fn process_combat_events(
         if row.attacker_mob > 0 && row.kind != "player_hit" {
             fx.posing.insert(row.attacker_mob, 0.55);
         }
+        // Spec 036 P2: a wind arms the longer telegraph window (0.9 s —
+        // the client beats the pose past the wind event until the strike
+        // beat). Big Slime's slam telegraph is bigger + longer (1.8 s).
+        if row.kind == "mob_wind" && row.attacker_mob > 0 {
+            let boss = snap
+                .mobs
+                .iter()
+                .find(|m| m.mob_id == row.attacker_mob)
+                .is_some_and(|m| m.kind == "Big Slime");
+            fx.winding.insert(
+                row.attacker_mob,
+                if boss { WIND_POSE_BOSS_SECS } else { WIND_POSE_SECS },
+            );
+        }
+        // The wind's pose rides the SAME posing map (inserted above for
+        // mob_wind too) — the attack tint and wind tint are the same
+        // white-pulse op; the WIND ring sprite below is the telegraph.
         // Player swings arm the attacker pose at home too (attacker_mob is
         // 0 — pose goes on the player fx slot below).
         if row.kind == "player_hit" {
@@ -2252,6 +2311,34 @@ fn process_combat_events(
                 fx.hitstop_left = fx.hitstop_left.max(0.09);
                 shake.shake(0.32);
             }
+            // Spec 036 P2 — the windup: a calm white ring on the WINDER'S
+            // hex (the telegraph is on the attacker, not the victim — the
+            // wind row's target hex is the player's, but the ring anchors
+            // the attacking mob via its live marker). Big Slime's ring is
+            // bigger (the 1.35× body swell lives on the mob marker pass).
+            FxBirth::MobWind => {
+                let (wx, wy) = mob_anchor_pos(mobs_live, row.attacker_mob).unwrap_or((tx, ty));
+                let boss = snap
+                    .mobs
+                    .iter()
+                    .find(|m| m.mob_id == row.attacker_mob)
+                    .is_some_and(|m| m.kind == "Big Slime");
+                impact_sprite(commands, [0.95, 0.95, 0.95], wx, wy, if boss { 1.6 } else { 1.0 });
+            }
+            // Spec 036 P2 — the dodged strike: a gray "DODGED!" float at
+            // the missed strike (the event is row.target = the dodger's
+            // hex, which is YOUR hex — anchor the player transform).
+            FxBirth::PlayerDodge => {
+                spawn_zelda_number(
+                    commands,
+                    zelda_font(fx),
+                    player_xf.translation.x,
+                    player_xf.translation.y,
+                    "DODGED!",
+                    Color::srgb(0.75, 0.75, 0.78),
+                    0.0,
+                );
+            }
         }
     }
 }
@@ -2383,6 +2470,12 @@ fn combat_fx_tick(
     }
     let dt = time.delta_secs();
     fx.posing.retain(|_, left| {
+        *left -= dt;
+        *left > 0.0
+    });
+    // Spec 036 P2 windup telegraph decay (mob_wind arms; see wind swell in
+    // `animate_mobs`).
+    fx.winding.retain(|_, left| {
         *left -= dt;
         *left > 0.0
     });
@@ -3314,9 +3407,14 @@ fn update_combat_hud(
         **text = format!("Wpn: {}{}", p.weapon_def().name, ammo_note);
     }
     if let Ok(mut text) = ps.p4().single_mut() {
-        // Space dash removed per playtest — the chip is blanked, the spawn
-        // slot stays (removing it renumbers the ParamSet arm).
-        **text = String::new();
+        // Spec 036 P3: the dodge chip is back — the cooldown drains it
+        // ("Dodge [Space]" when ready, countdown while provisioning).
+        let cd_left = p.dash_cd_until_utc.saturating_sub(now);
+        **text = if cd_left > 0 {
+            format!("Dodge [Space] · {}s", cd_left)
+        } else {
+            "Dodge [Space]".to_string()
+        };
     }
 }
 
@@ -4541,6 +4639,8 @@ mod tests_fx {
             "player_hit", // Spec 027 §8: my swing lands
             "player_hurt", // I take damage
             "mob_fell", // Spec 034 S4: a mob was slain
+            "mob_wind", // Spec 036 P2: the beat telegraph
+            "player_dodge", // Spec 036 P2: my dodge ate the strike
         ];
         for kind in server_kinds {
             assert!(
@@ -4562,6 +4662,22 @@ mod tests_fx {
         }
         assert!(matches!(fx_plan("player_hit"), Some(FxBirth::PlayerHit)));
         assert!(matches!(fx_plan("mob_fell"), Some(FxBirth::MobFall)));
+        // Spec 036 P2: the wind is a calm white telegraph (no shake), the
+        // dodge a gray float (no red, no shake) — neither reads as damage.
+        assert!(matches!(fx_plan("mob_wind"), Some(FxBirth::MobWind)));
+        assert!(matches!(
+            fx_plan("player_dodge"),
+            Some(FxBirth::PlayerDodge)
+        ));
+    }
+
+    /// Spec 036 P2: the windup window beats longer than the attack pose —
+    /// 0.9 s for regular kinds, 1.8 s for the boss (slams read BIG).
+    #[test]
+    fn wind_pose_windows_beat_the_spec() {
+        assert_eq!(WIND_POSE_SECS, 0.9);
+        assert_eq!(WIND_POSE_BOSS_SECS, 1.8);
+        assert_eq!(WIND_BOSS_SWELL, 1.35);
     }
 
     /// Spec 034 C8: the S3 strike payload `"<weapon>|<dmg>"` parses; every

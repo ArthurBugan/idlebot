@@ -260,6 +260,7 @@ fn setup(mut commands: Commands) {
             hostile_until_utc: 0,
             death_until_utc: 0,
             grace_until_utc: 0,
+            dash_burst_secs: 0.0,
         },
     ));
 }

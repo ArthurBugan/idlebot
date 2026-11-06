@@ -42,13 +42,14 @@ pub const ROAMER_WANDER_CADENCE: u32 = 4;
 /// Contact aggro: walking INTO a roamer's hex (or its melee reach) turns it.
 pub const ROAMER_CONTACT_DIST: i32 = 1;
 
-/// Dash (§5.2): 6 s cooldown; the 0.4 s burst rounds up to ONE 1s tick on
-/// the server (integer-second table) — the client trims the tail locally.
+/// Dash (§5.2): the DODGE (Spec 036): 2 s cooldown furnace, the 1 s
+/// i-frame window is ONE server tick; the client's 0.6 s burst is the
+/// local trim (movement keeps its per-step server clamp).
 pub const DASH_CD_SECS: u64 = 2;
 pub const DASH_TICKS: u64 = 1;
 pub const DASH_SPEED_MULT: u32 = 3;
-/// Client-side exact burst (real 0.4 s, mirrors the spec number).
-pub const DASH_DURATION_SECS: f32 = 0.4;
+/// Client-side exact burst (Spec 036: 0.6 s dodge-step, ×3 speed).
+pub const DASH_DURATION_SECS: f32 = 0.6;
 
 /// Player XP per roamer kill lands directly on the killer (§7).
 pub const PLAYER_KILL_XP_ROAMER: u64 = ROAMER_XP;
