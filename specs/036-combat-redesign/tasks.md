@@ -12,6 +12,15 @@
 > added ⇒ regen bindings BEFORE client build; new columns APPEND at the
 > struct end — an insert mid-struct is a "reorder" and forces
 > --delete-data).
+>
+> WIRE-DRIFT NOTE (2026-11-06, pre-publish): the generated client `Mob`
+> binding carries 18 fields; the server Mob now has 20
+> (`next_strike_at`, `beat_count` appended). The client compiles and
+> runs today ONLY because it reads neither new field AND it was built
+> against the pre-036 schema. Sats product encoding is field-count
+> prefixed — once the module publishes, any further client build MUST
+> regen bindings first or row deserialization misaligns. Order is
+> load-bearing: build wasm → publish → regen → client build.
 
 ## T1 (P1) — The beat, server core — DONE (commit 7068ebb0)
 
