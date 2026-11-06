@@ -1479,9 +1479,15 @@ mod tests {
         for light in [Sword, Sickle, Hoe, Bow, Fists] {
             assert!(!combat::weapon_shoves(light));
         }
-        // The map must partition all 71 rows (no mistable id).
+        // The map must partition all 71 rows (no mistable id): a heavy
+        // row's anim maps to shoves, a light row's never does — the
+        // partition is total over the ladder.
         for w in combat::weapons() {
-            let _ = combat::weapon_shoves(w.anim); // just never panics/mistypes
+            let is_heavy = matches!(
+                w.anim,
+                Axe | Pickaxe | Shovel
+            );
+            assert_eq!(combat::weapon_shoves(w.anim), is_heavy, "{}", w.name);
         }
         assert_eq!(combat::weapons().len(), 71);
     }
