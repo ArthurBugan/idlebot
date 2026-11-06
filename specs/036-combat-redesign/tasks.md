@@ -41,9 +41,9 @@
   schedule at half period. Stale (restart) arms re-stagger — no snap.
 - [x] `apply_player_damage`: `dash_until > now` ⇒ `CE_PLAYER_DODGE` row
   (was a silent false).
-- [ ] Publish to the live module + bindings regen (needs the user's
-  `spacetime publish`; bindings ARE compatible either way — new columns
-  are additive and the client ignores unknown fields until regen).
+- [x] Publish to the live module + bindings regen — DONE 2026-11-06
+  (fresh world via `--delete-data`, per user go; bindings regenerated;
+  client `cargo check` green; bindings commit 977a2438).
 
 ## T2 (P2) — Telegraph readability, client — DONE (commit 56ed2c6f)
 
