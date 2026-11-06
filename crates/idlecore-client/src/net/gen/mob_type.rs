@@ -25,6 +25,8 @@ pub struct Mob {
     pub born_at_secs: u64,
     pub spawn_at_secs: u64,
     pub path_idx: u32,
+    pub next_strike_at: u64,
+    pub beat_count: u32,
 }
 
 impl __sdk::InModule for Mob {
@@ -53,6 +55,8 @@ pub struct MobCols {
     pub born_at_secs: __sdk::__query_builder::Col<Mob, u64>,
     pub spawn_at_secs: __sdk::__query_builder::Col<Mob, u64>,
     pub path_idx: __sdk::__query_builder::Col<Mob, u32>,
+    pub next_strike_at: __sdk::__query_builder::Col<Mob, u64>,
+    pub beat_count: __sdk::__query_builder::Col<Mob, u32>,
 }
 
 impl __sdk::__query_builder::HasCols for Mob {
@@ -77,6 +81,8 @@ impl __sdk::__query_builder::HasCols for Mob {
             born_at_secs: __sdk::__query_builder::Col::new(table_name, "born_at_secs"),
             spawn_at_secs: __sdk::__query_builder::Col::new(table_name, "spawn_at_secs"),
             path_idx: __sdk::__query_builder::Col::new(table_name, "path_idx"),
+            next_strike_at: __sdk::__query_builder::Col::new(table_name, "next_strike_at"),
+            beat_count: __sdk::__query_builder::Col::new(table_name, "beat_count"),
         }
     }
 }
