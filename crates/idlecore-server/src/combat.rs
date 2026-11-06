@@ -100,6 +100,39 @@ pub fn pick_arc_target(
         .map(|(id, _, _, _)| id)
 }
 
+/// Spec 036 P4 — SWING HONESTY (§3.1 V1): every mob in the same 120° arc
+/// within range eats the swing — the primary (nearest) full, the sides
+/// half (min 1), capped at 3 total victims. `ranged=true` (the bow)
+/// keeps its single-target identity. Nearest-first order, ties → mob id.
+pub fn pick_arc_victims(
+    candidates: &[(u64, i32, f32, f32)],
+    dir: i32,
+    range: i32,
+    ranged: bool,
+) -> Vec<(u64, u32)> {
+    let mut in_arc: Vec<(u64, i32, f32, f32)> = candidates
+        .iter()
+        .copied()
+        .filter(|(_, d, vx, vy)| *d <= range && combat::heading_allows(*vx, *vy, dir))
+        .collect();
+    in_arc.sort_unstable_by_key(|&(id, d, _, _)| (d, id));
+    if ranged {
+        return in_arc
+            .first()
+            .map(|(id, _, _, _)| (*id, 0))
+            .into_iter()
+            .collect();
+    }
+    // The victim scaling rides out with the pick: primary FULL, sides
+    // half-floored-at-1. Damage relayed as (mob_id, dmg) pairs.
+    in_arc
+        .into_iter()
+        .take(3)
+        .enumerate()
+        .map(|(rank, (id, _, _, _))| (id, if rank == 0 { 0 } else { 1 }))
+        .collect()
+}
+
 /// Kill application: raid mobs keep the exact tower-kill credit (drop to the
 /// capital's defender, `CAPITAL_XP_PER_MOB` to the capital); roamers pay
 /// their drops straight to the credited player plus `ROAMER_XP` — no
@@ -221,13 +254,21 @@ pub fn player_attack(ctx: &ReducerContext, address: &str, direction: i32) -> Res
             }
         })
         .collect();
-    let Some(target) = pick_arc_target(&candidates, direction, range) else {
+    // Spec 036 P4: victims pick REPLACES the single-target pick — the arc
+    // is filled first; an empty arc still costs cd only.
+    if pick_arc_target(&candidates, direction, range).is_none() {
         // Facing an empty arc costs nothing — but the strike still cadences.
         p.attack_cd_until = now + weapon.cd_secs;
         ctx.db.player().address().update(p);
         return Ok(());
-    };
-    let Some(mob_row) = ctx.db.mob().mob_id().find(target) else {
+    }
+    // Spec 036 P4: the swing is HONEST — primary target + up to 2 sides
+    // in the same arc eat it (bow stays single-target). `pick_arc_victims`
+    // returns damage-scaling codes (0 = primary full, 1 = side half).
+    // The re-find below keeps the arrow spend + grace shed on a confirmed
+    // row only.
+    let victims = pick_arc_victims(&candidates, direction, range, weapon.ammo.is_some());
+    let Some(_primary_row) = victims.first().and_then(|(id, _)| ctx.db.mob().mob_id().find(*id)) else {
         return Ok(());
     };
 
@@ -241,50 +282,57 @@ pub fn player_attack(ctx: &ReducerContext, address: &str, direction: i32) -> Res
         p.grace_until = 0;
     }
 
-    // Swing fx leaves before the row math (fire-and-forget, §8 exhaustively
-    // pinned kinds). Spec 034 S3: the detail carries `"<weapon>|<dmg>"` so
-    // the client floats the number without a schema change.
-    emit_player_event(
-        ctx,
-        CE_PLAYER_HIT,
-        mob_row.hex_id,
-        0,
-        mob_row.mob_id,
-        &format!("{}|{}", weapon.name, weapon.dmg),
-        now,
-    );
-
-    // Damage → kill/wound → aggro.
     let capitals: HashMap<u64, Capital> = ctx.db.capital().iter().map(|c| (c.capital_id, c)).collect();
-    kill_or_wound(ctx, &mob_row, weapon.dmg, &capitals, Some(&address));
-    if let Some(mut fresh) = ctx.db.mob().mob_id().find(target) {
-        fresh.aggro_target = p.address.clone();
-        fresh.aggro_until_secs = now + combat::MOB_AGGRO_SECS;
-        // Zelda feel REV: a hit SHOVES the wounded raider one hex along the
-        // swing direction. Rooted kinds and water absolve it in place.
-        let kind = cfg::mob_kind(&mob_row.kind);
-        let (dx, dy) = idlecore_core::player_combat::DIR_VECS
-            [(((direction % 8) + 8) % 8) as usize];
-        // The vectors are ×20 fixed-point; the shove is ONE king-step.
-        let (kq, kr) = (dx.signum(), dy.signum());
-        if fresh.hp > 0
-            && kind.is_some_and(|k| k.step_interval_secs > 0)
-            && !ctx
-                .db
-                .hex_tile()
-                .hex_id()
-                .find(tile_id_of(fresh.hex_q + kq, fresh.hex_r + kr))
-                .map(|t| t.terrain == "Water")
-                .unwrap_or(false)
-        {
-            fresh.hex_q += kq;
-            fresh.hex_r += kr;
-            fresh.hex_id = tile_id_of(fresh.hex_q, fresh.hex_r);
-            let (kx, ky) = tile_center(fresh.hex_q, fresh.hex_r);
-            fresh.position_x = kx;
-            fresh.position_y = ky;
+    for (vid, scale) in victims {
+        let Some(vrow) = ctx.db.mob().mob_id().find(vid) else { continue };
+        let dmg = if scale == 0 {
+            weapon.dmg
+        } else {
+            (weapon.dmg / 2).max(1)
+        };
+        // Each victim pops its own fx row (per-victim numbers).
+        emit_player_event(
+            ctx,
+            CE_PLAYER_HIT,
+            vrow.hex_id,
+            0,
+            vrow.mob_id,
+            &format!("{}|{}", weapon.name, dmg),
+            now,
+        );
+        kill_or_wound(ctx, &vrow, dmg, &capitals, Some(address));
+        // Spec 036 P4 — the family-gated shove: only when the weapon
+        // family shoves (Axe/Pickaxe/Shovel). Rules stay as today
+        // (rooted kinds and water absolve).
+        if combat::weapon_shoves(weapon.anim) {
+            if let Some(mut fresh) = ctx.db.mob().mob_id().find(vid) {
+                fresh.aggro_target = p.address.clone();
+                fresh.aggro_until_secs = now + combat::MOB_AGGRO_SECS;
+                let (dx, dy) = idlecore_core::player_combat::DIR_VECS
+                    [(((direction % 8) + 8) % 8) as usize];
+                let (kq, kr) = (dx.signum(), dy.signum());
+                let rooted = cfg::mob_kind(&fresh.kind)
+                    .is_none_or(|k| k.step_interval_secs == 0);
+                if fresh.hp > 0
+                    && !rooted
+                    && !ctx
+                        .db
+                        .hex_tile()
+                        .hex_id()
+                        .find(tile_id_of(fresh.hex_q + kq, fresh.hex_r + kr))
+                        .map(|t| t.terrain == "Water")
+                        .unwrap_or(false)
+                {
+                    fresh.hex_q += kq;
+                    fresh.hex_r += kr;
+                    fresh.hex_id = tile_id_of(fresh.hex_q, fresh.hex_r);
+                    let (kx, ky) = tile_center(fresh.hex_q, fresh.hex_r);
+                    fresh.position_x = kx;
+                    fresh.position_y = ky;
+                }
+                ctx.db.mob().mob_id().update(fresh);
+            }
         }
-        ctx.db.mob().mob_id().update(fresh);
     }
 
     p.attack_cd_until = now + weapon.cd_secs;
@@ -1061,6 +1109,51 @@ mod tests {
         assert_eq!(cfg::strike_burst(1), 4, "floor 4");
         assert_eq!(cfg::strike_burst(0), 4, "even zero-dps kinds feel a tap");
         assert_eq!(cfg::strike_burst(14), 28, "boss 14 dps → 28 base burst");
+    }
+
+    #[test]
+    fn pick_arc_victims_caps_and_scales() {
+        // Five in-arc candidates at rising distances — only 3 come back,
+        // nearest-first; primary full (0), sides half-code (1).
+        let cand: Vec<(u64, i32, f32, f32)> = vec![
+            (5, 3, 10.0, 0.0),
+            (2, 1, 10.0, 0.0),
+            (7, 2, 10.0, 0.0),
+            (9, 1, 10.0, 0.0), // tie with 2 at dist 1: lowest id first
+            (11, 1, -10.0, 0.0), // behind: filtered by the arc
+        ];
+        let victims = pick_arc_victims(&cand, 0, 4, false);
+        assert_eq!(victims.len(), 3, "cap 3");
+        assert_eq!(victims[0], (2, 0), "primary = nearest, full");
+        assert_eq!(victims[1], (9, 1), "tie broken by lower id");
+        assert_eq!(victims[2], (7, 1), "third victim half");
+        assert!(victims.iter().all(|(id, _)| *id != 11), "behind-out");
+        // Out-of-range candidates never in.
+        let far = pick_arc_victims(&[(3, 9, 10.0, 0.0)], 0, 4, false);
+        assert!(far.is_empty());
+        // The BOW is single-target identity (ranged = true).
+        let solo = pick_arc_victims(&cand, 0, 4, true);
+        assert_eq!(solo, vec![(2, 0)]);
+        // Empty arc stays empty (the caller keeps the cd-only whiff).
+        assert!(pick_arc_victims(&[], 0, 4, false).is_empty());
+    }
+
+    #[test]
+    fn weapon_shoves_follow_the_family_map() {
+        use combat::WeaponAnim::*;
+        // Heavy = displacement.
+        assert!(combat::weapon_shoves(Axe));
+        assert!(combat::weapon_shoves(Pickaxe));
+        assert!(combat::weapon_shoves(Shovel));
+        // Light = flow.
+        for light in [Sword, Sickle, Hoe, Bow, Fists] {
+            assert!(!combat::weapon_shoves(light));
+        }
+        // The map must partition all 71 rows (no mistable id).
+        for w in combat::weapons() {
+            let _ = combat::weapon_shoves(w.anim); // just never panics/mistypes
+        }
+        assert_eq!(combat::weapons().len(), 71);
     }
 
     #[test]

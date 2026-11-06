@@ -262,6 +262,19 @@ pub fn weapon(id: u8) -> Option<&'static Weapon> {
     weapons().iter().find(|w| w.id == id)
 }
 
+/// Spec 036 P4 — HEAVY = DISPLACEMENT (spec §3.1 V1): the weapon families
+/// whose swings SHOVE survivors one king-step along the swing heading.
+/// Axe families (Axe, Pickaxe, Shovel) shove; Sword families (Sword,
+/// Sickle, Hoe, Bow, Fists) don't — light = flow, heavy = displacement.
+/// The single source of truth; every one of the 71 rows routes through
+/// `WeaponAnim` identity, so no id is mistable.
+pub fn weapon_shoves(anim: WeaponAnim) -> bool {
+    matches!(
+        anim,
+        WeaponAnim::Axe | WeaponAnim::Pickaxe | WeaponAnim::Shovel
+    )
+}
+
 /// 8-way headings (§5.1): client facing angle r → server integer direction.
 /// Direction d points at d·45° CCW from east (+X), matching the client's
 /// yaw convention; the fixed vectors are ×10 fixed-point for all-integer
