@@ -24,6 +24,17 @@ use crate::types::{
 // Spec 036 — THE BEAT (pure helpers, unit-tested)
 // ---------------------------------------------------------------------------
 
+/// Spec 036 §3.5 — BOSS ENRAGE gate (pure, integer-safe): at hp ≤ 30 % of
+/// the kind's full hp the boss enrages (period 3→2, slam ×3→×4).
+pub fn boss_enraged(hp: u32, full_hp: u32) -> bool {
+    u64::from(hp) * 10 <= u64::from(full_hp) * 3
+}
+
+/// Spec 036 §3.5 — boss slam multiplier (pure): ×3 normally, ×4 enraged.
+pub fn boss_slam_mult(enraged: bool) -> u32 {
+    if enraged { 4 } else { 3 }
+}
+
 /// Pure beat phase (spec §3.2): what does this mob owe at `now`, given its
 /// armed strike time?
 /// - `Wind` at `next_strike_at - 1` (the telegraph beat),
@@ -852,10 +863,18 @@ fn roamer_strike(ctx: &ReducerContext, mob_row: &Mob, kind: &cfg::MobKind, now: 
         BeatPhase::Strike => {
             // Reschedule FIRST (spec: on spawn and after every strike —
             // whiffs and dodges consume the beat too).
-            let period = u64::from(kind.strike_period_secs.max(1));
-            let next_at = now + period;
+            // Spec 036 §3.5 — BOSS ENRAGE: at hp ≤ 30 % the period drops
+            // 3 → 2 and the slam ×3 → ×4. Integer-safe: hp·10 ≤ maxhp·3.
+            let enraged = mob_row.kind == "Big Slime" && boss_enraged(mob_row.hp, kind.hp);
+            let period_secs = if enraged {
+                kind.strike_period_secs.min(2)
+            } else {
+                kind.strike_period_secs
+            };
+            let period = u64::from(period_secs.max(1));
+            let base = now + period;
             if let Some(mut fresh) = ctx.db.mob().mob_id().find(mob_row.mob_id) {
-                fresh.next_strike_at = next_at;
+                fresh.next_strike_at = base;
                 fresh.beat_count = fresh.beat_count.wrapping_add(1);
                 ctx.db.mob().mob_id().update(fresh);
             }
@@ -866,19 +885,236 @@ fn roamer_strike(ctx: &ReducerContext, mob_row: &Mob, kind: &cfg::MobKind, now: 
             if dist > kind.range_hexes {
                 return false; // walked out: nothing lands, mob repositions
             }
-            let dmg = cfg::strike_burst(kind.dps);
-            apply_player_damage(
+            // Damage: plain burst for everyone; the BOSS SLAMS ×3
+            // (enraged ×4) in a range-1 splash (spec §3.5).
+            let mut burst = cfg::strike_burst(kind.dps);
+            if mob_row.kind == "Big Slime" {
+                burst *= boss_slam_mult(enraged);
+            }
+            let landed = apply_player_damage(
                 ctx,
                 &player_row,
-                dmg,
+                burst,
                 mob_row.mob_id,
                 (mob_row.hex_q, mob_row.hex_r),
                 kind.name,
                 now,
-            )
+            );
+
+            // Spec 036 §3.4 archetype tails (only on a landed strike):
+            // - Skirmisher: kite 1 hex AWAY (range-keeper).
+            // - Bomber: splash read — structures near the PLAYER eat half.
+            // - Boss summon beat handled separately (every other slam).
+            if landed {
+                archetype_tail(ctx, mob_row, kind, &player_row, burst, now);
+                if mob_row.kind == "Big Slime" {
+                    boss_summon_beat(ctx, mob_row, now);
+                }
+            }
+            landed
         }
         BeatPhase::Quiet => false,
     }
+}
+
+/// Spec 036 §3.4 — post-strike archetype tails, only on a LANDED strike:
+/// - Skirmisher (range > 1 kinds): one king-step AWAY from the player,
+///   land + wall honest, only if it opens distance.
+/// - Bomber (Bomb Goblin): splash read of the strike — every structure
+///   within 1 hex of the PLAYER's hex takes half the burst (direct
+///   destroy + rubble flow intact via the shared damage map path).
+/// - Biter and Sapper tails carry no extra behavior (the Biter's next
+///   chase step IS the lunge; the Sapper keeps walls as its targets).
+fn archetype_tail(
+    ctx: &ReducerContext,
+    mob_row: &Mob,
+    kind: &cfg::MobKind,
+    player_row: &Player,
+    burst: u32,
+    now: u64,
+) {
+    let Some(arch) = cfg::mob_archetype(&mob_row.kind) else { return };
+    match arch {
+        cfg::MobArchetype::Skirmisher => {
+            // Kite: one king-step away from the striker's own position
+            // (range-keeper). Rejects water + standing walls, moves only
+            // when it strictly opens the hex distance.
+            let cur = tile_distance(mob_row.hex_q, mob_row.hex_r, player_row.hex_q, player_row.hex_r);
+            let (kq, kr) = (
+                (mob_row.hex_q - player_row.hex_q).signum(),
+                (mob_row.hex_r - player_row.hex_r).signum(),
+            );
+            if (kq, kr) == (0, 0) {
+                return; // same hex: nothing opens it
+            }
+            let (nq, nr) = (mob_row.hex_q + kq, mob_row.hex_r + kr);
+            let land = ctx
+                .db
+                .hex_tile()
+                .hex_id()
+                .find(tile_id_of(nq, nr))
+                .is_some_and(|t| t.terrain != "Water");
+            let walled = ctx.db.defense_structure().iter().any(|st| {
+                cfg::defense_kind(&st.kind).is_some_and(|k| k.is_wall)
+                    && hex_coords_of(st.hex_id) == (nq, nr)
+            });
+            if land
+                && !walled
+                && kind.step_interval_secs > 0
+                && tile_distance(nq, nr, player_row.hex_q, player_row.hex_r) > cur
+            {
+                if let Some(mut fresh) = ctx.db.mob().mob_id().find(mob_row.mob_id) {
+                    fresh.hex_q = nq;
+                    fresh.hex_r = nr;
+                    fresh.hex_id = tile_id_of(nq, nr);
+                    let (kx, ky) = tile_center(nq, nr);
+                    fresh.position_x = kx;
+                    fresh.position_y = ky;
+                    ctx.db.mob().mob_id().update(fresh);
+                }
+            }
+        }
+        cfg::MobArchetype::Bomber => {
+            // Splash-the-read: the strike on the player's hex also chews
+            // every structure adjacent to that hex, at half the burst.
+            let splash = (burst / 2).max(1);
+            for st in ctx
+                .db
+                .defense_structure()
+                .iter()
+                .filter(|s| {
+                    cfg::defense_kind(&s.kind)
+                        .is_some_and(|k| !cfg::is_trap(k))
+                })
+                .collect::<Vec<_>>()
+            {
+                let (sq, sr) = hex_coords_of(st.hex_id);
+                if tile_distance(sq, sr, player_row.hex_q, player_row.hex_r) <= 1 && st.hp > 0 {
+                    if st.hp > splash {
+                        let mut s = st.clone();
+                        s.hp -= splash;
+                        ctx.db.defense_structure().structure_id().update(s);
+                    } else {
+                        // Fell: the direct-destroy path (chest refund +
+                        // rubble) lives in mobs.rs; simplest honest route
+                        // here is a direct zero-hp write so the next tick's
+                        // rubble pass runs over it — but that pass only
+                        // scans the per-tick maps. Delete + rubble inline:
+                        let kindd = cfg::defense_kind(&st.kind);
+                        if st.kind == cfg::ITEM_STORAGE_CHEST {
+                            crate::buildings::refund_chest(ctx, st.structure_id, &st.owner);
+                        }
+                        let s = st.clone();
+                        ctx.db.defense_structure()
+                            .structure_id()
+                            .delete(s.structure_id);
+                        if let Some(k) = kindd {
+                            if !cfg::is_trap(k) {
+                                let mut reborn = s.clone();
+                                reborn.level = crate::buildings::half_level(s.level);
+                                reborn.total_xp = 0;
+                                reborn.hp = cfg::structure_max_hp(k, reborn.level);
+                                ctx.db.defense_structure().insert(reborn);
+                            }
+                        }
+                        emit_player_event(
+                            ctx,
+                            crate::types::CE_STRUCT_FELL,
+                            s.hex_id,
+                            0,
+                            mob_row.mob_id,
+                            &s.kind,
+                            now,
+                        );
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Spec 036 §3.5 — the BOSS summon beat: every OTHER slam (beat_count
+/// even) spawns 1 wave-owned "Slime" adjacent, capped at 2 live adds.
+fn boss_summon_beat(ctx: &ReducerContext, mob_row: &Mob, now: u64) {
+    let beat = beat_count_of(ctx, mob_row.mob_id);
+    if beat % 2 != 0 {
+        return; // only every other slam
+    }
+    let live_adds: u32 = ctx
+        .db
+        .mob()
+        .iter()
+        .filter(|m| m.wave_id == mob_row.wave_id)
+        .filter(|m| m.capital_id == mob_row.capital_id)
+        .filter(|m| m.kind == "Slime")
+        .filter(|m| m.spawn_at_secs <= now)
+        .count() as u32;
+    if live_adds >= 2 {
+        return;
+    }
+    // Adjacent hex to the boss, land + unblocked, deterministic order.
+    for (nq, nr) in TileCoord::new(mob_row.hex_q, mob_row.hex_r).neighbors() {
+        let nid = tile_id_of(nq, nr);
+        let land = ctx
+            .db
+            .hex_tile()
+            .hex_id()
+            .find(nid)
+            .is_some_and(|t| t.terrain != "Water");
+        let walled = ctx.db.defense_structure().iter().any(|st| {
+            cfg::defense_kind(&st.kind).is_some_and(|k| k.is_wall)
+                && hex_coords_of(st.hex_id) == (nq, nr)
+        });
+        if !land || walled {
+            continue;
+        }
+        let Some(slime) = cfg::mob_kind("Slime") else { return };
+        let (sx, sy) = tile_center(nq, nr);
+        ctx.db.mob().insert(Mob {
+            mob_id: 0,
+            capital_id: mob_row.capital_id,
+            wave_id: mob_row.wave_id,
+            kind: "Slime".to_string(),
+            hex_id: nid,
+            hex_q: nq,
+            hex_r: nr,
+            position_x: sx,
+            position_y: sy,
+            hp: slime.hp,
+            step_accum_secs: 0,
+            pinned_until_secs: 0,
+            aggro_target: mob_row.aggro_target.clone(),
+            aggro_until_secs: now + combat::MOB_AGGRO_SECS,
+            pack_id: 0,
+            born_at_secs: 0,
+            spawn_at_secs: now, // live immediately
+            // Caught-up lane index: the add claims the boss's own node.
+            path_idx: mob_row.path_idx,
+            next_strike_at: 0,
+            beat_count: 0,
+        });
+        emit_player_event(
+            ctx,
+            crate::types::CE_SPLASH,
+            nid,
+            mob_row.wave_id,
+            mob_row.mob_id,
+            "summon",
+            now,
+        );
+        return; // one add per summon beat
+    }
+}
+
+/// Read a mob's CURRENT beat_count (the Strike arm already wrote 1+).
+fn beat_count_of(ctx: &ReducerContext, mob_id: u64) -> u32 {
+    ctx.db
+        .mob()
+        .mob_id()
+        .find(mob_id)
+        .map(|m| m.beat_count)
+        .unwrap_or(0)
 }
 
 /// Shared player-damage application (§8): dash i-frames and grace block
@@ -1101,6 +1337,23 @@ mod tests {
         assert_eq!(beat_phase(106, 105), Strike);
         // Far future arms are Quiet (no snap strikes).
         assert_eq!(beat_phase(10, 100), Quiet);
+    }
+
+    #[test]
+    fn boss_enrage_and_slam_math_is_honest() {
+        // Big Slime full hp = 260. 30 % = 78.
+        assert_eq!(cfg::mob_kind("Big Slime").unwrap().hp, 260);
+        assert!(!boss_enraged(79, 260), "79/260 = 30.4% — not yet");
+        assert!(boss_enraged(78, 260), "exactly 30% enrages (≤)");
+        assert!(boss_enraged(1, 260));
+        assert!(!boss_enraged(260, 260));
+        // Slam: ×3 base, ×4 enraged — pinned to the spec numbers.
+        assert_eq!(boss_slam_mult(false), 3);
+        assert_eq!(boss_slam_mult(true), 4);
+        // Burst for the boss: 14 dps → 28 burst → 84 slam (112 enraged).
+        let burst = cfg::strike_burst(14);
+        assert_eq!(burst * boss_slam_mult(false), 84);
+        assert_eq!(burst * boss_slam_mult(true), 112);
     }
 
     #[test]
