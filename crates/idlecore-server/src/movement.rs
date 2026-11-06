@@ -9,7 +9,7 @@
 use spacetimedb::{ReducerContext, Table};
 use idlecore_core::player_combat as combat;
 use idlecore_core::world_gen::WorldGenConfig;
-use crate::types::{tile_id_of, now_secs, player};
+use crate::types::{tile_id_of, mob, now_secs, player};
 use crate::player::update_hex;
 
 /// Base walking speed in world units/sec (Spec 003 FR3: 10 m/s × vehicle).
@@ -120,6 +120,25 @@ pub fn move_player(
                 tracing::info!("OCCUPANCY: {} denied hex ({q},{r})", p.address);
                 return Err("Hex occupied — closer player wins".to_string());
             }
+        }
+        // Spec 036 P7b — SOLID MOBS: a live mob on the destination hex is a
+        // wall. The player bumps and holds their hex (the step is refused
+        // whole — no partial clipping, no standing inside the mob).
+        // Adjacency still opens melee contact aggro (CONTACT_DIST = 1),
+        // so approaching a fight still works — you just stop ON the ring,
+        // exactly like every other blocked square.
+        if ctx
+            .db
+            .mob()
+            .iter()
+            .any(|m| {
+                crate::types::mob_is_active(&m, now)
+                    && m.hex_q == q
+                    && m.hex_r == r
+            })
+        {
+            tracing::info!("COLLIDE-MOB: {} bumped at ({q},{r})", p.address);
+            return Err("A creature blocks that way".to_string());
         }
     }
     update_hex(ctx, &p.address, q, r, x, y, now);

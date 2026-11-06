@@ -636,12 +636,23 @@ fn pack_tag(q: i32, r: i32) -> u64 {
 /// contact aggro, aggroed pursuit + strike at the hunted player.
 fn roamer_pass(ctx: &ReducerContext, now: u64) {
     // Standing walls block roamer wander/pursuit steps like any march.
+    // Spec 036 P7c — player-held hexes are SOLID too: a mob never steps
+    // onto the square a living player occupies (it closes to the ring and
+    // strikes from there — the contract delivers the damage, standing
+    // inside you is a rendering bug, not a behavior).
     let blocked: std::collections::HashSet<(i32, i32)> = ctx
         .db
         .defense_structure()
         .iter()
         .filter(|s| cfg::defense_kind(&s.kind).is_some_and(|k| k.is_wall))
         .map(|s| hex_coords_of(s.hex_id))
+        .chain(
+            ctx.db
+                .player()
+                .iter()
+                .filter(|p| p.status == "online" && is_alive(p, now))
+                .map(|p| (p.hex_q, p.hex_r)),
+        )
         .collect();
 
     // Online, living players for contact checks (hex + address).
@@ -906,6 +917,29 @@ fn roamer_strike(ctx: &ReducerContext, mob_row: &Mob, kind: &cfg::MobKind, now: 
             // - Bomber: splash read — structures near the PLAYER eat half.
             // - Boss summon beat handled separately (every other slam).
             if landed {
+                // Spec 036 P7a (playtest fix): a ranged strike from 2–3
+                // tiles away MUST trace the shot — player_hurt alone pops
+                // a number on nothing. Emit the attack-typed row
+                // (shot/bomb/melee) so the client draws the arc from the
+                // shooter to you (readability on whether a hit was
+                // dodgeable or chosen risk). Dodges/whiffs emit NOTHING
+                // extra — the absence of the arc IS the "you were never
+                // in it" read.
+                emit_player_event(
+                    ctx,
+                    if kind.splash {
+                        crate::types::CE_BOMB
+                    } else if kind.range_hexes > 1 {
+                        crate::types::CE_SHOT
+                    } else {
+                        crate::types::CE_MELEE
+                    },
+                    player_row.hex_id,
+                    0,
+                    mob_row.mob_id,
+                    kind.name,
+                    now,
+                );
                 archetype_tail(ctx, mob_row, kind, &player_row, burst, now);
                 if mob_row.kind == "Big Slime" {
                     boss_summon_beat(ctx, mob_row, now);
@@ -1392,6 +1426,30 @@ mod tests {
     fn wind_preceded(strike_at: u64, next_at: u64, _period: u64) -> bool {
         beat_phase(strike_at - 1, strike_at) == BeatPhase::Wind
             && strike_at < next_at
+    }
+
+    #[test]
+    fn every_kind_gets_a_honest_tracer_kind() {
+        // Spec 036 P7a: the strike emit map — splash = bomb, ranged = shot,
+        // melee = melee. Every kind must resolve to its archetype's truth:
+        // a distant hit arrives WITH an arc, a adjacency hit with a bloom.
+        for kind in cfg::MOB_KINDS.iter() {
+            let arch = cfg::mob_archetype(kind.name).unwrap();
+            let expected = match arch {
+                cfg::MobArchetype::Bomber => crate::types::CE_BOMB,
+                cfg::MobArchetype::Skirmisher
+                | cfg::MobArchetype::Bloom => crate::types::CE_SHOT,
+                _ => crate::types::CE_MELEE,
+            };
+            let actual = if kind.splash {
+                crate::types::CE_BOMB
+            } else if kind.range_hexes > 1 {
+                crate::types::CE_SHOT
+            } else {
+                crate::types::CE_MELEE
+            };
+            assert_eq!(actual, expected, "{}", kind.name);
+        }
     }
 
     #[test]

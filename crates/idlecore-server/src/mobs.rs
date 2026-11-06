@@ -14,7 +14,7 @@ use crate::capital::destroy_capital;
 use crate::combat::{kill_or_wound};
 use crate::types::{
     capital, combat_event, defense_structure, tile_center, hex_coords_of, tile_distance,
-    tile_id_of, hex_tile, mob, now_secs, raid_wave, territory, Capital, DefenseStructure, Mob,
+    tile_id_of, hex_tile, mob, now_secs, player, raid_wave, territory, Capital, DefenseStructure, Mob,
     RaidWave, CE_BOMB, CE_CAPITAL_HIT, CE_MELEE, CE_SHOT, CE_SPLASH, CE_STRUCT_FELL, CE_TRAP,
 };
 
@@ -765,6 +765,17 @@ pub fn tick(ctx: &ReducerContext) {
                 let (q, r) = hex_coords_of(c.hex_id);
                 (q, r)
             }),
+        )
+        // Spec 036 P7c — player-held hexes are SOLID: raiders circle the
+        // player's square instead of standing inside it (they close to the
+        // ring and strike — the beat contract doesn't need overlap).
+        .chain(
+            ctx
+                .db
+                .player()
+                .iter()
+                .filter(|p| p.status == "online" && crate::combat::is_alive(p, now))
+                .map(|p| (p.hex_q, p.hex_r)),
         )
         .collect();
     // Frost slow aura spots (REV4) — (hex, radius) per built frost tower.
