@@ -81,6 +81,14 @@
   summon beat every other slam → 1 wave-owned "Slime", ≤ 2 live adds,
   spawned adjacent with caught-up `path_idx`, aggro inherited.
 
+## T7 (P7) — Playtest fix: collision + strike honesty — DONE (commit 00bda61e)
+
+- [x] Ranged strikes trace their shot (bomb/shot/melee typed row on a
+  landed strike; dodges/whiffs silent).
+- [x] Player cannot step into a mob hex (move_player solid-mob gate).
+- [x] Mobs cannot step into a player hex (both march paths blocked).
+- [x] every_kind_gets_a_honest_tracer_kind test pin.
+
 ## T6 (P6) — Balance + validation — PARTIALLY DONE
 
 - [x] 25-trace march+beat regression sim (beat_sim_25_traces over the
