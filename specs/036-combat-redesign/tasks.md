@@ -11,7 +11,12 @@
 > wasm32-unknown-unknown` + `spacetime publish` (catch: schema field
 > added ⇒ regen bindings BEFORE client build; new columns APPEND at the
 > struct end — an insert mid-struct is a "reorder" and forces
-> --delete-data).
+> data deletion).
+>
+> HARD RULE (user, 2026-11-06): NEVER run `spacetime publish
+> --delete-data`. A publish must not destroy live server data. If a
+> publish would require data deletion (schema reorder/migration), STOP
+> and ask the user first.
 >
 > WIRE-DRIFT NOTE (2026-11-06, pre-publish): the generated client `Mob`
 > binding carries 18 fields; the server Mob now has 20
