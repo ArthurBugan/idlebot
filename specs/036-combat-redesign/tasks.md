@@ -13,10 +13,10 @@
 > struct end — an insert mid-struct is a "reorder" and forces
 > data deletion).
 >
-> HARD RULE (user, 2026-11-06): NEVER run `spacetime publish
-> --delete-data`. A publish must not destroy live server data. If a
-> publish would require data deletion (schema reorder/migration), STOP
-> and ask the user first.
+> HARD RULE (user, 2026-11-06, clarified): running `spacetime publish
+> --delete-data` is allowed when needed — but NEVER commit the code and
+> run the destructive publish together. Keep the commit and the publish
+> as strictly separate actions, never bundled in one command.
 >
 > WIRE-DRIFT NOTE (2026-11-06, pre-publish): the generated client `Mob`
 > binding carries 18 fields; the server Mob now has 20
