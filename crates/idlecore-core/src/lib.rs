@@ -17,6 +17,7 @@ pub mod plant;
 pub mod cosmetic;
 pub mod player;
 pub mod player_combat;
+pub mod combat_clock;
 pub mod progression;
 pub mod teleport;
 pub mod terrain;

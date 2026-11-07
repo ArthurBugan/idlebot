@@ -37,11 +37,13 @@ pub const ITEM_ARROW: &str = "Arrow";
 /// Capital HP at level 1; each level adds `CAPITAL_HP_PER_LEVEL`.
 pub const CAPITAL_HP_BASE: u32 = 100;
 pub const CAPITAL_HP_PER_LEVEL: u32 = 25;
-/// Minimum hex distance between any two placed capitals. Scales with the
-/// territory size (see [`CLAIM_RADIUS_BASE`]) so a fresh capital can never
-/// sit inside a rival's effective claim disc: two full level-1 discs
-/// (max radius 91) can span 182 hex tiles plus a walking gap.
-pub const MIN_CAPITAL_SPACING: i32 = 200;
+/// Minimum hex distance between any two placed capitals. REV10 playtest
+/// tuning: 200 was unreachable-feeling on shaped coastlines (arthur founded
+/// within sight of the map edge and still read 123 king-steps from a rival
+/// capital); 50 keeps capitals out of each other's effective claim reach
+/// (max claim square half-side 91 > 50, so discs CAN touch at cap) while
+/// making a fresh founding walk short.
+pub const MIN_CAPITAL_SPACING: i32 = 50;
 /// Claimable ring around the capital at level 1; each level adds two.
 /// REV9: the claimable region is a SQUARE in world space (half-side =
 /// radius · HEX_SIZE·√3 wu), not a hex disc — so "radius" here is the

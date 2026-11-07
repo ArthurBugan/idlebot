@@ -1351,6 +1351,10 @@ fn sync_remote_players(
                 p.hostile_until_utc = row.hostile_until;
                 p.death_until_utc = row.death_until;
                 p.grace_until_utc = row.grace_until;
+                // Spec 037 — the fine combat clock mirrors (ms windows).
+                p.move_lock_until_ms = row.move_lock_until_ms;
+                p.dodge_until_ms = row.dodge_until_ms;
+                p.attack_cd_until_ms = row.attack_cd_until_ms;
                 // Spec 006 T6.3: restore equipped vehicle from the authoritative row.
                 p.owned_vehicle = vehicle_from_str(&row.vehicle);
                 // Spec 014 FR4: avatar drives the local character's skin.

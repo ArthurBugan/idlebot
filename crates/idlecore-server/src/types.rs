@@ -12,6 +12,13 @@ pub fn now_secs(ctx: &ReducerContext) -> u64 {
     ctx.timestamp.to_micros_since_unix_epoch() as u64 / 1_000_000
 }
 
+/// Spec 037 — the combat clock's timestamp: unix MILLISECONDS. All fine
+/// combat windows (strike beats, i-frames, move-locks) live on this clock;
+/// the 1 s `now_secs` stays for march/economy/regen.
+pub fn now_ms(ctx: &ReducerContext) -> u64 {
+    ctx.timestamp.to_micros_since_unix_epoch() as u64 / 1_000
+}
+
 // ---------------------------------------------------------------------------
 // 1. players
 // ---------------------------------------------------------------------------
@@ -100,6 +107,19 @@ pub struct Player {
     /// (DEVIATION: not in the spec's 7-column list — it needs its own slot.)
     #[default(0)]
     pub grace_until: u64,
+    // Spec 037 — THE COMBAT CLOCK (fine grain, unix ms). Appended at the
+    // struct end per the publish contract (an insert mid-struct is a
+    // reorder).
+    /// Movement locked until this ms — the swing owns the body
+    /// (`combat_clock::weapon_commit_ms`, ALttP commitment).
+    #[default(0)]
+    pub move_lock_until_ms: u64,
+    /// Dodge i-frames end at this ms (0.6 s window = the client burst).
+    #[default(0)]
+    pub dodge_until_ms: u64,
+    /// Fine-grain attack cadence until this ms (weapon cd converted).
+    #[default(0)]
+    pub attack_cd_until_ms: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -490,6 +510,19 @@ pub struct ScheduledMobTick {
     pub payload: u64,
 }
 
+/// Spec 037 — THE COMBAT CLOCK: mob strike beats + player attack locks
+/// resolve every 250 ms (fine grain; the 1 s march above stays for
+/// movement/economy). Registered in `init` next to the 1 s tick.
+#[derive(Clone, Debug)]
+#[spacetimedb::table(scheduled(combat_tick), public, accessor = scheduled_combat_tick)]
+pub struct ScheduledCombatTick {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: ScheduleAt,
+    pub payload: u64,
+}
+
 /// Raid wave opening + stale-wave sweeps — every 30 seconds (Spec 023 §3.6).
 #[derive(Clone, Debug)]
 #[spacetimedb::table(scheduled(raid_tick), public, accessor = scheduled_raid_tick)]
@@ -742,6 +775,13 @@ pub struct Mob {
     /// 3rd beat, summon every other slam). Incremented on every armed tick.
     #[default(0)]
     pub beat_count: u32,
+    // Spec 037 — THE COMBAT CLOCK (ms). Appended at the struct end.
+    /// Fine-grain strike beat: the unix MS this mob's telegraphed strike
+    /// LANDS. 0 = unset. The wind is the 900 ms before it
+    /// (`combat_clock::WINDUP_MS`) — the client reads the SAME number via
+    /// the row, so client and server agree on the exact telegraph length.
+    #[default(0)]
+    pub next_strike_ms: u64,
 }
 
 /// Active-mob gate (REV line spawn): rows not yet born stay out of every
@@ -1064,6 +1104,12 @@ pub fn mob_tick(ctx: &ReducerContext, _row: ScheduledMobTick) {
 #[reducer]
 pub fn raid_tick(ctx: &ReducerContext, _row: ScheduledRaidTick) {
     crate::scheduler::raid_tick_body(ctx);
+}
+
+/// Spec 037 — the fine combat clock every 250 ms.
+#[reducer]
+pub fn combat_tick(ctx: &ReducerContext, _row: ScheduledCombatTick) {
+    crate::scheduler::combat_tick_body(ctx);
 }
 
 #[cfg(test)]

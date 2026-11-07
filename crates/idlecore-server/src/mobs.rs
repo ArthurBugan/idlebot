@@ -278,6 +278,7 @@ fn spawn_wave(ctx: &ReducerContext, capital: &Capital, now: u64) -> bool {
             path_idx: if capital.path_hexes.is_empty() { 0 } else { 1 },
             next_strike_at: 0,
             beat_count: 0,
+            next_strike_ms: 0,
         });
     }
     let mut cap_row = capital.clone();
@@ -406,11 +407,15 @@ const SLOT_CENTER_Y: i32 = -1;
 
 /// Public one-liner for the tower-fire tracer event (REV3 §10): the tick
 /// loop is the only caller, kept on `mobs` to reuse the same table.
+/// REV12: the detail now carries the PER-SHOT damage (`tower|<dmg>`) so the
+/// client can tick a subtle number every time a raider eats tower fire —
+/// the damage the shot lands equals the structure DPS at its level.
 pub(crate) fn emit_tower_event(
     ctx: &ReducerContext,
     tower: &crate::types::DefenseStructure,
     target_hex_id: u64,
     now: u64,
+    shot_dmg: u32,
 ) {
     let wave_id = ctx
         .db
@@ -430,7 +435,7 @@ pub(crate) fn emit_tower_event(
         target_hex_id,
         target_slot_x: SLOT_CENTER_X,
         target_slot_y: SLOT_CENTER_Y,
-        detail: "tower".to_string(),
+        detail: format!("tower|{shot_dmg}"),
     });
 }
 
@@ -663,8 +668,15 @@ pub fn tick(ctx: &ReducerContext) {
                 .entry(target.mob_id)
                 .or_insert_with(|| tower.owner.clone());
             // Tracer fx (REV3 §10/§13): towers shoot too; the client tells
-            // tower shots from mob shots by attacker_mob == 0.
-            crate::mobs::emit_tower_event(ctx, tower, target.hex_id, now);
+            // tower shots from mob shots by attacker_mob == 0. REV12: the
+            // shot lands `structure_dps` — the tracer row now carries it.
+            crate::mobs::emit_tower_event(
+                ctx,
+                tower,
+                target.hex_id,
+                now,
+                cfg::structure_dps(kind, tower.level),
+            );
         }
     }
     // Burn traps hit every raider in range each second, spending 1 hp of
@@ -683,6 +695,7 @@ pub fn tick(ctx: &ReducerContext) {
                 .entry(m.mob_id)
                 .or_insert_with(|| trap.owner.clone());
             // One impact bloom on the trap hex speaks for the zone.
+            // REV12: burn ticks carry their damage too (`fire|<dmg>`).
             emit_event(
                 ctx,
                 trap.capital_id,
@@ -692,7 +705,7 @@ pub fn tick(ctx: &ReducerContext) {
                 0,
                 trap.hex_id,
                 (SLOT_CENTER_X, SLOT_CENTER_Y),
-                "fire",
+                &format!("fire|{dps}"),
             );
         }
         if trap.hp > 1 {

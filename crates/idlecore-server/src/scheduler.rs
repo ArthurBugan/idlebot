@@ -127,10 +127,36 @@ pub fn eco_maintenance_tick_body(ctx: &ReducerContext) {
 
 /// Spec 023 §3.6: every 1 s — tower fire, mob march + melee, wave ends.
 pub fn mob_tick_body(ctx: &ReducerContext) {
+    // Spec 037 — SELF-HEALING schedule bootstrap: `init` only runs on a
+    // fresh database, but the fine combat schedule must exist on the LIVE
+    // world too (a publish over an existing DB never re-runs init). The
+    // 1 s tick (which provably runs) inserts the 250 ms schedule row the
+    // first time it observes it missing. Idempotent; no-op after the first
+    // success. Schedule-table accessor lives in crate::types via the
+    // `scheduled(combat_tick)` table macro (same import pattern as lib.rs).
+    use crate::types::scheduled_combat_tick;
+    if ctx.db.scheduled_combat_tick().iter().next().is_none() {
+        ctx.db
+            .scheduled_combat_tick()
+            .insert(crate::types::ScheduledCombatTick {
+                scheduled_id: 0,
+                scheduled_at: spacetimedb::ScheduleAt::Interval(
+                    spacetimedb::TimeDuration::from_micros(250_000),
+                ),
+                payload: 0,
+            });
+        audit(ctx, "combat_tick_bootstrap", "250 ms fine clock armed");
+    }
     crate::mobs::tick(ctx);
 }
 
 /// Spec 023 §3.6: every 30 s — wave sweeps + new wave opening.
 pub fn raid_tick_body(ctx: &ReducerContext) {
     crate::mobs::raid_tick(ctx);
+}
+
+/// Spec 037 — every 250 ms: the fine combat clock (strike beats only;
+/// march/economy stay on the 1 s tick).
+pub fn combat_tick_body(ctx: &ReducerContext) {
+    crate::combat::combat_tick(ctx);
 }

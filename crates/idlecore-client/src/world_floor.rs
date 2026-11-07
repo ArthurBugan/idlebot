@@ -211,8 +211,10 @@ pub struct PropTextures {
     pub icon_shovel: Handle<Image>,
     pub icon_hoe: Handle<Image>,
     pub icon_watering_can: Handle<Image>,
-    /// Car (and other vehicles) inventory icon — a city bus.
+    /// Car (and other ground vehicles) inventory icon — a city bus.
     pub icon_car: Handle<Image>,
+    /// REV (playtest): the Horse's own icon — mount-sheet front view.
+    pub icon_horse: Handle<Image>,
     /// Spec 027 §14: weapon-forge inventory icons (one per tier + arrows).
     pub icon_arrow_item: Handle<Image>,
     /// Spec 033: the material × weapon icon matrix, keyed by the exact item
@@ -280,6 +282,9 @@ pub mod atlas {
     pub const ICON_HOE: &str = "icon_hoe";
     pub const ICON_WATERING_CAN: &str = "icon_watering_can";
     pub const ICON_CAR: &str = "icon_car";
+    /// REV (playtest): the Horse's own icon — a front-view idle frame from
+    /// the mount sheet (the bus crop was flat-out wrong for a horse).
+    pub const ICON_HORSE: &str = "icon_horse";
     // Tower-defense layer (Spec 023) — capital/structures + icons.
     // Spec 025: enemy roster crops (idle + 2 walk frames per kind).
     pub const TD_SLIME: &str = "td_slime";
@@ -562,6 +567,10 @@ pub fn enqueue_model_slices(
     r(atlas::ICON_HOE, "models/Icons/RPG_icons/Weapons_and_Armor/1._Wood/Hoe.png", 2, 2, 28, 13);
     r(atlas::ICON_WATERING_CAN, "models/Icons/RPG_icons/Weapons_and_Armor/1._Wood/Watering_can.png", 2, 2, 28, 13);
     r(atlas::ICON_CAR, "models/Objects/Exterior/Bus.png", 8, 6, 99, 55);
+    // REV (playtest): the Horse rides its OWN art — mount sheet front view
+    // (cols 0–1; frame 1's breathing pose), 32×48 native instead of the
+    // bus crop through a vehicle-wide fallback.
+    r(atlas::ICON_HORSE, "models/Character/Character/Pre-made/Alex/Horse/Horse_idle.png", 32, 0, 32, 48);
 
     // ---- Tower-defense layer (Spec 023) — existing art, tinted at render ----
     // Mobs: first standing frame of each animation strip (16×16 cells).
@@ -951,6 +960,7 @@ pub fn init_prop_textures(
     let Some(icon_hoe) = atlas.items.get(atlas::ICON_HOE).cloned() else { return };
     let Some(icon_watering_can) = atlas.items.get(atlas::ICON_WATERING_CAN).cloned() else { return };
     let Some(icon_car) = atlas.items.get(atlas::ICON_CAR).cloned() else { return };
+    let Some(icon_horse) = atlas.items.get(atlas::ICON_HORSE).cloned() else { return };
     let Some(icon_arrow_item) = atlas.items.get(atlas::ICON_ARROW_ITEM).cloned() else { return };
     // Spec 033: the matrix slips in only once every crop landed.
     let mut weapon_icons = std::collections::HashMap::new();
@@ -1001,6 +1011,7 @@ pub fn init_prop_textures(
     props.icon_hoe = icon_hoe;
     props.icon_watering_can = icon_watering_can;
     props.icon_car = icon_car;
+    props.icon_horse = icon_horse;
     props.icon_arrow_item = icon_arrow_item;
     props.weapon_icons = weapon_icons;
     props.armor_icons = armor_icons;

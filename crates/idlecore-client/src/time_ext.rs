@@ -92,3 +92,19 @@ pub fn now_unix_secs() -> u64 {
         (js_sys::Date::now() / 1000.0) as u64
     }
 }
+
+/// Spec 037 — Current Unix time in MILLISECONDS (the fine combat clock,
+/// client side). Same platform split as `now_unix_secs`.
+pub fn now_unix_ms() -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() as u64
+    }
+}

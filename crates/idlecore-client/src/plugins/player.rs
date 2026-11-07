@@ -124,13 +124,12 @@ fn player_movement(
     if keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight) || touch.sprint {
         speed *= SPRINT_MULTIPLIER;
     }
-    // Spec 036 — THE DODGE-STEP. Space fires the reducer + the local 0.6 s
-    // ×3 burst NOW (the server's 1 s i-frame window is the dodge); the
-    // heading reads the MOVEMENT direction (or facing when standing).
-    // Cooldown keeps the reducer's own 2 s gate; the client's burst is the
-    // feel, the server row is the truth.
+    // Spec 037 P2 — THE DODGE on the fine clock: the local gate reads the
+    // 900 ms mirror; the burst stays 0.6 s (the server i-frame = exactly
+    // that window now). One press = dodge trip; chains pace at 0.9 s.
     {
         let now = crate::time_ext::now_unix_secs() as f64;
+        let now_ms = crate::time_ext::now_unix_ms();
         if keyboard.just_pressed(KeyCode::Space) && !attack_playing {
             let heading = if dir != Vec2::ZERO {
                 idlecore_core::player_combat::heading_index(dir.y.atan2(dir.x))
@@ -140,6 +139,9 @@ fn player_movement(
             if let Some(mut net) = net {
                 if net.address.is_some()
                     && player.death_until_utc <= now as u64
+                    // Fine cd: the ms mirror, validated locally with the
+                    // same number the server writes (900 ms).
+                    && player.attack_cd_until_ms <= now_ms
                     && player.dash_cd_until_utc <= now as u64
                 {
                     let tx = net.sender();
@@ -150,6 +152,11 @@ fn player_movement(
                             crate::net::hud::reducer_report("dodge", tx.clone(), 0),
                         )
                     });
+                    // LOCAL PREDICTION: stamp the fine dodge windows now —
+                    // i-frames 0.6 s + the 900 ms chain cd. The server row
+                    // arrives a beat later and re-stamps the truth.
+                    player.dodge_until_ms = now_ms + idlecore_core::combat_clock::DODGE_IFRAME_MS;
+                    player.attack_cd_until_ms = now_ms + idlecore_core::combat_clock::DODGE_CD_MS;
                     // Immediate burst: the server row confirms a beat later.
                     player.dash_burst_secs = now
                         + idlecore_core::player_combat::DASH_DURATION_SECS as f64

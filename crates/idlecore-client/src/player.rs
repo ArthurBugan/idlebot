@@ -52,6 +52,13 @@ pub struct ClientPlayer {
     pub hostile_until_utc: u64,
     pub death_until_utc: u64,
     pub grace_until_utc: u64,
+    // Spec 037 — fine combat clock mirror (unix ms, server-stamped).
+    /// Movement locked until this ms (the swing owns the body).
+    pub move_lock_until_ms: u64,
+    /// i-frames until this ms (0.6 s window — the client burst matches).
+    pub dodge_until_ms: u64,
+    /// Fine attack cadence until this ms (weapon cd exactly).
+    pub attack_cd_until_ms: u64,
     /// Spec 036 — dodge-step burst deadline (unix secs): fires on the Space
     /// press (0.6 s ×3 local), trimmed by the authoritative row a beat
     /// later. The i-frame is the server's `dash_until` (1 s window).

@@ -73,6 +73,8 @@ pub mod remove_defense_reducer;
 pub mod renew_listing_reducer;
 pub mod scheduled_combat_cleanup_table;
 pub mod scheduled_combat_cleanup_type;
+pub mod scheduled_combat_tick_table;
+pub mod scheduled_combat_tick_type;
 pub mod scheduled_eco_maintenance_table;
 pub mod scheduled_eco_maintenance_type;
 pub mod scheduled_idle_gains_table;
@@ -173,6 +175,8 @@ pub use remove_defense_reducer::remove_defense;
 pub use renew_listing_reducer::renew_listing;
 pub use scheduled_combat_cleanup_table::*;
 pub use scheduled_combat_cleanup_type::ScheduledCombatCleanup;
+pub use scheduled_combat_tick_table::*;
+pub use scheduled_combat_tick_type::ScheduledCombatTick;
 pub use scheduled_eco_maintenance_table::*;
 pub use scheduled_eco_maintenance_type::ScheduledEcoMaintenance;
 pub use scheduled_idle_gains_table::*;
@@ -731,6 +735,7 @@ pub struct DbUpdate {
     player_vehicle: __sdk::TableUpdate<VehicleOwned>,
     raid_wave: __sdk::TableUpdate<RaidWave>,
     scheduled_combat_cleanup: __sdk::TableUpdate<ScheduledCombatCleanup>,
+    scheduled_combat_tick: __sdk::TableUpdate<ScheduledCombatTick>,
     scheduled_eco_maintenance: __sdk::TableUpdate<ScheduledEcoMaintenance>,
     scheduled_idle_gains: __sdk::TableUpdate<ScheduledIdleGains>,
     scheduled_log: __sdk::TableUpdate<ScheduledLog>,
@@ -798,6 +803,9 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
                     .append(raid_wave_table::parse_table_update(table_update)?),
                 "scheduled_combat_cleanup" => db_update.scheduled_combat_cleanup.append(
                     scheduled_combat_cleanup_table::parse_table_update(table_update)?,
+                ),
+                "scheduled_combat_tick" => db_update.scheduled_combat_tick.append(
+                    scheduled_combat_tick_table::parse_table_update(table_update)?,
                 ),
                 "scheduled_eco_maintenance" => db_update.scheduled_eco_maintenance.append(
                     scheduled_eco_maintenance_table::parse_table_update(table_update)?,
@@ -912,6 +920,12 @@ impl __sdk::DbUpdate for DbUpdate {
                 &self.scheduled_combat_cleanup,
             )
             .with_updates_by_pk(|row| &row.scheduled_id);
+        diff.scheduled_combat_tick = cache
+            .apply_diff_to_table::<ScheduledCombatTick>(
+                "scheduled_combat_tick",
+                &self.scheduled_combat_tick,
+            )
+            .with_updates_by_pk(|row| &row.scheduled_id);
         diff.scheduled_eco_maintenance = cache
             .apply_diff_to_table::<ScheduledEcoMaintenance>(
                 "scheduled_eco_maintenance",
@@ -1021,6 +1035,9 @@ impl __sdk::DbUpdate for DbUpdate {
                 "scheduled_combat_cleanup" => db_update
                     .scheduled_combat_cleanup
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "scheduled_combat_tick" => db_update
+                    .scheduled_combat_tick
+                    .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "scheduled_eco_maintenance" => db_update
                     .scheduled_eco_maintenance
                     .append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
@@ -1118,6 +1135,9 @@ impl __sdk::DbUpdate for DbUpdate {
                 "scheduled_combat_cleanup" => db_update
                     .scheduled_combat_cleanup
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "scheduled_combat_tick" => db_update
+                    .scheduled_combat_tick
+                    .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "scheduled_eco_maintenance" => db_update
                     .scheduled_eco_maintenance
                     .append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
@@ -1185,6 +1205,7 @@ pub struct AppliedDiff<'r> {
     player_vehicle: __sdk::TableAppliedDiff<'r, VehicleOwned>,
     raid_wave: __sdk::TableAppliedDiff<'r, RaidWave>,
     scheduled_combat_cleanup: __sdk::TableAppliedDiff<'r, ScheduledCombatCleanup>,
+    scheduled_combat_tick: __sdk::TableAppliedDiff<'r, ScheduledCombatTick>,
     scheduled_eco_maintenance: __sdk::TableAppliedDiff<'r, ScheduledEcoMaintenance>,
     scheduled_idle_gains: __sdk::TableAppliedDiff<'r, ScheduledIdleGains>,
     scheduled_log: __sdk::TableAppliedDiff<'r, ScheduledLog>,
@@ -1256,6 +1277,11 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
         callbacks.invoke_table_row_callbacks::<ScheduledCombatCleanup>(
             "scheduled_combat_cleanup",
             &self.scheduled_combat_cleanup,
+            event,
+        );
+        callbacks.invoke_table_row_callbacks::<ScheduledCombatTick>(
+            "scheduled_combat_tick",
+            &self.scheduled_combat_tick,
             event,
         );
         callbacks.invoke_table_row_callbacks::<ScheduledEcoMaintenance>(
@@ -1990,6 +2016,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
         player_vehicle_table::register_table(client_cache);
         raid_wave_table::register_table(client_cache);
         scheduled_combat_cleanup_table::register_table(client_cache);
+        scheduled_combat_tick_table::register_table(client_cache);
         scheduled_eco_maintenance_table::register_table(client_cache);
         scheduled_idle_gains_table::register_table(client_cache);
         scheduled_log_table::register_table(client_cache);
@@ -2020,6 +2047,7 @@ impl __sdk::SpacetimeModule for RemoteModule {
         "player_vehicle",
         "raid_wave",
         "scheduled_combat_cleanup",
+        "scheduled_combat_tick",
         "scheduled_eco_maintenance",
         "scheduled_idle_gains",
         "scheduled_log",

@@ -9,7 +9,7 @@
 use spacetimedb::{ReducerContext, Table};
 use idlecore_core::player_combat as combat;
 use idlecore_core::world_gen::WorldGenConfig;
-use crate::types::{tile_id_of, mob, now_secs, player};
+use crate::types::{tile_id_of, mob, now_ms, now_secs, player};
 use crate::player::update_hex;
 
 /// Base walking speed in world units/sec (Spec 003 FR3: 10 m/s × vehicle).
@@ -49,6 +49,14 @@ pub fn move_player(
 
     let elapsed = (now.saturating_sub(p.last_seen)).max(1) as f32;
     let _ = dt;
+
+    // Spec 037 — ATTACK COMMITMENT: while the swing owns the body
+    // (`move_lock_until_ms`), every step is refused — you cannot walk out
+    // of your own strike (the ALttP/Zelda law). The client predicts the
+    // same lock from its clip, so the sprite and the authority agree.
+    if p.move_lock_until_ms > now_ms(ctx) {
+        return Err("You are mid-swing".to_string());
+    }
 
     // Speed cap: base × vehicle multiplier × (delta time handled below).
     // Spec 027 §5.2: a live dash triplets the validated budget (the burst

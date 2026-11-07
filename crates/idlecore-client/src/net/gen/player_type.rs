@@ -50,6 +50,9 @@ pub struct Player {
     pub hostile_until: u64,
     pub death_until: u64,
     pub grace_until: u64,
+    pub move_lock_until_ms: u64,
+    pub dodge_until_ms: u64,
+    pub attack_cd_until_ms: u64,
 }
 
 impl __sdk::InModule for Player {
@@ -103,6 +106,9 @@ pub struct PlayerCols {
     pub hostile_until: __sdk::__query_builder::Col<Player, u64>,
     pub death_until: __sdk::__query_builder::Col<Player, u64>,
     pub grace_until: __sdk::__query_builder::Col<Player, u64>,
+    pub move_lock_until_ms: __sdk::__query_builder::Col<Player, u64>,
+    pub dodge_until_ms: __sdk::__query_builder::Col<Player, u64>,
+    pub attack_cd_until_ms: __sdk::__query_builder::Col<Player, u64>,
 }
 
 impl __sdk::__query_builder::HasCols for Player {
@@ -167,6 +173,9 @@ impl __sdk::__query_builder::HasCols for Player {
             hostile_until: __sdk::__query_builder::Col::new(table_name, "hostile_until"),
             death_until: __sdk::__query_builder::Col::new(table_name, "death_until"),
             grace_until: __sdk::__query_builder::Col::new(table_name, "grace_until"),
+            move_lock_until_ms: __sdk::__query_builder::Col::new(table_name, "move_lock_until_ms"),
+            dodge_until_ms: __sdk::__query_builder::Col::new(table_name, "dodge_until_ms"),
+            attack_cd_until_ms: __sdk::__query_builder::Col::new(table_name, "attack_cd_until_ms"),
         }
     }
 }

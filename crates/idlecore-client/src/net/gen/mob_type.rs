@@ -27,6 +27,7 @@ pub struct Mob {
     pub path_idx: u32,
     pub next_strike_at: u64,
     pub beat_count: u32,
+    pub next_strike_ms: u64,
 }
 
 impl __sdk::InModule for Mob {
@@ -57,6 +58,7 @@ pub struct MobCols {
     pub path_idx: __sdk::__query_builder::Col<Mob, u32>,
     pub next_strike_at: __sdk::__query_builder::Col<Mob, u64>,
     pub beat_count: __sdk::__query_builder::Col<Mob, u32>,
+    pub next_strike_ms: __sdk::__query_builder::Col<Mob, u64>,
 }
 
 impl __sdk::__query_builder::HasCols for Mob {
@@ -83,6 +85,7 @@ impl __sdk::__query_builder::HasCols for Mob {
             path_idx: __sdk::__query_builder::Col::new(table_name, "path_idx"),
             next_strike_at: __sdk::__query_builder::Col::new(table_name, "next_strike_at"),
             beat_count: __sdk::__query_builder::Col::new(table_name, "beat_count"),
+            next_strike_ms: __sdk::__query_builder::Col::new(table_name, "next_strike_ms"),
         }
     }
 }

@@ -307,18 +307,30 @@ fn main() {
     }
     if let Some((q, r)) = cap_hex {
         println!("[11] PASS: capital placed at ({q},{r})");
-        println!("[12] capital hex becomes territory");
-        let cap_id = idlecore_core::grid::TileCoord::new(q, r).to_id();
+        println!("[12] starter square territory appears around the capital");
+        // Spec 024 placement grants the STARTER SQUARE around the capital
+        // (the capital hex itself is excluded by design — see
+        // `starter_square_tiles`' pin in capital.rs). The old assertion
+        // here checked the capital hex itself and failed for everyone
+        // post-024; the real contract is: at least one starter-square tile
+        // is owned by the placer.
+        let starter_r = idlecore_core::defense_config::CAPITAL_STARTER_RADIUS;
         let terr = wait_until(&conn, TIMEOUT, || {
-            conn.db
-                .territory()
-                .iter()
-                .any(|t| t.hex_id == cap_id && t.owner == wallet_a)
+            conn.db.territory().iter().any(|t| {
+                if t.owner != wallet_a {
+                    return false;
+                }
+                let (tq, tr) = {
+                    let tc = idlecore_core::grid::TileCoord::from_id(t.hex_id);
+                    (tc.x, tc.y)
+                };
+                (tq - q).abs() <= starter_r && (tr - r).abs() <= starter_r
+            })
         });
         if terr {
-            println!("[12] PASS: capital hex owned");
+            println!("[12] PASS: starter square owned");
         } else {
-            failures.push("territory: capital hex never became owned".to_string());
+            failures.push("territory: starter square never asserted ownership".to_string());
         }
     } else {
         failures.push(format!("place_capital: no legal hex accepted ({cap_err})"));

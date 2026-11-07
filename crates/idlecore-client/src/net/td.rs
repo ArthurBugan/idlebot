@@ -71,6 +71,8 @@ impl Plugin for TdPlugin {
             // Bevy's system-tuple variadics cap at 20 — the tail splits out.
             .add_systems(
                 Update,
+                // Spec 037 P3: the telegraph reader runs BEFORE the input
+                // and mob animation both read fx.winding.
                 (
                     init_td_textures,
                     init_td_hex_tex,
@@ -88,6 +90,13 @@ impl Plugin for TdPlugin {
                     td_place_hints,
                     td_structure_pick,
                     td_selection_fx,
+                ),
+            )
+            .add_systems(
+                Update,
+                (
+                    mob_beat_telegraph,
+                    wind_ring_pass,
                     update_select_panel,
                     update_select_refund,
                     td_select_buttons,
@@ -256,9 +265,13 @@ pub struct TdFx {
     pub dmg_salt: u32,
     /// REV (Zelda numbers): the bold game font for the pop numbers.
     pub font_dmg: Option<Handle<Font>>,
-    /// Combat polish: seconds left of the hurt blink on YOUR sprite (set by
+    /// combat polish: seconds left of the hurt blink on YOUR sprite (set by
     /// the player_hurt fx, consumed + decayed by the skins animation).
     pub hurt_flash: f32,
+    /// REV12 — mob_id → the live ground telegraph ring entity. Spawned the
+    /// first frame a mob enters the wind window, despawned the frame it
+    /// leaves; the follow pass glides the ring with the marker.
+    pub wind_rings: HashMap<u64, Entity>,
 }
 
 impl Default for TdFx {
@@ -275,6 +288,7 @@ impl Default for TdFx {
             dmg_salt: 0,
             font_dmg: None,
             hurt_flash: 0.0,
+            wind_rings: HashMap::default(),
         }
     }
 }
@@ -677,6 +691,13 @@ fn structure_sprite(td: &TdTextures, kind: &str) -> (Handle<Image>, f32, Color, 
 // Snapshots (cloned inside the conn lock, processed after release)
 // ---------------------------------------------------------------------------
 
+/// Spec 037 P3 — the Resource wrapper so fine-beat systems read the live
+/// beats without a conn param; rebuilt every sync pass. A Mutex keeps the
+/// writer (sync) and readers (telegraph systems) decoupled from the
+/// param-count cap.
+static TD_SNAPSHOT: std::sync::Mutex<Option<TdSnapshot>> = std::sync::Mutex::new(None);
+
+#[derive(Clone)]
 struct CapRow {
     capital_id: u64,
     owner: String,
@@ -694,6 +715,7 @@ struct CapRow {
     path_hexes: Vec<u64>,
 }
 
+#[derive(Clone)]
 struct WaveRow {
     wave_id: u64,
     capital_id: u64,
@@ -716,6 +738,7 @@ struct StructRow {
     total_xp: u64,
 }
 
+#[derive(Clone)]
 struct MobRow {
     mob_id: u64,
     wave_id: u64,
@@ -725,8 +748,17 @@ struct MobRow {
     y: f32,
     kind: String,
     hp: u32,
+    /// Spec 037 P3 — the mob's fine strike beat (unix ms, 0 = unarmed).
+    /// The renderer telegraphs DIRECTLY off this: the wind pose is the
+    /// 900 ms before the beat, no fx row needed (the row still fires for
+    /// the WIND ring sprite; this drives the pose/timing).
+    next_strike_ms: u64,
 }
 
+// Spec 037 P3 — the live snapshot rides as a Resource so fine-beat
+// systems (telegraph language) can read the ms strike beats without a
+// direct conn param. Rebuilt every sync pass.
+#[derive(Clone, Default)]
 struct TdSnapshot {
     territory: HashMap<u64, String>,
     capitals: Vec<CapRow>,
@@ -736,8 +768,12 @@ struct TdSnapshot {
     /// REV3 §10: combat events since `TdFx::last_event_id` — the fx feed.
     events: Vec<FxEventRow>,
     now: u64,
+    /// The snapshot build instant in ms (the fine clock) — beats read
+    /// against THIS to stay consistent within one frame.
+    now_ms: u64,
 }
 
+#[derive(Clone)]
 struct FxEventRow {
     event_id: u64,
     capital_id: u64,
@@ -938,6 +974,9 @@ fn sync_td_entities(
                 y: m.position_y,
                 kind: m.kind.clone(),
                 hp: m.hp,
+                // Spec 037 P3: the fine beat rides the row — the
+                // renderer telegraphs off it directly.
+                next_strike_ms: m.next_strike_ms,
             })
             .collect();
         let events: Vec<FxEventRow> = conn
@@ -966,9 +1005,15 @@ fn sync_td_entities(
                 mobs,
                 events,
                 now: unix_now_secs(),
+                now_ms: crate::time_ext::now_unix_ms(),
             },
         )
     };
+    // Spec 037 P3 — publish the snapshot for the fine-beat systems
+    // (kept inside the same conn guard closure scope it was built in).
+    if let Ok(mut res) = TD_SNAPSHOT.lock() {
+        *res = Some(snap.clone());
+    }
 
     // ---- territory cache (also consumed by the minimap) ----
     territory.owners = snap.territory.clone();
@@ -1975,6 +2020,116 @@ fn glide_td_markers(time: Res<Time>, mut markers: Query<(&mut Transform, &mut Td
 
 /// Fresh mob enter fx (REV5 §18): scale from +0.3× over 0.3 s, then the
 /// component drops and transforms stop being touched.
+///
+/// Spec 037 P3 — THE TELEGRAPH (ms beat): every armed mob whose fine beat
+/// lies inside the windup window RIGHT NOW holds its pose for EXACTLY the
+/// remaining ms — no constant-length pose, no fudge. The white pulse in
+/// `animate_mobs` + the boss swell read `fx.winding`, so this map is the
+/// whole contract. Runs every frame (cheap: armed mobs only).
+pub fn mob_beat_telegraph(mut fx: ResMut<TdFx>) {
+    let guard = match TD_SNAPSHOT.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    let Some(snap) = guard.as_ref() else { return };
+    let now_ms = snap.now_ms;
+    let windup = idlecore_core::combat_clock::WINDUP_MS;
+    for m in &snap.mobs {
+        if m.next_strike_ms == 0 {
+            continue;
+        }
+        // Inside the window: the pose lasts exactly (beat − now).
+        let remaining_ms = m.next_strike_ms.saturating_sub(now_ms);
+        if remaining_ms > 0 && remaining_ms <= windup {
+            // The decay pass in combat_fx_tick subtracts dt each frame; we
+            // re-authoritative every frame, so the pose NEVER clips the
+            // telegraph (the fx-row path still fires for the ring sprite).
+            fx.winding.insert(
+                m.mob_id,
+                remaining_ms as f32 / 1000.0,
+            );
+        }
+    }
+}
+
+/// One-shot wind ring component: spawned under a winding mob, life-bound
+/// to the beat (despawned when the mob leaves the window).
+#[derive(Component)]
+pub struct TdWindRing {
+    pub mob_id: u64,
+}
+
+/// REV12 READABILITY pass — the mob telegraph was a white↔slightly-white
+/// body tint the eye never caught. Two changes:
+/// 1. CONTRAST BLINK: the body now flashes bright white ↔ deep slate, a
+///    blink you catch in peripheral vision (red stays reserved for damage).
+/// 2. PERSISTENT GROUND RING: a flat ember ring sits UNDER the mob for the
+///    whole wind window — Zelda telegraph language: danger lives on the
+///    ground beneath the threat, position first, timing second. The ring
+///    brightens as the beat closes (the same urgency ramp the blink uses),
+///    shrinks toward the strike, and dies exactly on the beat.
+pub fn wind_ring_pass(
+    mut commands: Commands,
+    mut fx: ResMut<TdFx>,
+    time: Res<Time>,
+    markers: Query<(&TdMobAnim, &Transform), With<TdMobMarker>>,
+    // Transform conflict with the marker query — rings never carry the
+    // marker component (B0001 disjointness).
+    mut rings: Query<(&TdWindRing, &mut Transform, &mut Sprite), Without<TdMobMarker>>,
+) {
+    // 1. lifecycle: spawn under every winding mob, despawn on window exit.
+    let winding_ids: std::collections::HashSet<u64> =
+        fx.winding.keys().copied().collect();
+    for id in winding_ids.iter().copied() {
+        if fx.wind_rings.contains_key(&id) {
+            continue;
+        }
+        let Some((_, xf)) = markers.iter().find(|(a, _)| a.mob_id == id) else {
+            continue;
+        };
+        let (x, y) = (xf.translation.x, xf.translation.y);
+        let ring = commands
+            .spawn((
+                TdWindRing { mob_id: id },
+                Sprite {
+                    color: Color::srgba(1.0, 0.45, 0.12, 0.0), // alpha authored below
+                    custom_size: Some(Vec2::new(1.5, 0.55)),
+                    ..default()
+                },
+                Transform::from_xyz(x, y + 0.34, prop_depth(y) + 38.0),
+            ))
+            .id();
+        fx.wind_rings.insert(id, ring);
+    }
+    fx.wind_rings.retain(|id, ent| {
+        let alive = winding_ids.contains(id) && rings.contains(*ent);
+        if !alive && rings.contains(*ent) {
+            commands.entity(*ent).despawn();
+        }
+        alive
+    });
+    // 2. follow + urgency: glide with the marker, brighten + tighten as the
+    //    beat closes.
+    for (ring, mut xf, mut sprite) in rings.iter_mut() {
+        let Some((_, mxf)) = markers.iter().find(|(a, _)| a.mob_id == ring.mob_id) else {
+            continue;
+        };
+        let y = mxf.translation.y;
+        xf.translation.x = mxf.translation.x;
+        xf.translation.y = y + 0.34;
+        if let Some(left) = fx.winding.get(&ring.mob_id) {
+            let closeness = 1.0 - (left / 0.9).clamp(0.0, 1.0); // 0 wind start → 1 beat
+            let blink = (time.elapsed_secs() * (2.0 + closeness * 8.0)).sin();
+            let a = 0.32 + closeness * 0.38 + 0.08 * blink;
+            sprite
+                .color
+                .set_alpha(a.clamp(0.25, 0.82));
+            let s = 1.0 - closeness * 0.3;
+            sprite.custom_size = Some(Vec2::new(1.5 * s, 0.55 * s));
+        }
+    }
+}
+
 fn mob_spawn_pop(
     time: Res<Time>,
     mut commands: Commands,
@@ -2061,18 +2216,28 @@ fn animate_mobs(
         // Spec 036 P2 — THE WINDUP: a mob armed `mob_wind` telegraphs with
         // a clean WHITE pulse (distinct from the warm attack tint); the
         // boss also swells 1.35× while winding so small sprites read.
-        let winding = fx.winding.contains_key(&anim.mob_id);
+        let winding = fx.winding.get(&anim.mob_id).copied();
         let attacking = fx.posing.contains_key(&anim.mob_id);
         let flash_on = tracker.flash.contains_key(&anim.mob_id);
         let is_boss = anim.kind == "Big Slime";
         let color = if flash_on {
             Color::srgb(1.0, 0.3, 0.25)
-        } else if winding {
-            let pulse = (time.elapsed_secs() / 0.12) as usize % 2 == 0;
+        } else if let Some(left) = winding {
+            // Spec 037 P5 — the URGENCY RAMP: the pulse period tightens as
+            // the beat closes (900→150 ms), so the last quarter reads as
+            // imminent without a new sprite. `left` is seconds to the beat
+            // (mob_beat_telegraph writes the true ms remainder).
+            // REV12 READABILITY: white↔white was invisible on small
+            // sprites — the blink now goes bright white ↔ deep slate, a
+            // contrast cycle the eye catches in peripheral vision (the
+            // ground ring under the mob carries the positional read).
+            let urgency = 1.0 + (1.0 - (left / 0.9).clamp(0.0, 1.0)) * 5.0;
+            let period = (0.45 / urgency).clamp(0.03, 0.45);
+            let pulse = (time.elapsed_secs() / period) as usize % 2 == 0;
             if pulse {
                 Color::srgb(1.6, 1.6, 1.6)
             } else {
-                Color::srgb(1.05, 1.05, 1.05)
+                Color::srgb(0.38, 0.38, 0.46)
             }
         } else if attacking {
             // 0.12 s white pulse while attacking (the sheet ships no attack
@@ -2093,7 +2258,7 @@ fn animate_mobs(
         // back to the row scale when the beat resolves (spawn-pop keeps
         // its own scale — this pass only clamps back to 1.0 for the swell).
         if is_boss {
-            let want = if winding { WIND_BOSS_SWELL } else { 1.0 };
+            let want = if winding.is_some() { WIND_BOSS_SWELL } else { 1.0 };
             let s = xf.scale.x;
             let ns = s + (want - s) * dt.min(1.0) * 8.0;
             xf.scale = Vec3::splat(ns);
@@ -2207,11 +2372,54 @@ fn process_combat_events(
                     ));
                 } else {
                     impact_sprite(commands, color, tx, ty, 0.9);
+                    // REV12: a TOWER shot (attacker 0) carrying damage in
+                    // detail (`tower|<dmg>`) ticks the pale number on the
+                    // raider that ate it. Mob-sourced shots (kind.name only)
+                    // parse to None — they never tick numbers.
+                    if let Some(dmg) = strike_damage(&row.detail) {
+                        let jitter = dmg_jitter(fx.dmg_salt);
+                        fx.dmg_salt = fx.dmg_salt.wrapping_add(1);
+                        spawn_float_number(
+                            commands,
+                            zelda_font(fx),
+                            tx,
+                            ty,
+                            &dmg.to_string(),
+                            Color::srgba(1.0, 0.85, 0.7, 0.95),
+                            jitter,
+                            0.72,
+                            0.6,
+                            0.02,
+                            Color::srgba(0.12, 0.07, 0.04, 0.9),
+                        );
+                    }
                 }
             }
             FxBirth::Impact(color) => {
                 let size = if row.kind == "struct_fell" { 1.6 } else { 1.0 };
                 impact_sprite(commands, color, tx, ty, size);
+                // REV12 SUBTLETY pass: any impact event whose detail carries
+                // a damage number ticks a small pale figure near the victim
+                // — burn-trap fire ticks (`fire|<dmg>`) and mob-melee
+                // nicks land here. Details without a pipe (mob kind names
+                // on wind rows, struct_fell names) parse to None: no number.
+                if let Some(dmg) = strike_damage(&row.detail) {
+                    let jitter = dmg_jitter(fx.dmg_salt);
+                    fx.dmg_salt = fx.dmg_salt.wrapping_add(1);
+                    spawn_float_number(
+                        commands,
+                        zelda_font(fx),
+                        tx,
+                        ty,
+                        &dmg.to_string(),
+                        Color::srgba(1.0, 0.85, 0.7, 0.95),
+                        jitter,
+                        0.72,
+                        0.6,
+                        0.02,
+                        Color::srgba(0.12, 0.07, 0.04, 0.9),
+                    );
+                }
             }
             FxBirth::PlayerHurt => {
                 // REV: red impact on YOUR hex + the hot-red damage number
@@ -2252,53 +2460,72 @@ fn process_combat_events(
             // (mob_fell) pops a bigger burst and shakes harder (kills must
             // read as kills).
             FxBirth::PlayerHit => {
-                let from = Vec2::new(player_xf.translation.x, player_xf.translation.y - 0.4);
+                // REV (playtest, golden-era discipline): only the BOW fires
+                // a projectile — melee families (Sword/Axe/Sickle/Hoe/Pick-
+                // axe/Shovel/Fists) hit by DIRECT CONTACT: the bloom pops
+                // ON the victim, no tracer streak. The event row carries
+                // "<weapon>|<dmg>" (Spec 034 C8), so the classifier is
+                // event-driven with no client weapon state needed.
                 let to = Vec2::new(tx, ty);
-                let dist = to.distance(from);
-                if dist > 0.4 {
-                    let dir = (to - from) / dist.max(1e-3);
-                    commands.spawn((
-                        TdBolt {
-                            t: 0.0,
-                            ttl: (dist / 26.0).clamp(0.12, 0.45),
-                            from,
-                            to,
-                        },
-                        Sprite {
-                            color: Color::srgba(1.0, 0.9, 0.5, 1.0),
-                            custom_size: Some(Vec2::new(0.9, 0.22)),
-                            ..default()
-                        },
-                        Transform::from_xyz(from.x, from.y, prop_depth(ty) + 43.0),
-                    ));
-                    // C9: the bloom lands smeared TOWARD the strike,
-                    // not dead-center on the victim.
-                    impact_sprite(
-                        commands,
-                        [1.0, 0.9, 0.5],
-                        tx + dir.x * 0.25,
-                        ty + dir.y * 0.25,
-                        1.0,
-                    );
+                let ranged = event_weapon_is_ranged(&row.detail);
+                if ranged {
+                    let from = Vec2::new(player_xf.translation.x, player_xf.translation.y - 0.4);
+                    let dist = to.distance(from);
+                    if dist > 0.4 {
+                        let dir = (to - from) / dist.max(1e-3);
+                        commands.spawn((
+                            TdBolt {
+                                t: 0.0,
+                                ttl: (dist / 26.0).clamp(0.12, 0.45),
+                                from,
+                                to,
+                            },
+                            Sprite {
+                                color: Color::srgba(1.0, 0.9, 0.5, 1.0),
+                                custom_size: Some(Vec2::new(0.9, 0.22)),
+                                ..default()
+                            },
+                            Transform::from_xyz(from.x, from.y, prop_depth(ty) + 43.0),
+                        ));
+                        // C9: the bloom lands smeared TOWARD the strike,
+                        // not dead-center on the victim.
+                        impact_sprite(
+                            commands,
+                            [1.0, 0.9, 0.5],
+                            tx + dir.x * 0.25,
+                            ty + dir.y * 0.25,
+                            1.0,
+                        );
+                    } else {
+                        impact_sprite(commands, [1.0, 0.9, 0.5], tx, ty, 0.9);
+                    }
                 } else {
+                    // Contact hit: the swing READS the hit — bloom on the
+                    // victim's slot, same warm gold, sized to the ring.
                     impact_sprite(commands, [1.0, 0.9, 0.5], tx, ty, 0.9);
                 }
                 // C8 + REV (Zelda numbers): ember pop pinned to the VICTIM'S
                 // live marker (row.attacker_mob carries the mob id) so the
                 // number glides with the mob — a hex anchor trails behind.
+                // REV12 SUBTLETY pass: the mob-side number shrinks to the
+                // 0.72 hairline-shadow tick — readable, never shouty.
                 let (nx, ny) = mob_anchor_pos(mobs_live, row.attacker_mob)
                     .unwrap_or((tx, ty));
                 if let Some(dmg) = strike_damage(&row.detail) {
                     let jitter = dmg_jitter(fx.dmg_salt);
                     fx.dmg_salt = fx.dmg_salt.wrapping_add(1);
-                    spawn_zelda_number(
+                    spawn_float_number(
                         commands,
                         zelda_font(fx),
                         nx,
                         ny,
                         &dmg.to_string(),
-                        Color::srgb(1.0, 0.52, 0.24),
+                        Color::srgb(1.0, 0.62, 0.34),
                         jitter,
+                        0.72,
+                        0.6,
+                        0.02,
+                        Color::srgba(0.12, 0.07, 0.04, 0.9),
                     );
                 }
                 fx.hitstop_left = fx.hitstop_left.max(0.07);
@@ -2362,6 +2589,21 @@ fn strike_damage(detail: &str) -> Option<u32> {
     detail.rsplit_once('|')?.1.trim().parse::<u32>().ok()
 }
 
+/// REV (playtest) — which `player_hit` rows read as PROJECTILE fire:
+/// only the bow family (WeaponAnim::Bow, the ammo-consuming tier). Every
+/// row detail is "<weapon>|<dmg>" (Spec 034 C8), e.g. "Iron Bow|10";
+/// melee tiers ("Gold Sword|16", "Fists|4") read as direct contact:
+/// bloom pops on the victim, no tracer streak. Unknown/garbage details
+/// fall back to CONTACT (a broken bow name must not invent a projectile).
+fn event_weapon_is_ranged(detail: &str) -> bool {
+    let Some(name) = detail.split_once('|').map(|(w, _)| w.trim()) else {
+        return false;
+    };
+    // The bow family is the ONLY ammo-consuming tier; its kind name is
+    // every "<material> Bow" row (WEA_KINDS carries exactly one "Bow").
+    name.rsplit(' ').next().is_some_and(|last| last.eq_ignore_ascii_case("Bow"))
+}
+
 /// REV (Zelda numbers) — a hurt-number pop rebuilt from scratch after two
 /// rejected drafts (20 wu billboard, 7 wu seed). The units trap: Text2d
 /// `font_size` is WORLD units, and a raider sprite is 1.8 wu — glyphs must
@@ -2387,9 +2629,7 @@ fn dmg_jitter(salt: u32) -> f32 {
 }
 
 /// REV (Zelda numbers): a bold caption with a warm ember fill and a dark
-/// outline. `fill` distinguishes the victim: ember-orange on a mob, hot red
-/// when YOU eat it. Spawns at zero scale — the pop-in lives in
-/// `combat_fx_tick`.
+/// outline, spawned zero-scale (the pop-in lives in `combat_fx_tick`).
 fn spawn_zelda_number(
     commands: &mut Commands,
     font: Option<&Handle<Font>>,
@@ -2399,19 +2639,53 @@ fn spawn_zelda_number(
     fill: Color,
     jitter: f32,
 ) {
+    spawn_float_number(
+        commands,
+        font,
+        x,
+        y,
+        text,
+        fill,
+        jitter,
+        1.15,
+        1.15,
+        0.034,
+        Color::srgb(0.3, 0.06, 0.03),
+    );
+}
+
+/// REV12 (playtest) — the general damage-indicator spawner: every enemy
+/// (and player) damage event threads through one call, with size/rise/
+/// shadow tuned per channel. The SUBTLE mob ticks use the small variant:
+/// 0.72 font, 0.6 rise, hairline shadow — they whisper, the player's own
+/// numbers shout.
+#[allow(clippy::too_many_arguments)]
+fn spawn_float_number(
+    commands: &mut Commands,
+    font: Option<&Handle<Font>>,
+    x: f32,
+    y: f32,
+    text: &str,
+    fill: Color,
+    jitter: f32,
+    font_size: f32,
+    rise: f32,
+    shadow_offset: f32,
+    shadow_color: Color,
+) {
     let base = Vec2::new(x + jitter, y + 0.55);
     commands.spawn((
-        TdFloatText { t: 0.0, base, rise: 1.15 },
+        TdFloatText { t: 0.0, base, rise },
         Text2d::new(text),
         TextFont {
             font: font.map(bevy::text::FontSource::from).unwrap_or_default(),
-            font_size: 1.15.into(),
+            font_size: font_size.into(),
             ..default()
         },
         TextColor(fill),
         TextShadow {
-            color: Color::srgb(0.3, 0.06, 0.03),
-            offset: Vec2::new(0.034, 0.034),
+            color: shadow_color,
+            offset: Vec2::new(shadow_offset, shadow_offset),
         },
         Transform::from_translation(Vec3::new(base.x, base.y, prop_depth(y) + 60.0))
             .with_scale(Vec3::ZERO),
@@ -3409,8 +3683,13 @@ fn update_combat_hud(
     if let Ok(mut text) = ps.p4().single_mut() {
         // Spec 036 P3: the dodge chip is back — the cooldown drains it
         // ("Dodge [Space]" when ready, countdown while provisioning).
+        // Spec 037: the FINE cd (900 ms) reads in ms; legacy 1 s gate reads
+        // in seconds. Either being hot keeps the chip honest.
+        let fine_left = p.attack_cd_until_ms.saturating_sub(unix_ms());
         let cd_left = p.dash_cd_until_utc.saturating_sub(now);
-        **text = if cd_left > 0 {
+        **text = if fine_left > 0 {
+            format!("Dodge [Space] · {}ms", fine_left)
+        } else if cd_left > 0 {
             format!("Dodge [Space] · {}s", cd_left)
         } else {
             "Dodge [Space]".to_string()
@@ -3435,7 +3714,7 @@ fn td_combat_input(
     mut net: ResMut<Net>,
     player_xf: Res<PlayerTransform>,
     mut orientation: ResMut<crate::player::PlayerOrientation>,
-    p: Query<&crate::player::ClientPlayer>,
+    mut p: Query<&mut crate::player::ClientPlayer>,
     rows: Res<TdStructRows>,
     td_tex: Res<TdTextures>,
     mut skins: ResMut<crate::skins::PlayerSkins>,
@@ -3447,7 +3726,7 @@ fn td_combat_input(
     }
     let armed_build = mode_panel.p0().kind.is_some();
     let panel_open = mode_panel.p1().open || mode_panel.p1().is_open(Tab::Build);
-    let Ok(player) = p.single() else { return };
+    let Ok(mut player) = p.single_mut() else { return };
     let now = unix_now_secs();
     if player.death_until_utc > now {
         return; // dead: reducers reject anyway — save the trip
@@ -3466,7 +3745,13 @@ fn td_combat_input(
             && player.attack_cd_until_utc <= now
         {
             skins.buffered_attack = None;
-            fire_player_strike(&mut skins, &mut orientation, &mut net, player, angle);
+            fire_player_strike(
+                &mut skins,
+                &mut orientation,
+                &mut net,
+                &mut *player,
+                angle,
+            );
         }
     }
 
@@ -3476,7 +3761,13 @@ fn td_combat_input(
         if skins.attack.is_some() || player.attack_cd_until_utc > now {
             skins.buffered_attack = Some((angle, now as f64));
         } else {
-            fire_player_strike(&mut skins, &mut orientation, &mut net, player, angle);
+            fire_player_strike(
+                &mut skins,
+                &mut orientation,
+                &mut net,
+                &mut *player,
+                angle,
+            );
         }
     }
 
@@ -3555,17 +3846,27 @@ fn td_combat_input(
     if skins.attack.is_some() || player.attack_cd_until_utc > now {
         skins.buffered_attack = Some((angle, now as f64));
     } else {
-        fire_player_strike(&mut skins, &mut orientation, &mut net, player, angle);
+        fire_player_strike(
+            &mut skins,
+            &mut orientation,
+            &mut net,
+            &mut *player,
+            angle,
+        );
     }
 }
 
 /// One shared strike fire (Spec 027 §5.1 + playtest polish): arms the clip
 /// and sends the reducer. The buffered-release path reuses it verbatim.
+/// Spec 037: the fire also stamps the LOCAL prediction of the two fine
+/// windows — the move-lock (the clip length, exactly what the swing
+/// animates) and the ms attack cadence — so input feels instant; the
+/// server's authoritative stamps arrive a beat later and overwrite them.
 fn fire_player_strike(
     skins: &mut crate::skins::PlayerSkins,
     orientation: &mut crate::player::PlayerOrientation,
     net: &mut Net,
-    player: &crate::player::ClientPlayer,
+    player: &mut crate::player::ClientPlayer,
     angle: f32,
 ) {
     orientation.facing_angle = angle;
@@ -3573,11 +3874,28 @@ fn fire_player_strike(
         skins,
         crate::skins::AttackAnim::of_weapon(player.weapon_def().anim),
     );
+    // Spec 037 P2 — LOCAL PREDICTION: the fine windows stamp NOW so the
+    // input is instant (the clip itself is the move-lock feel; the mirrors
+    // keep the buffered-strike gate + dodge chip honest between the press
+    // and the authoritative row ~0.15 s later. Server stamps overwrite).
+    let now_ms = unix_ms();
+    let w = player.weapon_def();
+    player.move_lock_until_ms = now_ms + idlecore_core::combat_clock::weapon_commit_ms(w.anim);
+    player.attack_cd_until_ms = now_ms + w.cd_secs * 1000;
     let dir = idlecore_core::player_combat::heading_index(angle);
     let tx = net.sender();
     send_reducer(net, |r| {
         r.player_attack_then(dir, reducer_report("attack", tx, 0))
     });
+}
+
+/// Current unix MILLISECONDS (the fine combat clock client-side). Local
+/// prediction only — the server's stamps rule.
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -4673,11 +4991,20 @@ mod tests_fx {
 
     /// Spec 036 P2: the windup window beats longer than the attack pose —
     /// 0.9 s for regular kinds, 1.8 s for the boss (slams read BIG).
+    /// Spec 037 P3: these are now the fx-row RING fallbacks; the pose
+    /// itself is ms-authoritative (mob_beat_telegraph reads the live
+    /// beat). The core clock must agree with the regular fallback.
     #[test]
     fn wind_pose_windows_beat_the_spec() {
         assert_eq!(WIND_POSE_SECS, 0.9);
         assert_eq!(WIND_POSE_BOSS_SECS, 1.8);
         assert_eq!(WIND_BOSS_SWELL, 1.35);
+        // The ms telegraph == the regular ring fallback (one telegraph,
+        // two renderers read the same number).
+        assert_eq!(
+            idlecore_core::combat_clock::WINDUP_MS as f32 / 1000.0,
+            WIND_POSE_SECS
+        );
     }
 
     /// Spec 034 C8: the S3 strike payload `"<weapon>|<dmg>"` parses; every
@@ -4689,6 +5016,47 @@ mod tests_fx {
         assert_eq!(strike_damage("Slime"), None, "mob kinds have no pipe");
         assert_eq!(strike_damage("kind|notanumber"), None);
         assert_eq!(strike_damage(""), None);
+    }
+
+    /// REV12 — the new payload shapes for the universal damage ticks:
+    /// tower shots (`tower|<dmg>`) and burn traps (`fire|<dmg>`) parse,
+    /// while mob-fired shots (plain kind names) stay numberless.
+    #[test]
+    fn tower_and_fire_ticks_carry_damage() {
+        assert_eq!(strike_damage("tower|12"), Some(12));
+        assert_eq!(strike_damage("fire|5"), Some(5));
+        assert_eq!(strike_damage("tower"), None);
+        assert_eq!(strike_damage("fire"), None);
+    }
+
+    /// REV (playtest) — every weapon name in the matrix classify correctly:
+    /// only bow-family rows read as projectile fire; melee rows (and any
+    /// garbage) read as direct contact.
+    #[test]
+    fn only_bow_events_fire_projectile_fx() {
+        use idlecore_core::player_combat::{weapons, WEA_KINDS};
+        // Ground truth: the detail weapon name is the server's `<kind>` in
+        // "<material> <kind>" — so classify EVERY ladder row through the
+        // same string the fx feed will see.
+        for w in weapons() {
+            let rngd = event_weapon_is_ranged(&format!("{}|9", w.name));
+            assert_eq!(
+                rngd,
+                w.ammo.is_some(),
+                "{} must {}",
+                w.name,
+                if rngd { "projectile" } else { "contact" }
+            );
+        }
+        // And the kind-name spellings in WEA_KINDS pin the tail-match:
+        for k in WEA_KINDS {
+            let matches_kind = event_weapon_is_ranged(&format!("Gold {}|9", k.name));
+            assert_eq!(matches_kind, k.name == "Bow", "kind {}", k.name);
+        }
+        // Garbage / missing pipe falls back to CONTACT (no phantom bolts).
+        assert!(!event_weapon_is_ranged(""));
+        assert!(!event_weapon_is_ranged("Bow"));
+        assert!(!event_weapon_is_ranged("|12"));
     }
 
     /// REV (Cabal numbers): the per-hit jitter hugs the head and varies.

@@ -189,6 +189,10 @@ fn new_player(address: &str, identity: &str, now: u64) -> Player {
         hostile_until: 0,
         death_until: 0,
         grace_until: 0,
+        // Spec 037 — fine combat clock: fresh spawns carry no ms windows.
+        move_lock_until_ms: 0,
+        dodge_until_ms: 0,
+        attack_cd_until_ms: 0,
     }
 }
 

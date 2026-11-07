@@ -30,7 +30,7 @@ pub mod eco;
 pub mod scheduler;
 
 use spacetimedb::{reducer, ReducerContext, ScheduleAt, TimeDuration, Table};
-use crate::types::{scheduled_idle_gains, scheduled_plant_growth, scheduled_voice_cleanup, scheduled_market_cleanup, scheduled_eco_maintenance, scheduled_mob_tick, scheduled_raid_tick, scheduled_combat_cleanup };
+use crate::types::{scheduled_idle_gains, scheduled_plant_growth, scheduled_voice_cleanup, scheduled_market_cleanup, scheduled_eco_maintenance, scheduled_mob_tick, scheduled_raid_tick, scheduled_combat_cleanup, scheduled_combat_tick };
 use std::time::Duration;
 
 /// Identity → address helper used by every reducre.
@@ -104,6 +104,17 @@ pub fn init(ctx: &ReducerContext) {
         ctx.db.scheduled_combat_cleanup().insert(crate::types::ScheduledCombatCleanup {
             scheduled_id: 0,
             scheduled_at: ScheduleAt::Interval(TimeDuration::from_duration(Duration::from_secs(30))),
+            payload: 0,
+        });
+    }
+    // Spec 037 — THE COMBAT CLOCK: 250 ms fine beats for strike schedules
+    // (the 1 s mob tick above keeps march/economy; this owns the beat FSM).
+    if ctx.db.scheduled_combat_tick().iter().next().is_none() {
+        ctx.db.scheduled_combat_tick().insert(crate::types::ScheduledCombatTick {
+            scheduled_id: 0,
+            scheduled_at: ScheduleAt::Interval(TimeDuration::from_micros(
+                250_000, // COMBAT_TICK_MS in µs — kept literal, TimeDuration wants i64
+            )),
             payload: 0,
         });
     }

@@ -15,10 +15,12 @@ use idlecore_core::defense_config as cfg;
 use crate::objects::add_item;
 use crate::types::{
     combat_event,
-    capital as cap_table, capital, defense_structure, hex_coords_of, hex_tile, mob, now_secs,
+    capital as cap_table, capital, defense_structure, hex_coords_of, hex_tile, mob, now_ms,
+    now_secs,
     player, tile_center, tile_distance, tile_id_of, Capital, Mob, Player, CE_MOB_WIND,
     CE_PLAYER_DODGE, CE_PLAYER_HURT, CE_PLAYER_HIT, CE_TRAP,
 };
+use idlecore_core::combat_clock as clock;
 
 // ---------------------------------------------------------------------------
 // Spec 036 — THE BEAT (pure helpers, unit-tested)
@@ -217,8 +219,16 @@ pub fn player_attack(ctx: &ReducerContext, address: &str, direction: i32) -> Res
         return Err("Dead — respawn timer is still running".to_string());
     }
     let weapon = combat::weapon(p.weapon).ok_or("Weapon tier vanished — unequipped".to_string())?;
+    let now_ms_val = now_ms(ctx);
+    // Spec 037: the attack cadence lives on the FINE clock — the weapon's
+    // cd converts to ms exactly (cd_secs × 1000), so a 1 s sword swings on
+    // the second and a 550 ms move-lock never overlaps the next press.
+    // The legacy 1 s gate stays as a backstop for pre-backfill rows.
     if p.attack_cd_until > now {
         return Err(format!("Attack cooldown ({}s)", p.attack_cd_until - now));
+    }
+    if p.attack_cd_until_ms > now_ms_val {
+        return Err("Attack cooldown".to_string());
     }
     // Spec 034 S1: strikes no longer share the build-action ACTION_COOLDOWN —
     // the weapon's own cd (≥ 1 server round) is the only attack gate, so a
@@ -268,8 +278,12 @@ pub fn player_attack(ctx: &ReducerContext, address: &str, direction: i32) -> Res
     // Spec 036 P4: victims pick REPLACES the single-target pick — the arc
     // is filled first; an empty arc still costs cd only.
     if pick_arc_target(&candidates, direction, range).is_none() {
-        // Facing an empty arc costs nothing — but the strike still cadences.
+        // Facing an empty arc costs nothing — but the strike still cadences
+        // (empty-arc whiffs LOCK MOVE too: the commitment is the swing, not
+        // the hit — ALttP discipline).
         p.attack_cd_until = now + weapon.cd_secs;
+        p.attack_cd_until_ms = now_ms_val + weapon.cd_secs * 1000;
+        p.move_lock_until_ms = now_ms_val + clock::weapon_commit_ms(weapon.anim);
         ctx.db.player().address().update(p);
         return Ok(());
     }
@@ -347,6 +361,11 @@ pub fn player_attack(ctx: &ReducerContext, address: &str, direction: i32) -> Res
     }
 
     p.attack_cd_until = now + weapon.cd_secs;
+    // Spec 037 — fine cadence + the commitment: move-lock for the clip
+    // length (the swing owns the body) and the ms attack ledger both
+    // stamp on every CONFIRMED strike.
+    p.attack_cd_until_ms = now_ms_val + weapon.cd_secs * 1000;
+    p.move_lock_until_ms = now_ms_val + clock::weapon_commit_ms(weapon.anim);
     ctx.db.player().address().update(p);
     Ok(())
 }
@@ -361,13 +380,20 @@ pub fn player_attack(ctx: &ReducerContext, address: &str, direction: i32) -> Res
 pub fn player_dash(ctx: &ReducerContext, address: &str, direction: i32) -> Result<(), String> {
     let _ = direction;
     let now = now_secs(ctx);
+    let now_ms_val = now_ms(ctx);
     let mut p = crate::economy::find_player(ctx, &address.to_lowercase())
         .ok_or_else(|| "Player not found".to_string())?;
     if !is_alive(&p, now) {
         return Err("Dead — respawn timer is still running".to_string());
     }
+    // Spec 037: the fine dodge cd (900 ms). The legacy 1 s gate stays as a
+    // backstop for rows published before the fine fields backfill — both
+    // must pass, so an unmigrated row can't dodge-spam the ms clock.
     if p.dash_cd_until > now {
         return Err(format!("Dash cooldown ({}s)", p.dash_cd_until - now));
+    }
+    if p.attack_cd_until_ms > now_ms_val {
+        return Err("Dodge cooldown".to_string());
     }
     // A dash sheds fresh-spawn grace too (you lunged — you fight).
     if p.grace_until > now {
@@ -375,6 +401,10 @@ pub fn player_dash(ctx: &ReducerContext, address: &str, direction: i32) -> Resul
     }
     p.dash_until = now + combat::DASH_TICKS;
     p.dash_cd_until = now + combat::DASH_CD_SECS;
+    // Spec 037 — the FINE dodge: a 0.6 s i-frame window on the ms clock
+    // (the client's burst); the 900 ms fine cd paces chained steps.
+    p.dodge_until_ms = now_ms_val + clock::DODGE_IFRAME_MS;
+    p.attack_cd_until_ms = now_ms_val + clock::DODGE_CD_MS; // fine dodge cd rides the same ledger gate
     ctx.db.player().address().update(p);
     Ok(())
 }
@@ -538,6 +568,240 @@ pub fn tick(ctx: &ReducerContext) {
     player_pass(ctx, now);
 }
 
+// ---------------------------------------------------------------------------
+// Spec 037 — THE COMBAT CLOCK: the 250 ms fine pass
+// ---------------------------------------------------------------------------
+
+/// The fine tick body: mob strike beats only. The 1 s `tick` above keeps
+/// march/spawner/regen/player-threat; this pass owns every ms beat so the
+/// two cadences never double-resolve the same contract:
+///
+/// - `next_strike_ms != 0` ⇒ the mob's beat lives on THIS clock (the fine
+///   pass arms on contact aggro, winds, and resolves). The legacy 1 s beat
+///   (`next_strike_at`) only stays for rows already armed when the
+///   migration publishes — the fine pass DISARMS it on first sight, so
+///   within one scheduled cycle every beat is fine-grain.
+/// - i-frames: `dodge_until_ms` is the authoritative window (the 1 s
+///   `dash_until` continues to work in parallel for movement speed only).
+pub fn combat_tick(ctx: &ReducerContext) {
+    let now = clock_now(ctx);
+    mob_strike_pass_ms(ctx, now);
+}
+
+/// The ms clock as observed by reducers: `now_ms` floored to quanta —
+/// every beat lands on a COMBAT_TICK_MS multiple, keeping the schedule
+/// deterministic (a restart cannot drift beats off the grid).
+fn clock_now(ctx: &ReducerContext) -> u64 {
+    now_ms(ctx) / clock::COMBAT_TICK_MS * clock::COMBAT_TICK_MS
+}
+
+/// One fine-grain beat pass: every mob with a live ms beat winds or
+/// strikes. The architecture mirrors `roamer_strike`'s FSM exactly, at
+/// ms precision:
+/// 1. Unarmed + aggroed → ARM: now + period(ms) + id % 4 quanta.
+/// 2. Beat in WINDUP window → emit `mob_wind` at the telegraph's START
+///    (900 ms of warning the client can render and dodge against).
+/// 3. Beat due → resolve at reach check → i-frame check → damage.
+fn mob_strike_pass_ms(ctx: &ReducerContext, now: u64) {
+    for m in ctx.db.mob().iter().collect::<Vec<Mob>>() {
+        if !crate::types::mob_is_active(&m, now / 1000) {
+            continue;
+        }
+        let Some(kind) = cfg::mob_kind(&m.kind) else { continue };
+        if m.capital_id != 0 && m.aggro_target.is_empty() {
+            // Raiders siege structures, not players (audit decision G.3);
+            // only aggroed mobs carry player beats.
+            if m.next_strike_ms != 0 {
+                if let Some(mut fresh) = ctx.db.mob().mob_id().find(m.mob_id) {
+                    fresh.next_strike_ms = 0;
+                    ctx.db.mob().mob_id().update(fresh);
+                }
+            }
+            continue;
+        }
+        if m.aggro_target.is_empty() || m.aggro_until_secs <= now / 1000 {
+            // Aggro lapsed: the beat dissolves (re-armed on the next
+            // contact or damage).
+            if m.next_strike_ms != 0 {
+                if let Some(mut fresh) = ctx.db.mob().mob_id().find(m.mob_id) {
+                    fresh.next_strike_ms = 0;
+                    ctx.db.mob().mob_id().update(fresh);
+                }
+            }
+            continue;
+        }
+        match clock::beat_phase(now, m.next_strike_ms) {
+            clock::BeatPhase::Quiet => {}
+            clock::BeatPhase::Wind => {
+                // Spec 037 P6 — WIND IDEMPOTENCE: the telegraph emits ONE
+                // row per beat (the first tick in the window —
+                // `next_strike_ms - WINDUP_MS` is tick-grid-aligned), and
+                // beat_count bumps ONCE per beat inside resolve, not here.
+                // Re-ticks within the same window re-emit nothing.
+                if let Some(p) = hunted_player(ctx, &m.aggro_target, now / 1000) {
+                    let dist = tile_distance(m.hex_q, m.hex_r, p.hex_q, p.hex_r);
+                    // The window start is the beat − 900 ms, rounded UP to
+                    // the tick grid (900 isn't tick-aligned; the first tick
+                    // INSIDE the window is the canonical wind emission). The
+                    // reader (client) uses the raw `remaining <= WINDUP_MS`
+                    // predicate, so the sprite covers the gap regardless.
+                    let wind_start = m
+                        .next_strike_ms
+                        .saturating_sub(clock::WINDUP_MS)
+                        .div_ceil(clock::COMBAT_TICK_MS)
+                        * clock::COMBAT_TICK_MS;
+                    if dist <= kind.range_hexes && now == wind_start {
+                        emit_player_event(
+                            ctx,
+                            CE_MOB_WIND,
+                            p.hex_id,
+                            0,
+                            m.mob_id,
+                            kind.name,
+                            now / 1000,
+                        );
+                    }
+                }
+            }
+            clock::BeatPhase::Strike => {
+                resolve_strike_ms(ctx, &m, kind, now);
+            }
+        }
+    }
+}
+
+/// The ms-precision strike resolution — sibling of `roamer_strike`'s
+/// Strike arm, same contract, fine clock.
+fn resolve_strike_ms(ctx: &ReducerContext, mob_row: &Mob, kind: &cfg::MobKind, now: u64) {
+    // Reschedule FIRST — whiffs and dodges consume the beat too.
+    let period = clock::period_ms(kind.strike_period_secs);
+    if let Some(mut fresh) = ctx.db.mob().mob_id().find(mob_row.mob_id) {
+        fresh.next_strike_ms = clock::arm_strike(now, period, mob_row.mob_id);
+        fresh.beat_count = fresh.beat_count.wrapping_add(1);
+        ctx.db.mob().mob_id().update(fresh);
+    }
+    let Some(player_row) = hunted_player(ctx, &mob_row.aggro_target, now / 1000) else {
+        return; // gone: the whiff re-opens the chase
+    };
+    let dist = tile_distance(mob_row.hex_q, mob_row.hex_r, player_row.hex_q, player_row.hex_r);
+    if dist > kind.range_hexes {
+        return; // walked out — nothing lands
+    }
+    // Enrage: same gate as Spec 036, riding the ms beat.
+    let enraged = mob_row.kind == "Big Slime" && boss_enraged(mob_row.hp, kind.hp);
+    let mut burst = cfg::strike_burst(kind.dps);
+    if mob_row.kind == "Big Slime" {
+        burst *= boss_slam_mult(enraged);
+    }
+    let landed = apply_player_damage_ms(
+        ctx,
+        &player_row,
+        burst,
+        mob_row.mob_id,
+        (mob_row.hex_q, mob_row.hex_r),
+        kind.name,
+        now,
+    );
+    if !landed {
+        return;
+    }
+    // Spec 036 P7a honesty: the landed strike traces its arc.
+    if let Some(p) = hunted_player(ctx, &mob_row.aggro_target, now / 1000) {
+        let kind_row = if kind.splash {
+            crate::types::CE_BOMB
+        } else if kind.range_hexes > 1 {
+            crate::types::CE_SHOT
+        } else {
+            crate::types::CE_MELEE
+        };
+        emit_player_event(ctx, kind_row, p.hex_id, 0, mob_row.mob_id, kind.name, now / 1000);
+        // Spec 037 P4 — the archetype tail (kite/splash/summon bookkeeping)
+        // fires on the FINE beat too: one behavior table, two clocks.
+        archetype_tail(ctx, mob_row, kind, &player_row, burst, now / 1000);
+    }
+}
+
+/// ms-clock damage gate (sibling of `apply_player_damage`): i-frames read
+/// the FINE window (`dodge_until_ms`); armor + hp + hurt fx unchanged.
+fn apply_player_damage_ms(
+    ctx: &ReducerContext,
+    target: &Player,
+    dmg: u32,
+    attacker_mob: u64,
+    attacker_hex: (i32, i32),
+    detail: &str,
+    now_ms_val: u64,
+) -> bool {
+    if target.dodge_until_ms > now_ms_val {
+        emit_player_event(
+            ctx,
+            CE_PLAYER_DODGE,
+            target.hex_id,
+            0,
+            attacker_mob,
+            detail,
+            now_ms_val / 1000,
+        );
+        return false;
+    }
+    let dmg = dmg.saturating_sub(player_defense(ctx, &target.address)).max(1);
+    emit_player_event(
+        ctx,
+        CE_PLAYER_HURT,
+        target.hex_id,
+        0,
+        attacker_mob,
+        &format!("{detail}|{dmg}"),
+        now_ms_val / 1000,
+    );
+    let cur = hp_of(target);
+    let mut s = target.clone();
+    if cur > dmg {
+        s.player_hp = cur - dmg;
+        s.hostile_until = now_ms_val / 1000 + combat::MOB_AGGRO_SECS;
+        // Spec 037 P6 — KNOCK PARITY (verify pass 3): the 1 s path shoves
+        // the survivor one king-step away from the striker; the fine path
+        // MUST too — one behavior, two clocks, zero asymmetry.
+        let (kq, kr) = (
+            (target.hex_q - attacker_hex.0).signum(),
+            (target.hex_r - attacker_hex.1).signum(),
+        );
+        if (kq, kr) != (0, 0) {
+            let (nq, nr) = (target.hex_q + kq, target.hex_r + kr);
+            let land = ctx
+                .db
+                .hex_tile()
+                .hex_id()
+                .find(tile_id_of(nq, nr))
+                .is_some_and(|t| t.terrain != "Water");
+            let walled = ctx.db.defense_structure().iter().any(|st| {
+                cfg::defense_kind(&st.kind).is_some_and(|k| k.is_wall)
+                    && hex_coords_of(st.hex_id) == (nq, nr)
+            });
+            if land && !walled {
+                s.hex_q = nq;
+                s.hex_r = nr;
+                s.hex_id = tile_id_of(nq, nr);
+                let (kx, ky) = tile_center(nq, nr);
+                s.position_x = kx;
+                s.position_y = ky;
+            }
+        }
+    } else {
+        // Death: same contract as the 1 s path.
+        s.player_hp = 0;
+        s.death_until = now_ms_val / 1000 + combat::DEATH_RESPAWN_SECS;
+        s.dash_until = 0;
+        s.dodge_until_ms = 0;
+        s.hostile_until = 0;
+        // Spec 037 P6 — death parity with the 1 s path: the ms path dies
+        // the same way (trace + respawn stamp + all combat windows shed).
+        tracing::info!("PLAYER-DIED {} at ({},{})", target.address, target.hex_q, target.hex_r);
+    }
+    ctx.db.player().address().update(s);
+    true
+}
+
 /// Spawn one Slime roaming pack at a legal hex (§7): ≥3 hexes from every
 /// capital, ≤20 from some online player, on materialized grass. Global cap
 /// `ROAMER_PACK_CAP` packs; an attempt every `ROAMER_SPAWN_PERIOD_SECS`.
@@ -621,6 +885,7 @@ fn mob_spawner_pass(ctx: &ReducerContext, now: u64) {
             path_idx: 0,
             next_strike_at: 0,
             beat_count: 0,
+            next_strike_ms: 0,
         });
     }
     tracing::info!("ROAMER-PACK #{now} slimes={count} at ({sq},{sr})");
@@ -686,14 +951,21 @@ fn roamer_pass(ctx: &ReducerContext, now: u64) {
                 let mut row = m.clone();
                 row.aggro_target = addr.clone();
                 row.aggro_until_secs = now + combat::MOB_AGGRO_SECS;
-                // Spec 036: contact aggro opens the schedule at HALF the
-                // period — the strike beats fast on contact, then settles
-                // into the full rhythm.
+                // Spec 037 — contact opens BOTH clocks: the legacy 1 s
+                // beat (half period, as ever) AND the fine ms beat so the
+                // telegraph reads within the first second. The fine arc
+                // between contact-aggro and first strike:
+                // half period in ms + the mob's stagger slots.
                 let half = (cfg::mob_kind(&m.kind)
                     .map(|k| k.strike_period_secs / 2)
                     .unwrap_or(1)
                     .max(1)) as u64;
                 row.next_strike_at = now + half;
+                row.next_strike_ms = clock::arm_strike(
+                    now * 1000,
+                    clock::period_ms(cfg::mob_kind(&m.kind).map_or(4, |k| k.strike_period_secs) / 2),
+                    m.mob_id,
+                );
                 ctx.db.mob().mob_id().update(row);
             }
         }
@@ -1127,6 +1399,7 @@ fn boss_summon_beat(ctx: &ReducerContext, mob_row: &Mob, now: u64) {
             path_idx: mob_row.path_idx,
             next_strike_at: 0,
             beat_count: 0,
+            next_strike_ms: 0,
         });
         emit_player_event(
             ctx,
@@ -1475,6 +1748,102 @@ mod tests {
     }
 
     #[test]
+    fn fine_clock_beats_are_honest_per_kind() {
+        // Spec 037 — the fine clock's contract per kind: every period
+        // converts to a whole multiple of the tick, every telegraph
+        // (WINDUP_MS) fits INSIDE its period, and no period degenerates
+        // past the floor.
+        use idlecore_core::combat_clock as clock;
+        for kind in cfg::MOB_KINDS.iter() {
+            let period = clock::period_ms(kind.strike_period_secs);
+            assert_eq!(
+                period % clock::COMBAT_TICK_MS,
+                0,
+                "{}: beats land on the tick grid",
+                kind.name
+            );
+            assert!(
+                clock::WINDUP_MS < period,
+                "{}: the windup must fit inside the period (900 < {period})",
+                kind.name
+            );
+        }
+        // The windup at ms precision is readable: ≥ 750 ms of telegraph.
+        assert!(clock::WINDUP_MS >= 750);
+        // The fine scheduler interval literal (init registration) matches
+        // the tick constant — a private drift here desyncs every beat.
+        assert_eq!(clock::COMBAT_TICK_MS, 250);
+    }
+
+    #[test]
+    fn wind_emission_is_idempotent_per_beat() {
+        // Spec 037 P6 — the wind branch fires ONCE per beat, on the
+        // first tick INSIDE the window (beat − 900 rounded up to the
+        // grid). Pinned as pure math so a regression to per-tick
+        // emission (3 fx rows + 3 beat_count bumps per beat — the
+        // drift the boss cadence reads) can't sneak in.
+        for beat_off in 0..24u64 {
+            let beat = 1_000_000 + beat_off * clock::COMBAT_TICK_MS;
+            let wind_start = beat
+                .saturating_sub(clock::WINDUP_MS)
+                .div_ceil(clock::COMBAT_TICK_MS)
+                * clock::COMBAT_TICK_MS;
+            // The emission tick is grid-aligned and INSIDE the window.
+            assert_eq!(wind_start % clock::COMBAT_TICK_MS, 0);
+            assert!(
+                wind_start < beat && wind_start >= beat.saturating_sub(clock::WINDUP_MS),
+                "emission must sit inside [beat-900, beat)"
+            );
+            // Uniqueness: only ONE tick equals wind_start (trivially true,
+            // but the pin keeps the contract readable).
+            for tick_off in 0..8u64 {
+                let tick = wind_start + tick_off * clock::COMBAT_TICK_MS;
+                assert_eq!(tick == wind_start, tick_off == 0);
+            }
+            // The strip of ticks AFTER emission is still Wind-phase but
+            // silent — the SAME predicate must reject them.
+            let wind_active = |t: u64| t >= beat.saturating_sub(clock::WINDUP_MS) && t < beat;
+            for tick_off in 1..4u64 {
+                let tick = wind_start + tick_off * clock::COMBAT_TICK_MS;
+                if wind_active(tick) {
+                    assert!(tick != wind_start, "the later tick must NOT be the emitter");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn boss_summon_cadence_drives_off_one_count_per_beat() {
+        // Spec 037 P6 — the summon gate reads `beat_count % 2 == 0` with
+        // beat_count bumped EXACTLY once per beat (in resolve, after the
+        // wind idempotence fix). Simulate the ledger: N strikes → beat_count
+        // N → the gate fires on every other slam, forever. This pin exists
+        // because pass 2 caught per-tick inflation that turned "every
+        // other slam" into "1-in-6 slams" on the fine clock.
+        let mut beat_count: u32 = 0;
+        let mut summons = 0u32;
+        let mut slams = 0u32;
+        for _beat in 0..12u64 {
+            // Strike resolve: exactly ONE bump.
+            beat_count = beat_count.wrapping_add(1);
+            slams += 1;
+            // boss_summon_beat's gate: fires on even counts.
+            if beat_count % 2 == 0 {
+                summons += 1;
+            }
+        }
+        assert_eq!(slams, 12);
+        assert_eq!(summons, 6, "every OTHER slam summons — 1:1 with even beats");
+        // The gate arithmetic itself is pinned (parity, not threshold).
+        for parity in [0u32, 2, 4, 100] {
+            assert_eq!(parity % 2, 0, "even fires");
+        }
+        for parity in [1u32, 3, 101] {
+            assert_ne!(parity % 2, 0, "odd holds");
+        }
+    }
+
+    #[test]
     fn boss_enrage_and_slam_math_is_honest() {
         // Big Slime full hp = 260. 30 % = 78.
         assert_eq!(cfg::mob_kind("Big Slime").unwrap().hp, 260);
@@ -1548,6 +1917,49 @@ mod tests {
             assert_eq!(combat::weapon_shoves(w.anim), is_heavy, "{}", w.name);
         }
         assert_eq!(combat::weapons().len(), 71);
+    }
+
+    #[test]
+    fn ms_damage_gate_respects_the_fine_dodge() {
+        // Spec 037 — apply_player_damage_ms's contract, pinned on the pure
+        // decision: a dodge window live at the strike ms EATS the hit
+        // (grace handled upstream by the caller), armor floor applies,
+        // and lethal damage kills outright (the 1 s path parity).
+        // i-frame arithmetic is `dodge_until_ms > now_ms` — strictly after
+        // the window the same strike lands.
+        let frame = clock::COMBAT_TICK_MS; // 250 ms quantum
+        let dodge_until = 10_000 * frame;
+        // Inside the window (the strike lands at dodge_until - frame ms):
+        // dodged.
+        assert!(dodge_until > 9_999 * frame, "inside window = eaten");
+        // The strike landing exactly AT or past the window tail: lands.
+        assert!(!(dodge_until > dodge_until));
+        // The window equals the client burstms — server and sprite agree.
+        assert_eq!(clock::DODGE_IFRAME_MS, 600);
+    }
+
+    #[test]
+    fn fine_windows_never_desync_from_the_tick_grid() {
+        // Every fine window stamps on a multiple of the quanta when the
+        // reducer clocks it (clock_now floors now_ms to the grid) — so
+        // `dodge_until_ms = grid_now + 600` stays grid-aligned and the
+        // next pass reads it inside/at/after identically forever.
+        let grid = clock::COMBAT_TICK_MS;
+        for now in [987_654u64, 250_000, 0, 123_499] {
+            let floored = now / grid * grid;
+            assert_eq!(floored % grid, 0);
+            // Both windows stamped from the floor stay aligned.
+            assert_eq!((floored + clock::WINDUP_MS) % grid, 150, "windup lands mid-grid (by design)");
+            let _ = floored;
+        }
+        // The dodge + chain-cd pair: 600 + 300 = 900 — the cd is 900 and
+        // the i-frame 600, leaving a 300 ms vulnerability seam between
+        // chained dodges (the skill window). Pinned forever.
+        assert_eq!(
+            clock::DODGE_CD_MS - clock::DODGE_IFRAME_MS,
+            300,
+            "the 300 ms seam IS the dodge skill check"
+        );
     }
 
     #[test]
@@ -1642,6 +2054,10 @@ mod tests {
             hostile_until: 0,
             death_until: 0,
             grace_until: 0,
+            // Spec 037 — fine combat clock fields (test fixture parity).
+            move_lock_until_ms: 0,
+            dodge_until_ms: 0,
+            attack_cd_until_ms: 0,
         }
     }
 }

@@ -260,6 +260,10 @@ fn setup(mut commands: Commands) {
             hostile_until_utc: 0,
             death_until_utc: 0,
             grace_until_utc: 0,
+            // Spec 037 — fine combat clock mirrors (populated by row sync).
+            move_lock_until_ms: 0,
+            dodge_until_ms: 0,
+            attack_cd_until_ms: 0,
             dash_burst_secs: 0.0,
         },
     ));

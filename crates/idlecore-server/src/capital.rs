@@ -611,26 +611,26 @@ mod tests {
 
     #[test]
     fn claims_keep_minimum_distance_between_capitals() {
-        // REV8 spacing: 200 tile steps Chebyshev between capitals (two
-        // full capped radius-91 squares + a walking gap).
-        assert!(capital_spacing_ok(id(200, 0), &[id(0, 0)]));
-        assert!(capital_spacing_ok(id(0, 200), &[id(0, 0)]), "axis-aligned");
-        assert!(!capital_spacing_ok(id(199, 0), &[id(0, 0)]));
+        // REV10 spacing: 50 tile steps Chebyshev between capitals
+        // (scale-independent tuning; claim squares at cap can still touch).
+        assert!(capital_spacing_ok(id(50, 0), &[id(0, 0)]));
+        assert!(capital_spacing_ok(id(0, 50), &[id(0, 0)]), "axis-aligned");
+        assert!(!capital_spacing_ok(id(49, 0), &[id(0, 0)]));
         // Empty world accepts anything.
         assert!(capital_spacing_ok(id(0, 0), &[]));
         // Several capitals each enforce the gap.
-        let live = vec![id(0, 0), id(400, 0)];
-        assert!(!capital_spacing_ok(id(100, 0), &live));
+        let live = vec![id(0, 0), id(100, 0)];
+        assert!(!capital_spacing_ok(id(25, 0), &live));
         assert!(
-            !capital_spacing_ok(id(390, 0), &live),
-            "10 tiles from (400,0)"
+            !capital_spacing_ok(id(98, 0), &live),
+            "2 tiles from (100,0)"
         );
-        // (200,0): 200 from (0,0) and 200 from (400,0) — legal.
-        assert!(capital_spacing_ok(id(200, 0), &live));
-        // (210,0): 210 from origin, 190 from (400,0) — denied.
-        assert!(!capital_spacing_ok(id(210, 0), &live));
-        // (600,0): 600 from origin, 200 from (400,0) — legal.
-        assert!(capital_spacing_ok(id(600, 0), &live));
+        // (50,0): 50 from (0,0) and 50 from (100,0) — legal.
+        assert!(capital_spacing_ok(id(50, 0), &live));
+        // (52,0): 52 from origin, 48 from (100,0) — denied.
+        assert!(!capital_spacing_ok(id(52, 0), &live));
+        // (150,0): 150 from origin, 50 from (100,0) — legal.
+        assert!(capital_spacing_ok(id(150, 0), &live));
     }
 
     #[test]

@@ -95,7 +95,10 @@ pub fn load_item_icons(
     by_item.insert("ArrowTower".to_string(), td.icon_arrow.clone());
     by_item.insert("Ballista".to_string(), td.icon_ballista.clone());
     // Vehicles appear as inventory items (equip/unequip from the panel).
-    for v in ["Horse", "Bicycle", "Car", "Scooter", "Motorcycle", "Boat", "Airplane"] {
+    // REV (playtest): the Horse gets its OWN icon (mount-sheet front view);
+    // the wheeled/boat tiers keep the bus crop as the vehicle family art.
+    by_item.insert("Horse".to_string(), props.icon_horse.clone());
+    for v in ["Bicycle", "Car", "Scooter", "Motorcycle", "Boat", "Airplane"] {
         by_item.insert(v.to_string(), props.icon_car.clone());
     }
     commands.insert_resource(ItemIcons { by_item });
@@ -169,7 +172,9 @@ fn item_badge(item: &str) -> (Color, &'static str) {
         "Shovel" => (Color::srgb(0.50, 0.58, 0.62), "Sh"),
         "Hoe" => (Color::srgb(0.58, 0.50, 0.58), "Ho"),
         "WateringCan" => (Color::srgb(0.45, 0.62, 0.85), "Wc"),
-        // "Horse" is canonical; "Car"/"Bicycle" are the pre-rename rows.
+        // "Horse" is canonical; "Bicycle"/"Car" are the pre-rename rows.
+        // REV (playtest): the glyph only shows when the texture icon is
+        // missing — the Horse now has its own mount-sheet icon.
         "Horse" => (Color::srgb(0.40, 0.44, 0.54), "Ho"),
         "Bicycle" => (Color::srgb(0.40, 0.44, 0.54), "Ca"),
         "Car" => (Color::srgb(0.40, 0.44, 0.54), "Ca"),
