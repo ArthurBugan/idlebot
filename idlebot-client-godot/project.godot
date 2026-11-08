@@ -1,0 +1,10 @@
+; IdleBot Godot client — talks to the idlebot-godot-bridge over WebSocket.
+config_version=5
+
+[application]
+runnable_project = true
+main_scene = "res://scenes/main.tscn"
+
+[display]
+viewport_width = 1280
+viewport_height = 720

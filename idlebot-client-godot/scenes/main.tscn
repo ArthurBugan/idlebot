@@ -1,0 +1,13 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/game_client.gd" id="1_gameclient"]
+
+[node name="Main" type="Node2D" path="."]
+{
+	"script": {
+		"resource": {
+			"type": "Resource",
+			"id": "1_gameclient"
+		}
+	}
+}
